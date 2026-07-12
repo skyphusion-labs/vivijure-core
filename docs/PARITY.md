@@ -13,7 +13,9 @@ npm run parity:vivijure          # behavioral file list + modules/types.ts
 npm run parity:vivijure:strict   # + fail on any differing shared file (import-only drift)
 ```
 
-Baseline commit when this doc was written: vivijure `de000f7` (v0.21.2).
+Baseline contract: vivijure `de000f7` (v0.21.2). Parity sprint merged in vivijure-core **#7** + **#8** (`321e686`, npm **0.9.0**).
+
+**Status:** behavioral parity **established** for all extracted orchestration. `npm run parity:vivijure` passes; 36 files differ only by expected platform import refactors (see P2). `modules/types.ts` byte-identical.
 
 ---
 
@@ -33,7 +35,7 @@ Baseline commit when this doc was written: vivijure `de000f7` (v0.21.2).
 
 ---
 
-## Sprint status (`feat/vivijure-parity-p0`)
+## Sprint status (merged `feat/vivijure-parity-p0` → main)
 
 ### P0 -- behavioral drift
 
