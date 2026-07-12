@@ -39,7 +39,7 @@ export class ObjectStoreR2Bucket implements R2Bucket {
   async put(
     key: string,
     value: string | Uint8Array | ArrayBuffer | R2ObjectBody,
-    opts?: { httpMetadata?: { contentType?: string } },
+    opts?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> },
   ): Promise<void> {
     let payload: ArrayBuffer | Uint8Array | string;
     if (typeof value === "object" && value !== null && "body" in value) {
@@ -47,7 +47,8 @@ export class ObjectStoreR2Bucket implements R2Bucket {
     } else {
       payload = value;
     }
-    await this.store.put(key, payload, opts);
+    // customMetadata is R2-only hygiene; ObjectStore adapters may ignore it.
+    await this.store.put(key, payload, opts ? { httpMetadata: opts.httpMetadata } : undefined);
   }
 
   async head(key: string) {

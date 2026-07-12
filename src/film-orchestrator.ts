@@ -97,6 +97,7 @@ import {
   advanceClipJob,
   cancelInFlightClips,
   summarizeJob,
+  describeClipFailures,
   clipFileMatchesShot,
   finishedClipFileMatchesShot,
   listClipsByShotId,
@@ -320,7 +321,13 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   const serving = servingForHook(modules, "finish"); // ui.order; the full finish chain
   const doneClips = clipJob.shots.filter((s) => s.status === "done" && s.clip_key);
-  if (!doneClips.length) { job.phase = "failed"; job.error = "no clips rendered to assemble"; return; }
+  if (!doneClips.length) {
+    // #754: surface the per-shot failure reasons instead of only the bare generic.
+    job.phase = "failed";
+    const reasons = describeClipFailures(clipJob);
+    job.error = reasons ? `no clips rendered to assemble -- ${reasons}` : "no clips rendered to assemble";
+    return;
+  }
   if (!serving.length) {
     job.phase = job.clips_only ? "done" : "assemble";
     return;
@@ -1734,6 +1741,7 @@ export async function startFilmJob(
     keyframes_only?: boolean;
     clips_only?: boolean;
     pretrained_loras?: Record<string, string>;
+    quality_tier?: "draft" | "standard" | "final";
     audio_key?: string;
     dialogue_lines?: DialogueLine[];
     cast_loras?: Record<string, number>;
@@ -1769,6 +1777,8 @@ export async function startFilmJob(
     phase_started_at: Date.now(),
     dialogue_lines: dialogueLines && dialogueLines.length ? dialogueLines : undefined,
     cast_loras: args.cast_loras && Object.keys(args.cast_loras).length ? args.cast_loras : undefined,
+    // #762: persist the requested quality tier so filmRenderRowSeedFromJob records an honest label.
+    quality_tier: args.quality_tier,
   };
   const fetcher = kf ? resolveFetcher(envRec, kf.binding) : null;
   if (!kf || !fetcher) {

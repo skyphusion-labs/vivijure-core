@@ -41,15 +41,57 @@ export { summarizeJob };
 
 const jobKey = (jobId: string) => `renders/${jobId}/clips-job.json`;
 
+/** Pure: aggregate the per-shot failure reasons into one honest string (#754). */
+export function describeClipFailures(job: ClipJob): string {
+  const failed = job.shots.filter((s) => s.status === "failed");
+  if (!failed.length) return "";
+  return failed.map((s) => `${s.shot_id}: ${s.error || "unknown error"}`).join("; ");
+}
+
+/** Pure: is a poll/invoke error TRANSIENT or DETERMINISTIC? Shared classifier (#719). */
+export function classifyTransientFailure(error: string | undefined): "transient" | "deterministic" {
+  const e = error ?? "";
+  const m = e.match(/->\s*(\d{3})\b/);
+  if (m) {
+    const s = Number(m[1]);
+    return s === 408 || s === 429 || (s >= 500 && s <= 599) ? "transient" : "deterministic";
+  }
+  if (/unreachable|timed? ?out|timeout|network|econnreset|connection (reset|lost)|fetch failed/i.test(e)) {
+    return "transient";
+  }
+  return "deterministic";
+}
+
+/** Consecutive transient poll errors a clip shot tolerates before failing loud (#719). */
+export const CLIP_POLL_MAX_ATTEMPTS = 3;
+
 /** Apply a /poll outcome to a shot (pure): failure -> failed; still pending -> unchanged; output ->
  *  done with the clip key. */
 export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>): void {
   if (!r.ok) {
+    // #719: one TRANSIENT poll failure must not STICKILY fail a healthy in-flight render. Mirror the
+    // finish chain's bounded-attempts contract: tolerate up to CLIP_POLL_MAX_ATTEMPTS CONSECUTIVE
+    // transient errors (the shot stays pending; the next sweep re-polls; any successful poll resets
+    // the count), then fail loud with the real error. A DETERMINISTIC module-reported failure still
+    // fails immediately.
+    if (classifyTransientFailure(r.error) === "transient") {
+      const attempts = (shot.poll_attempts ?? 0) + 1;
+      if (attempts < CLIP_POLL_MAX_ATTEMPTS) {
+        shot.poll_attempts = attempts;
+        return; // stays pending; re-polled next sweep
+      }
+      shot.status = "failed";
+      shot.error = `${r.error} (persisted through ${attempts} consecutive polls, #719)`;
+      return;
+    }
     shot.status = "failed";
     shot.error = r.error;
     return;
   }
-  if ((r as { pending?: boolean }).pending) return; // still running
+  if ((r as { pending?: boolean }).pending) {
+    if (shot.poll_attempts) shot.poll_attempts = 0; // a successful round-trip resets the blip budget
+    return; // still running
+  }
   const output = (r as { output: MotionBackendOutput }).output;
   const violation = hookOutputViolation(shot.motion_backend ?? "motion.backend", "motion.backend", output);
   if (violation) { shot.status = "failed"; shot.error = violation; return; } // envelope-ok but off-contract: fail loud, never advance garbage

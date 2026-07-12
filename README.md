@@ -46,6 +46,9 @@ npm ci
 npm run typecheck && npm test
 ```
 
+**flatliners** (Hetzner test box): clone/pull from GitHub `main` via `gh`, not laptop rsync.
+See [docs/FLATLINERS-DEV.md](docs/FLATLINERS-DEV.md) and `scripts/flatliners-sync.sh`.
+
 ## Key exports
 
 | Entry | Contents |

@@ -40,7 +40,7 @@ export function filmRenderRowSeedFromJob(job: FilmJob): FilmRenderRowSeed {
     jobId: job.film_id,
     project: job.project,
     bundleKey: job.bundle_key,
-    qualityTier: "final",
+    qualityTier: job.quality_tier ?? "final",
     status: filmJobToPollView(job, null).status,
     mode,
     parentId: job.parent_render_id ?? null,

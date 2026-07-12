@@ -9,6 +9,7 @@
 // behind CF Access; no per-user ownership stamp).
 import type { Env } from "./platform/orchestrator-context.js";
 import type { RunpodJobView } from "./runpod-types.js";
+import { secretValue, type SecretsStoreSecret } from "./secret-store.js";
 
 // Conventional R2 key for a job's log. The History UI derives the same key from
 // the row's job_id, so there is nothing to store in D1.
@@ -143,7 +144,7 @@ export async function writeCloudAnimateLog(
     // missing log id neither blocks the others nor drops the file; a failed lookup
     // just leaves gateway_log undefined and is logged rather than swallowed silently.
     let shots = input.shots;
-    const gatewayId = typeof env.GATEWAY_ID === "string" ? env.GATEWAY_ID : undefined;
+    const gatewayId = await secretValue(env.GATEWAY_ID as SecretsStoreSecret | string | undefined);
     if (gw && gatewayId) {
       const gateway = gw(gatewayId);
       shots = await Promise.all(

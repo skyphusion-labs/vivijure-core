@@ -215,7 +215,14 @@ async function sha256HexBytes(bytes: Uint8Array): Promise<string> {
   return s;
 }
 
-// Call the image-prep container with a cold-start guard. A cheap /health ping
+// #759: content-addressed bundle key. Two renders that share a project title used to derive the
+// SAME `bundles/<projectName>.tar.gz` key and overwrite each other's tarball mid-render.
+export async function bundleKeyFor(projectName: string, tarBytes: Uint8Array): Promise<string> {
+  const contentHash = (await sha256HexBytes(tarBytes)).slice(0, 16);
+  return `bundles/${projectName}-${contentHash}.tar.gz`;
+}
+
+// Call the image-prep container with a cold-start guard.
 // rides out the port-bind window, and we retry the heavier /portrait/prep on a
 // 503 (a fully-cold container can 503 when a heavy request races its bind, as
 // seen in live testing). backoffMs is injectable so tests don't actually wait.
@@ -463,12 +470,13 @@ export async function assembleBundle(
   // Emit tar, gzip, upload.
   const tarBytes = emitTar(files);
   const gz = await gzipBytes(tarBytes);
-  const bundleKey = `bundles/${storyboard.projectName}.tar.gz`;
+  const bundleKey = await bundleKeyFor(storyboard.projectName, tarBytes);
   // v0.39.1: bundles land in R2_RENDERS so the GPU worker (which reads
   // from its own R2_BUCKET) sees them. Pre-0.39.1 wrote to env.R2 and
   // the GPU could only pull bundles after a manual copy between buckets.
   await env.R2_RENDERS.put(bundleKey, gz, {
     httpMetadata: { contentType: "application/gzip" },
+    customMetadata: { source: "skyphusion-planner" },
   });
 
   return {
