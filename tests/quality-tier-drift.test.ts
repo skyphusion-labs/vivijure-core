@@ -16,8 +16,8 @@
 // meta-test (#20).
 import { describe, it, expect } from "vitest";
 import { QUALITY_TIERS } from "../src/render-module-config.js";
-import { MANIFEST as KEYFRAME_MANIFEST } from "../../vivijure/modules/keyframe/src/index";
-import { MANIFEST as OWN_GPU_MANIFEST } from "../../vivijure/modules/own-gpu/src/index";
+import { MANIFEST as KEYFRAME_MANIFEST } from "vivijure-modules/keyframe";
+import { MANIFEST as OWN_GPU_MANIFEST } from "vivijure-modules/own-gpu";
 import type { ConfigField, ModuleManifest } from "../src/modules/types.js";
 
 const CORE_TIERS = QUALITY_TIERS.map((t) => t.value).slice().sort();
