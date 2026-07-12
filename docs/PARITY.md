@@ -77,11 +77,11 @@ Port helper: `bash scripts/port-from-vivijure.sh` (after vivijure `main` changes
 
 ---
 
-## CI gates (target)
+## CI gates
 
-1. `npm run parity:vivijure` on every PR (sibling `../vivijure` clone)
-2. `npm run sync:module-types` + diff check in CI
-3. Core test suite includes all ported contract tests from vivijure
+1. **`parity-vivijure`** workflow (`.github/workflows/parity-vivijure.yml`): `bash scripts/parity-with-vivijure.sh ./vivijure` on every PR/push to `main` (vivijure `src/` sparse checkout). Aviation-grade ruleset check name: `parity-vivijure`.
+2. `npm run sync:module-types` + diff check in CI (covered by parity gate on `modules/types.ts`)
+3. Core test suite includes all ported contract tests from vivijure (`ci` workflow)
 
 ---
 
