@@ -1,0 +1,67 @@
+{
+  "name": "@skyphusion-labs/vivijure-core",
+  "version": "0.8.0",
+  "description": "Shared Vivijure orchestration: module registry, film pipeline, platform ICD. Consumed by vivijure (CF) and vivijure-local (Node).",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "homepage": "https://github.com/skyphusion-labs/vivijure-core",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/skyphusion-labs/vivijure-core.git"
+  },
+  "keywords": [
+    "vivijure",
+    "ai-video",
+    "orchestration",
+    "agpl"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./platform": "./src/platform/index.ts",
+    "./film-model": "./src/film-model.ts",
+    "./render-orchestrator": "./src/render-orchestrator.ts",
+    "./clip-validate": "./src/clip-validate.ts",
+    "./film-orchestrator": "./src/film-orchestrator.ts",
+    "./film-render-bridge": "./src/film-render-bridge.ts",
+    "./film-advance-lease": "./src/film-advance-lease.ts",
+    "./runpod-types": "./src/runpod-types.ts",
+    "./render-module-config": "./src/render-module-config.ts",
+    "./presign": "./src/presign.ts",
+    "./bundle-durations": "./src/bundle-durations.ts",
+    "./bundle-assembler": "./src/bundle-assembler.ts",
+    "./storyboard-validate": "./src/storyboard-validate.ts",
+    "./planner-yaml": "./src/planner-yaml.ts",
+    "./tar": "./src/tar.ts",
+    "./key-safety": "./src/key-safety.ts",
+    "./finish-hash": "./src/finish-hash.ts",
+    "./d1-retry": "./src/d1-retry.ts",
+    "./operator-config": "./src/operator-config.ts",
+    "./audio-stage": "./src/audio-stage.ts",
+    "./clip-content-validate": "./src/clip-content-validate.ts",
+    "./captions": "./src/captions.ts",
+    "./srt": "./src/srt.ts",
+    "./lora-keys": "./src/lora-keys.ts",
+    "./public-id": "./src/public-id.ts",
+    "./db-env": "./src/db-env.ts",
+    "./cast-db": "./src/cast-db.ts",
+    "./storyboard-projects-db": "./src/storyboard-projects-db.ts",
+    "./renders-db": "./src/renders-db.ts",
+    "./render-log": "./src/render-log.ts",
+    "./preflight": "./src/preflight.ts",
+    "./planner-prompt": "./src/planner-prompt.ts",
+    "./output-extract": "./src/output-extract.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "sync:module-types": "cp ../vivijure/src/modules/types.ts src/modules/types.ts"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
