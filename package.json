@@ -63,7 +63,7 @@
     "node": ">=22.5.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.21",
+    "@types/node": "^26.1.1",
     "@vitest/coverage-v8": "^3.2.4",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
