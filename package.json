@@ -55,6 +55,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage.enabled=true --coverage.provider=v8 --coverage.reporter=cobertura --coverage.reporter=text",
+    "parity:vivijure": "bash scripts/parity-with-vivijure.sh",
+    "parity:vivijure:strict": "bash scripts/parity-with-vivijure.sh --strict",
     "sync:module-types": "cp ../vivijure/src/modules/types.ts src/modules/types.ts"
   },
   "engines": {

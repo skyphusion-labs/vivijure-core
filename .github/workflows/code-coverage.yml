@@ -28,6 +28,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Checkout vivijure (module manifest drift guard)
+        uses: actions/checkout@v7
+        with:
+          repository: skyphusion-labs/vivijure
+          path: vivijure
+          sparse-checkout: |
+            modules/keyframe
+            modules/own-gpu
+          sparse-checkout-cone-mode: false
+
       - name: Setup Node.js environment
         uses: actions/setup-node@v6
         with:

@@ -104,9 +104,6 @@ export async function setInstallConfig(
   const writes = Object.keys(sub).map((key) =>
     stmt.bind(moduleName, key, JSON.stringify(next[key]), now),
   );
-  if (writes.length) {
-    if (env.DB.batch) await env.DB.batch(writes);
-    else for (const w of writes) await w.run();
-  }
+  if (writes.length) await env.DB.batch!(writes);
   return next;
 }

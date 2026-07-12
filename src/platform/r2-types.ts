@@ -29,7 +29,7 @@ export interface R2Bucket {
   put(
     key: string,
     value: string | Uint8Array | ArrayBuffer | R2ObjectBody,
-    opts?: { httpMetadata?: { contentType?: string } },
+    opts?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> },
   ): Promise<void>;
   head(key: string): Promise<(ObjectHead & { etag?: string }) | null>;
   list(opts: { prefix: string; cursor?: string; limit?: number }): Promise<R2ListResult>;

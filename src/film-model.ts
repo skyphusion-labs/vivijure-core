@@ -7,6 +7,7 @@
 import type { ConfigSchema, DialogueLine, FinishOutput, MasterOutput, RegisteredModule, SpeechOutput } from "./modules/types.js";
 import { validateConfig } from "./modules/registry.js";
 import { summarizeJob, type ClipJob, type JobSummary } from "./clip-job-model.js";
+import { classifyTransientFailure } from "./render-orchestrator.js";
 import { coerceShotId } from "./storyboard-ids.js";
 
 export interface FilmScene { shot_id: string; prompt: string; seconds: number; }
@@ -103,6 +104,10 @@ export interface FilmJob {
   // banks any freshly-trained adapter back onto the cast member (markLoraReady) so a character's LoRA
   // is trained ONCE and reused across every project -- instead of retrained every render. (#xxx)
   cast_loras?: Record<string, number>;
+  // #762: the render's requested quality tier (draft/standard/final), carried so the renders-table
+  // row LABEL is honest. Absent -> the row defaults "final". The ACTUAL render tier rides the baked
+  // keyframe_config.quality_tier + motion_config, not this field.
+  quality_tier?: "draft" | "standard" | "final";
   film_key?: string; // R2 key of the assembled film (mp4), set when phase reaches "done"
   silent_film_key?: string; // silent concat output before optional audio mux
   // #697/#698: ACTUAL per-shot assembled clip seconds, probed by the video-finish container at assemble
@@ -421,16 +426,8 @@ export const FINISH_STEP_MAX_ATTEMPTS = 3;
  *  "module /invoke -> 503", "module /poll -> 504", "module unreachable: <timeout/network>". A module-
  *  logic ok:false (input reject, "job failed", "no clip_key") or a 4xx is deterministic -> fail. */
 export function classifyFinishFailure(error: string | undefined): "transient" | "deterministic" {
-  const e = error ?? "";
-  const m = e.match(/->\s*(\d{3})\b/); // the "module /invoke -> NNN" / "/poll -> NNN" transport status
-  if (m) {
-    const s = Number(m[1]);
-    return s === 408 || s === 429 || (s >= 500 && s <= 599) ? "transient" : "deterministic";
-  }
-  if (/unreachable|timed? ?out|timeout|network|econnreset|connection (reset|lost)|fetch failed/i.test(e)) {
-    return "transient";
-  }
-  return "deterministic"; // a module-logic ok:false -> a real reject, fail loud
+  // #719 unified classifier lives in render-orchestrator; film-model imports from there (never reverse).
+  return classifyTransientFailure(error);
 }
 
 /** Decide whether to re-dispatch a failed finish step or fail it. Pure so the retry contract is

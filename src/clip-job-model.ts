@@ -23,6 +23,9 @@ export interface ClipShot extends ClipShotInput {
   delivered_fps?: number;
   delivered_frames?: number;
   distilled?: boolean;
+  // #719: consecutive TRANSIENT poll-error count (see applyPoll). Reset on any successful poll;
+  // the shot fails loud at CLIP_POLL_MAX_ATTEMPTS instead of on the first blip.
+  poll_attempts?: number;
 }
 
 export interface ClipJob {

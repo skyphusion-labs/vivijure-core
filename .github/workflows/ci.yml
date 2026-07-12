@@ -23,6 +23,15 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - name: Checkout vivijure (module manifest drift guard)
+        uses: actions/checkout@v7
+        with:
+          repository: skyphusion-labs/vivijure
+          path: vivijure
+          sparse-checkout: |
+            modules/keyframe
+            modules/own-gpu
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v6
         with:
           node-version: "22"

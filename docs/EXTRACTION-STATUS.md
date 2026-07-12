@@ -27,11 +27,12 @@ Canonical upstream reference: `skyphusion-labs/vivijure` `main`.
 
 | File(s) | Host | Future |
 |---------|------|--------|
-| `scatter-orchestrator.ts` | vivijure | Core Phase 4 candidate |
-| `beat-analyze.ts` (orchestration half) | both | Split pure types (done) vs invoke |
+| `beat-analyze.ts` (orchestration half) | core **extracted** | CF delete on adoption |
+| `scatter-orchestrator.ts` | core **extracted** | CF delete on adoption |
 | `audio-routing.ts` | core has copy; vivijure host duplicate | CF delete on adoption |
 | `operator-config.ts` | core | CF delete on adoption |
-| `dialogue-lines.ts` | vivijure-local host | Evaluate for core |
+| `dialogue-lines.ts` | core **extracted** | CF delete on adoption |
+| `cast-media.ts` routes | vivijure host | Stays host (HTTP) |
 
 ## Tests in this repo
 
