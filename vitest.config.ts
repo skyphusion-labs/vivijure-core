@@ -8,14 +8,15 @@ const root = dirname(fileURLToPath(import.meta.url));
 /** Resolve vivijure module manifests for quality-tier-drift (CI vs nested dev layout). */
 function vivijureModulesDir(): string {
   const candidates = [
-    resolve(root, "../vivijure/modules"), // CI: vivijure checked out beside repo root
-    resolve(root, "../../vivijure/modules"), // dev: sibling under ~/dev or ~/Documents/GitHub
+    resolve(root, "vivijure/modules"), // CI: sparse checkout at repo-root/vivijure
+    resolve(root, "../vivijure/modules"), // dev/flatliners: sibling clone (~/dev/{core,vivijure})
+    resolve(root, "../../vivijure/modules"), // vivijure-local CI: workspace/{core,vivijure}
   ];
   const hit = candidates.find((c) => existsSync(resolve(c, "keyframe/src/index.ts")));
   if (!hit) {
     throw new Error(
-      "vivijure module manifests not found. Clone skyphusion-labs/vivijure as a sibling " +
-        "(../vivijure in CI, or ../../vivijure in a nested dev tree).",
+      "vivijure module manifests not found. Clone skyphusion-labs/vivijure " +
+        "(CI: sparse checkout to vivijure/; dev: sibling ../../vivijure).",
     );
   }
   return hit;
