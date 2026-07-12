@@ -20,7 +20,7 @@ export async function handleAdoptRender(
     hasAudio?: unknown;
   };
   try {
-    body = await request.json();
+    body = (await request.json()) as typeof body;
   } catch {
     return json({ error: "Invalid JSON" }, 400);
   }
