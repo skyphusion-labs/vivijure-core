@@ -552,12 +552,38 @@ function moduleByBinding(modules: RegisteredModule[] | undefined, binding: strin
   return modules?.find((m) => m.binding === binding);
 }
 
+const MAX_APPLIED_TAG_TEMPLATE_CHARS = 512;
+
 /** Resolve a `{knob}` / `{knob|default}` applied-tag template against the step's validated config. */
 function resolveAppliedTemplate(tag: string, cfg: Record<string, unknown>): string {
-  return tag.replace(/\{([A-Za-z0-9_]+)(?:\|([^}]*))?\}/g, (_all, knob: string, dflt: string | undefined) => {
-    const v = cfg[knob];
-    return v === undefined ? (dflt ?? "") : String(v);
-  });
+  const src = tag.length > MAX_APPLIED_TAG_TEMPLATE_CHARS ? tag.slice(0, MAX_APPLIED_TAG_TEMPLATE_CHARS) : tag;
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const open = src.indexOf("{", i);
+    if (open === -1) {
+      out += src.slice(i);
+      break;
+    }
+    out += src.slice(i, open);
+    const close = src.indexOf("}", open + 1);
+    if (close === -1) {
+      out += src.slice(open);
+      break;
+    }
+    const inner = src.slice(open + 1, close);
+    const pipe = inner.indexOf("|");
+    const knob = pipe === -1 ? inner : inner.slice(0, pipe);
+    const dflt = pipe === -1 ? undefined : inner.slice(pipe + 1);
+    if (/^[A-Za-z0-9_]+$/.test(knob)) {
+      const v = cfg[knob];
+      out += v === undefined ? (dflt ?? "") : String(v);
+    } else {
+      out += src.slice(open, close + 1);
+    }
+    i = close + 1;
+  }
+  return out;
 }
 
 /** Pure: the `applied` tag the CURRENT finish step would report, reconstructed from its validated config
