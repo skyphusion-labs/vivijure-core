@@ -343,6 +343,33 @@ export function buildRefinementUserMessage(
   ].join("\n");
 }
 
+const MAX_PLANNER_COMPLETION_CHARS = 512_000;
+
+/** Extract ``` / ```json fenced blocks without regex backtracking (CodeQL js/polynomial-redos). */
+function extractMarkdownFenceBlocks(s: string): string[] {
+  const blocks: string[] = [];
+  let i = 0;
+  while (i < s.length) {
+    const open = s.indexOf("```", i);
+    if (open === -1) break;
+    let pos = open + 3;
+    if (s.startsWith("json", pos)) pos += 4;
+    while (pos < s.length) {
+      const ch = s[pos];
+      if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") {
+        pos++;
+        continue;
+      }
+      break;
+    }
+    const close = s.indexOf("```", pos);
+    if (close === -1) break;
+    blocks.push(s.slice(pos, close));
+    i = close + 3;
+  }
+  return blocks;
+}
+
 // Pulls a JSON object out of a model completion. Handles:
 //   - bare JSON;
 //   - one or more ```json (or bare ```) code fences (prefers the LAST fence,
@@ -352,9 +379,12 @@ export function buildRefinementUserMessage(
 // JSON.parse downstream surfaces a clear error.
 export function stripJsonFences(raw: string): string {
   let s = raw.trim();
-  const fences = [...s.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)];
+  if (s.length > MAX_PLANNER_COMPLETION_CHARS) {
+    s = s.slice(0, MAX_PLANNER_COMPLETION_CHARS);
+  }
+  const fences = extractMarkdownFenceBlocks(s);
   if (fences.length > 0) {
-    s = fences[fences.length - 1][1];
+    s = fences[fences.length - 1];
   } else {
     const firstBrace = s.indexOf("{");
     const lastBrace = s.lastIndexOf("}");
