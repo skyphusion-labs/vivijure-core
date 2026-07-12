@@ -26,6 +26,7 @@ src/
 docs/
   PLATFORM.md        Frozen adapter contract (ICD v1)
   ARCHITECTURE.md    Package boundary + dependency rules
+  CORE-VS-MODULES.md Planner scaffold vs swappable modules (canonical)
   HOST-ADOPTION.md   CF + local host migration checklist
 ```
 

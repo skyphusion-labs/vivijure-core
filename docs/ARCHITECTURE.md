@@ -42,7 +42,7 @@ adoptions stay mechanical, not a rewrite.
 | Platform implementation | `cfPlatformFromEnv()` (planned) | `src/platform/sqlite.ts`, `storage.ts`, ... |
 | Presign SigV4 impl | `src/r2-presign.ts` | S3 presigner in `storage.ts` |
 | Auth | `auth-gate.ts`, `access-auth.ts` | `auth-gate.ts` (token mode) |
-| AI / planner HTTP | `planner.ts`, `providers/*` | `routes/m7.ts` + gateway fetch |
+| Planner HTTP scaffold | `planner.ts`, `providers/*` (legacy; migrate) | `planner.ts` + `routes/m7.ts` (module-driven) |
 | RunPod submit | `runpod-submit.ts` | Host route or future adapter |
 | Scatter pipeline | `scatter-orchestrator.ts` | TBD (Phase 4) |
 | Static UI | Workers Assets | `public/` static serve |
@@ -91,6 +91,7 @@ Hosts pin semver once `vivijure-core` publishes to GitHub npm. Until then, sibli
 
 ## Related docs
 
+- [CORE-VS-MODULES.md](CORE-VS-MODULES.md) -- planner scaffold vs installed modules (canonical)
 - [PLATFORM.md](PLATFORM.md) -- ICD field reference
 - [HOST-ADOPTION.md](HOST-ADOPTION.md) -- step-by-step CF + local migration
 - [EXTRACTION-STATUS.md](EXTRACTION-STATUS.md) -- file inventory and wave status

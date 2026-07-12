@@ -11,7 +11,8 @@ platform ICD. Two thin hosts consume this package:
 | Local | `skyphusion-labs/vivijure-local` | Node, SQLite, S3/MinIO, HTTP sidecars |
 
 Wire contract for HTTP routes stays in upstream `vivijure/docs/CONTRACT.md`. Module wire contract
-is `src/modules/types.ts` (`vivijure-module/2`).
+is `src/modules/types.ts` (`vivijure-module/2`). **Planner vs module boundary:**
+[docs/CORE-VS-MODULES.md](docs/CORE-VS-MODULES.md) (control plane = thin planner scaffold + module host).
 
 ## Rules
 
