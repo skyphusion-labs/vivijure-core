@@ -1587,8 +1587,19 @@ async function enterAssemblePhase(
   // the concat would be wasted CPU, so finalize straight from the existing object. This is
   // what lets a stalled-after-PUT assemble self-heal on the next poll / sweep tick instead of
   // looping. (issue #122)
+  //
+  // #24/#697: ONLY shortcut when a PRIOR pass already gated this concat's per-clip durations
+  // (actual_clip_durations persisted). Per-clip durations exist only in the container's /finish
+  // response; they cannot be recovered from the assembled object. In the exact race the shortcut
+  // targets (PUT succeeded, response lost) those durations were never read -- so a blind shortcut
+  // would finalize an UNGATED concat and ship a truncated shot (a 0.085s "4s") as a silent green,
+  // defeating the #697 gate precisely where it matters. When durations are absent, fall through to
+  // the normal (gated) assemble: the source clips are never deleted by reclaim (only adopted), so
+  // the re-concat is idempotent + bounded by MAX_ASSEMBLE_ATTEMPTS and degrades LOUD on exhaustion
+  // -- preserving #122's anti-loop property without the honesty hole.
   const outputKey = filmOutKey(job.film_id);
-  if (await r2ObjectExists(env, outputKey)) {
+  const durationsGated = !!job.actual_clip_durations && Object.keys(job.actual_clip_durations).length > 0;
+  if (durationsGated && (await r2ObjectExists(env, outputKey))) {
     job.assemble_attempts = 0;
     await finishAssembledFilm(env, job, outputKey, preModules);
     return;
