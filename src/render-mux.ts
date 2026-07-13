@@ -51,13 +51,20 @@ export async function muxAudioOntoVideoKey(
     };
   }
 
-  let body: { ok?: boolean; error?: string };
+  let body: { ok?: boolean; error?: string; hasAudio?: boolean };
   try {
     body = (await resp.json()) as typeof body;
   } catch {
     return { ok: false, error: "video-finish returned invalid JSON" };
   }
   if (!body.ok) return { ok: false, error: body.error || "video-finish mux failed" };
+  if (body.hasAudio === false) {
+    return {
+      ok: false,
+      error:
+        "video-finish mux completed without audio (bed fetch blocked or failed; check S3_PRESIGN_ENDPOINT and S3_FETCH_ALLOW_HOSTS)",
+    };
+  }
   return { ok: true, output_key: outKey };
 }
 

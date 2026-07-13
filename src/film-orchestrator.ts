@@ -662,6 +662,7 @@ interface FinishContainerResult {
   durationSeconds?: number;
   shots?: number;
   error?: string;
+  hasAudio?: boolean;
   // #697/#698: ACTUAL per-clip assembled seconds in submit order; absent on an older container build.
   clipDurations?: number[];
 }
@@ -1433,6 +1434,16 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
   if (!body.ok) {
     job.phase = "failed";
     job.error = `video-finish mux failed: ${body.error || "unknown error"}`;
+    return;
+  }
+  if (body.hasAudio === false) {
+    await degradeMuxUnavailable(
+      env,
+      job,
+      silentKey,
+      "video-finish mux completed without audio (bed fetch blocked or failed; check S3_PRESIGN_ENDPOINT and S3_FETCH_ALLOW_HOSTS)",
+      preModules,
+    );
     return;
   }
   job.film_key = outKey;
