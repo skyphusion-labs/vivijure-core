@@ -18,7 +18,7 @@ is `src/modules/types.ts` (`vivijure-module/2`). **Planner vs module boundary:**
 
 - **Core never imports host env.** No `./env`, no `@cloudflare/workers-types`, no `process.env` reads.
   Orchestration uses `Platform`, `DbEnv`, or `OrchestratorEnv` from `@skyphusion-labs/vivijure-core/platform`.
-- **Module contract is sacred.** `src/modules/types.ts` must match `vivijure` `main` byte-for-byte
+- **Module contract is sacred.** `src/modules/types.ts` must match `vivijure-cf` `main` byte-for-byte
   unless the epoch bumps in both repos together. Sync: `npm run sync:module-types` (sibling `../vivijure`).
 - **Platform ICD:** `src/platform/types.ts` is the frozen adapter contract (`PLATFORM_ICD_VERSION`).
   Bump version + `docs/PLATFORM.md` + contract tests before either host ships a release that depends

@@ -21,7 +21,7 @@ Canonical upstream reference: `skyphusion-labs/vivijure` `main`.
 | Host | Duplicates in `src/` | Target |
 |------|----------------------|--------|
 | `vivijure-local` | Thin re-export shims only | Delete shims; import core directly (optional cleanup) |
-| `vivijure` | Full copies of ~28 files | Delete after Phase B in HOST-ADOPTION.md |
+| `vivijure-cf` | Full copies of ~28 files | Delete after Phase B in HOST-ADOPTION.md |
 
 ## Not yet extracted (host-only today)
 
