@@ -99,4 +99,47 @@ describe("ObjectStoreR2Bucket.list host-neutrality", () => {
     const res = await wrapR2Bucket(store).list({ prefix: "p/" });
     expect(res.objects[0].uploaded).toEqual(when);
   });
+
+  it("#20: inline list metadata is used and NO per-key HEAD is issued", async () => {
+    const when = new Date(1_700_000_000_000);
+    const inlineKeys = ["p/k00", "p/k01", "p/k02"];
+    let heads = 0;
+    const store: ObjectStore = {
+      get: async () => null,
+      put: async () => {},
+      delete: async () => {},
+      async head() {
+        heads++;
+        return { size: 1, uploaded: when };
+      },
+      // Host returns per-object metadata inline (the S3-LastModified fast path).
+      async list(prefix) {
+        const keys = inlineKeys.filter((k) => k.startsWith(prefix));
+        return { keys, objects: keys.map((key) => ({ key, uploaded: when })) };
+      },
+    };
+    const res = await wrapR2Bucket(store).list({ prefix: "p/" });
+    expect(res.objects.map((o) => o.key)).toEqual(inlineKeys);
+    expect(res.objects.every((o) => o.uploaded?.getTime() === when.getTime())).toBe(true);
+    expect(heads).toBe(0); // the whole point of #20: no HEAD storm
+  });
+
+  it("#20: a host that returns only keys still works (HEAD fallback)", async () => {
+    let heads = 0;
+    const store: ObjectStore = {
+      get: async () => null,
+      put: async () => {},
+      delete: async () => {},
+      async head() {
+        heads++;
+        return { size: 1, uploaded: new Date(5000) };
+      },
+      async list(prefix) {
+        return { keys: ["p/k00", "p/k01"].filter((k) => k.startsWith(prefix)) };
+      },
+    };
+    const res = await wrapR2Bucket(store).list({ prefix: "p/" });
+    expect(res.objects).toHaveLength(2);
+    expect(heads).toBe(2); // no inline metadata -> HEAD per key
+  });
 });

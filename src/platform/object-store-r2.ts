@@ -81,19 +81,24 @@ export class ObjectStoreR2Bucket implements R2Bucket {
     // one -- the next page then re-read an already-seen key (dup) or stepped over an unread one (skip). A
     // key cursor returns only keys strictly greater than it, so mutations behind the cursor cannot shift
     // what is still to come. (.slice() first: never mutate the array the store handed back.)
-    const keys = (await this.store.list(opts.prefix)).keys.slice().sort();
+    const raw = await this.store.list(opts.prefix);
+    // #20: when the host returns per-object metadata inline (e.g. S3 ListObjectsV2 already carries
+    // LastModified), index it so we skip the HEAD-per-key round-trip storm below. A host that returns only
+    // `keys` leaves `inline` undefined and we fall back to a HEAD per key.
+    const inline = raw.objects ? new Map(raw.objects.map((o) => [o.key, o])) : undefined;
+    const keys = raw.keys.slice().sort();
     const limit = opts.limit ?? 1000;
     const startIdx = opts.cursor ? firstIndexAfter(keys, opts.cursor) : 0;
     const slice = keys.slice(startIdx, startIdx + limit);
     const objects: R2ListedObject[] = [];
     for (const key of slice) {
-      const h = await this.store.head(key);
       // #19: propagate `uploaded` HONESTLY (it is ICD-optional on ObjectHead). The prior `?? new Date(0)`
       // fabricated a 1970 timestamp for a host that omits uploaded; the freshness-floor reclaim (#661)
       // reads that as "older than any floor" -> excludes every object -> reclaim silently dead, with no way
       // for a consumer to tell "unknown upload time" from "genuinely ancient". Leave it undefined and let
       // the consumer choose its own safe branch (see listClipsByShotId in render-orchestrator.ts).
-      objects.push({ key, uploaded: h?.uploaded });
+      const uploaded = inline ? inline.get(key)?.uploaded : (await this.store.head(key))?.uploaded;
+      objects.push({ key, uploaded });
     }
     const truncated = startIdx + slice.length < keys.length;
     return {
