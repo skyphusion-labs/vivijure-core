@@ -121,7 +121,7 @@ ACCESS). Only orchestration paths go through `Platform`.
 - `ai-binding.ts`, `planner.ts`, `providers/*`, `parsers/*`
 - `runpod-submit.ts` (HTTP to RunPod)
 - `scatter-orchestrator.ts` (candidate for core Phase 4; not yet extracted)
-- `demo-render.ts`, `demo-chat.ts`, `mcp*.ts`
+- `demo-render.ts`, `demo-chat.ts`
 - `r2-presign.ts` (implementation; core only calls `PRESIGNER` interface)
 - `installed-modules.ts` (CF dispatch discovery wrapper)
 
