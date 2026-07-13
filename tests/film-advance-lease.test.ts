@@ -13,8 +13,8 @@ import type { Env } from "../src/platform/orchestrator-context.js";
 // A fake D1 implementing the lease SQL semantics atomically (each run() has no internal await, so
 // it is atomic under JS concurrency exactly as a single D1 UPDATE is under SQLite's writer lock).
 function leaseDb(jobIds: string[]) {
-  const rows = new Map<string, { advance_lease: number | null }>(
-    jobIds.map((id) => [id, { advance_lease: null }]),
+  const rows = new Map<string, { advance_lease: number | null; advance_lease_token: string | null }>(
+    jobIds.map((id) => [id, { advance_lease: null, advance_lease_token: null }]),
   );
   const DB = {
     prepare(sql: string) {
@@ -22,20 +22,35 @@ function leaseDb(jobIds: string[]) {
         bind(...args: unknown[]) {
           return {
             run: async () => {
+              // Release: `SET advance_lease = NULL, advance_lease_token = NULL WHERE job_id=? AND
+              // advance_lease_token=?` -- keyed on the TOKEN, so a stale token clears nothing. (Checked
+              // first: the release SQL also contains "SET advance_lease".)
               if (sql.includes("advance_lease = NULL")) {
-                const [jobId, lease] = args as [string, number];
+                const [jobId, token] = args as [string, string];
                 const r = rows.get(jobId);
-                if (r && r.advance_lease === lease) {
+                if (r && r.advance_lease_token !== null && r.advance_lease_token === token) {
                   r.advance_lease = null;
+                  r.advance_lease_token = null;
                   return { meta: { changes: 1 } };
                 }
                 return { meta: { changes: 0 } };
               }
+              // Claim: `SET advance_lease=?, advance_lease_token=? WHERE job_id=? AND (advance_lease IS
+              // NULL OR advance_lease < ? OR advance_lease_token = ?)`. The token appears twice (SET +
+              // the idempotency predicate); both binds are the SAME value.
               if (sql.includes("SET advance_lease")) {
-                const [lease, jobId, now] = args as [number, string, number];
+                const [lease, token, jobId, now, tokenPred] = args as [number, string, string, number, string];
                 const r = rows.get(jobId);
-                if (r && (r.advance_lease === null || r.advance_lease < now)) {
+                // Honor the SQL as written: the #29 idempotency clause is only in effect if the claim
+                // SQL actually contains it (so a pre-fix predicate can be simulated by dropping it).
+                const tokenClause =
+                  sql.includes("OR advance_lease_token = ?") &&
+                  r != null &&
+                  r.advance_lease_token !== null &&
+                  r.advance_lease_token === tokenPred;
+                if (r && (r.advance_lease === null || r.advance_lease < now || tokenClause)) {
                   r.advance_lease = lease;
+                  r.advance_lease_token = token;
                   return { meta: { changes: 1 } };
                 }
                 return { meta: { changes: 0 } };
@@ -60,21 +75,69 @@ describe("claimFilmAdvance / releaseFilmAdvance (win / lose / reset)", () => {
     const a = await claimFilmAdvance(env, id, 1000);
     expect(a.won).toBe(true);
     expect(a.lease).toBe(1000 + FILM_ADVANCE_LEASE_TTL_SECONDS * 1000);
+    expect(typeof a.token).toBe("string"); // #29: a unique per-claim leaseholder identity
     const b = await claimFilmAdvance(env, id, 1001);
     expect(b.won).toBe(false);
     expect(b.lease).toBeUndefined();
+    expect(b.token).toBeUndefined();
   });
 
   it("release (by token) makes the lease re-grantable; a stale token releases nothing", async () => {
     const { DB, rows } = leaseDb([id]);
     const env = { DB } as unknown as Env;
     const a = await claimFilmAdvance(env, id, 1000);
-    await releaseFilmAdvance(env, id, (a.lease as number) - 1); // stale token: no-op
+    await releaseFilmAdvance(env, id, "not-my-token"); // stale token: no-op
     expect(rows.get(id)?.advance_lease).toBe(a.lease);
-    await releaseFilmAdvance(env, id, a.lease as number);
+    await releaseFilmAdvance(env, id, a.token as string);
     expect(rows.get(id)?.advance_lease).toBeNull();
     const b = await claimFilmAdvance(env, id, 2000);
     expect(b.won).toBe(true); // genuine retry after a released tick is never deadlocked
+  });
+
+  it("#29: a LOST response after the claim commits still returns a win on retry (no stall)", async () => {
+    // The exact non-idempotent-retry bug: attempt 1's UPDATE commits (the row now holds my token),
+    // but its response is lost and classified transient, so withD1Retry re-runs the UPDATE. Pre-fix
+    // the retry's predicate (advance_lease IS NULL OR advance_lease < now) matched nothing -- the
+    // lease is now in the future -- so changes=0, the SELECT found the row, and the TRUE HOLDER got
+    // { won: false } and wedged the film up to a full TTL. With the token clause the retry matches
+    // my own committed token and correctly returns { won: true }.
+    const { rows } = leaseDb([id]);
+    let claimRuns = 0;
+    const DB = {
+      prepare(sql: string) {
+        return {
+          bind(...args: unknown[]) {
+            return {
+              run: async () => {
+                if (sql.includes("SET advance_lease") && !sql.includes("advance_lease = NULL")) {
+                  const [lease, token, jobId, now, tokenPred] = args as [number, string, string, number, string];
+                  const r = rows.get(jobId)!;
+                  const tokenClause = sql.includes("OR advance_lease_token = ?") && r.advance_lease_token === tokenPred;
+                  const matched = r.advance_lease === null || r.advance_lease < now || tokenClause;
+                  if (matched) {
+                    r.advance_lease = lease;
+                    r.advance_lease_token = token; // the commit lands...
+                  }
+                  claimRuns += 1;
+                  // ...but attempt 1's response is LOST (transient); withD1Retry re-runs the closure.
+                  // On the retry the base predicate (advance_lease < now) no longer matches -- the lease
+                  // is now in the future -- so only the #29 token clause can carry the win.
+                  if (claimRuns === 1) throw new Error("network connection lost");
+                  return { meta: { changes: matched ? 1 : 0 } };
+                }
+                return { meta: { changes: 0 } };
+              },
+              first: async () => (rows.has(args[0] as string) ? { one: 1 } : null),
+            };
+          },
+        };
+      },
+    };
+    const env = { DB } as unknown as Env;
+    const a = await claimFilmAdvance(env, id, 1000);
+    expect(claimRuns).toBe(2); // the transient blip forced exactly one retry
+    expect(a.won).toBe(true); // the TRUE HOLDER recognizes its own token -- no false loss, no stall
+    expect(a.token).toBe(rows.get(id)?.advance_lease_token);
   });
 
   it("an EXPIRED lease is re-grantable (a crashed winner never wedges the job)", async () => {
@@ -97,6 +160,7 @@ describe("claimFilmAdvance / releaseFilmAdvance (win / lose / reset)", () => {
     const a = await claimFilmAdvance(env, "film-no-row", 1000);
     expect(a.won).toBe(true);
     expect(a.lease).toBeUndefined(); // nothing to release
+    expect(a.token).toBeUndefined();
   });
 });
 

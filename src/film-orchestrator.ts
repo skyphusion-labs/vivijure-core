@@ -2160,9 +2160,9 @@ export async function advanceFilmJob(env: Env, filmId: string): Promise<{ job: F
     }
     throw e;
   } finally {
-    if (claim.lease !== undefined) {
+    if (claim.token !== undefined) {
       try {
-        await releaseFilmAdvance(env, filmId, claim.lease);
+        await releaseFilmAdvance(env, filmId, claim.token);
       } catch (e) {
         console.warn(`film ${filmId}: advance lease release failed (${(e as Error).message}); it expires on its own`);
       }
