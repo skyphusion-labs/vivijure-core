@@ -7,10 +7,10 @@ platform ICD. Two thin hosts consume this package:
 
 | Host | Repo | Runtime |
 |------|------|---------|
-| CF-native | `skyphusion-labs/vivijure` | Workers, D1, R2, service bindings |
+| CF-native | `skyphusion-labs/vivijure-cf` | Workers, D1, R2, service bindings |
 | Local | `skyphusion-labs/vivijure-local` | Node, SQLite, S3/MinIO, HTTP sidecars |
 
-Wire contract for HTTP routes stays in upstream `vivijure/docs/CONTRACT.md`. Module wire contract
+Wire contract for HTTP routes stays in `vivijure-cf/docs/CONTRACT.md`. Module wire contract
 is `src/modules/types.ts` (`vivijure-module/2`). **Planner vs module boundary:**
 [docs/CORE-VS-MODULES.md](docs/CORE-VS-MODULES.md) (control plane = thin planner scaffold + module host).
 
@@ -18,8 +18,10 @@ is `src/modules/types.ts` (`vivijure-module/2`). **Planner vs module boundary:**
 
 - **Core never imports host env.** No `./env`, no `@cloudflare/workers-types`, no `process.env` reads.
   Orchestration uses `Platform`, `DbEnv`, or `OrchestratorEnv` from `@skyphusion-labs/vivijure-core/platform`.
-- **Module contract is sacred.** `src/modules/types.ts` must match `vivijure-cf` `main` byte-for-byte
-  unless the epoch bumps in both repos together. Sync: `npm run sync:module-types` (sibling `../vivijure`).
+- **Module contract is sacred.** `src/modules/types.ts` is the **canonical** `vivijure-module/2`
+  contract; module workers and hosts vendor it *from* here. Bump the epoch only with a coordinated
+  release across every consumer. (Extraction is complete: `vivijure-cf` adopted the published package,
+  so there is no inbound sync -- core is the source of truth.)
 - **Platform ICD:** `src/platform/types.ts` is the frozen adapter contract (`PLATFORM_ICD_VERSION`).
   Bump version + `docs/PLATFORM.md` + contract tests before either host ships a release that depends
   on the new shape.
@@ -32,7 +34,6 @@ is `src/modules/types.ts` (`vivijure-module/2`). **Planner vs module boundary:**
 ```bash
 npm run typecheck
 npm test
-npm run sync:module-types   # refresh types.ts from ../vivijure
 ```
 
 ## Release
