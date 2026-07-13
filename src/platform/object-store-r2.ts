@@ -1,7 +1,19 @@
 // R2-shaped bucket API over platform ObjectStore (Workers R2 compatibility layer).
 
 import type { ObjectStore } from "./types.js";
-import type { R2Bucket, R2GetOptions, R2ListResult, R2ObjectBody } from "./r2-types.js";
+import type { R2Bucket, R2GetOptions, R2ListedObject, R2ListResult, R2ObjectBody } from "./r2-types.js";
+
+/** First index in a lexicographically-sorted array whose element is strictly greater than `cursor`. */
+function firstIndexAfter(sortedKeys: string[], cursor: string): number {
+  let lo = 0;
+  let hi = sortedKeys.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sortedKeys[mid] > cursor) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
 
 function toBody(bytes: Uint8Array): R2ObjectBody {
   return {
@@ -63,20 +75,31 @@ export class ObjectStoreR2Bucket implements R2Bucket {
     if (!this.store.list) {
       return { objects: [], truncated: false };
     }
-    const keys = (await this.store.list(opts.prefix)).keys;
-    const start = opts.cursor ? Number(opts.cursor) || 0 : 0;
+    // #22: paginate over a lexicographically-sorted key set with a KEY-based cursor (the last key of the
+    // page), matching real R2/S3 semantics. The prior scheme used a numeric OFFSET into a list refetched
+    // on every page, so a concurrent insert/delete lexically before the offset shifted every later key by
+    // one -- the next page then re-read an already-seen key (dup) or stepped over an unread one (skip). A
+    // key cursor returns only keys strictly greater than it, so mutations behind the cursor cannot shift
+    // what is still to come. (.slice() first: never mutate the array the store handed back.)
+    const keys = (await this.store.list(opts.prefix)).keys.slice().sort();
     const limit = opts.limit ?? 1000;
-    const slice = keys.slice(start, start + limit);
-    const objects = [];
+    const startIdx = opts.cursor ? firstIndexAfter(keys, opts.cursor) : 0;
+    const slice = keys.slice(startIdx, startIdx + limit);
+    const objects: R2ListedObject[] = [];
     for (const key of slice) {
       const h = await this.store.head(key);
-      objects.push({ key, uploaded: h?.uploaded ?? new Date(0) });
+      // #19: propagate `uploaded` HONESTLY (it is ICD-optional on ObjectHead). The prior `?? new Date(0)`
+      // fabricated a 1970 timestamp for a host that omits uploaded; the freshness-floor reclaim (#661)
+      // reads that as "older than any floor" -> excludes every object -> reclaim silently dead, with no way
+      // for a consumer to tell "unknown upload time" from "genuinely ancient". Leave it undefined and let
+      // the consumer choose its own safe branch (see listClipsByShotId in render-orchestrator.ts).
+      objects.push({ key, uploaded: h?.uploaded });
     }
-    const truncated = start + limit < keys.length;
+    const truncated = startIdx + slice.length < keys.length;
     return {
       objects,
       truncated,
-      cursor: truncated ? String(start + limit) : undefined,
+      cursor: truncated && slice.length ? slice[slice.length - 1] : undefined,
     };
   }
 }
