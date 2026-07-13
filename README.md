@@ -1,17 +1,35 @@
 # @skyphusion-labs/vivijure-core
 
-Shared orchestration for [Vivijure Studio](https://github.com/skyphusion-labs/vivijure): module
+Shared orchestration for [Vivijure Studio](https://github.com/skyphusion-labs/vivijure-cf): module
 registry, film pipeline, planner helpers, and the **Platform ICD** that lets one codebase run on
 Cloudflare Workers or a provider-neutral Node host.
 
 | Consumer | Role |
 |----------|------|
-| [`vivijure`](https://github.com/skyphusion-labs/vivijure) | CF-native control plane (D1, R2, service bindings) |
+| [`vivijure-cf`](https://github.com/skyphusion-labs/vivijure-cf) | CF-native control plane (D1, R2, service bindings) |
 | [`vivijure-local`](https://github.com/skyphusion-labs/vivijure-local) | Homelab control plane (SQLite, S3/MinIO, HTTP sidecars) |
 
-**Status:** Parity with `vivijure` orchestration established (see [docs/PARITY.md](docs/PARITY.md)).
-Published on npm as `@skyphusion-labs/vivijure-core`. `vivijure-local` consumes semver; `vivijure` (CF)
-still carries duplicate `src/` copies until [docs/HOST-ADOPTION.md](docs/HOST-ADOPTION.md).
+**Status:** Published on npm as `@skyphusion-labs/vivijure-core` and consumed by both hosts.
+`vivijure-cf` has adopted the published package (no duplicate orchestration `src/` remains) and
+`vivijure-local` consumes it via semver.
+
+## Where it fits
+
+`vivijure-core` is a library, not a runnable app: host repos depend on it and provide the runtime
+(Cloudflare Workers or Node). It has no end-user surface of its own; you consume it, you do not deploy it.
+
+```mermaid
+flowchart TD
+    core[vivijure-core -- THIS REPO<br/>shared orchestration lib:<br/>module registry, film pipeline, Platform ICD]
+    cf[vivijure-cf<br/>Cloudflare Workers host]
+    local[vivijure-local<br/>Node / SQLite / S3 host]
+    studio[Vivijure Studio contract<br/>projects, storyboard, cast, render]
+
+    core --> cf
+    core --> local
+    cf --> studio
+    local --> studio
+```
 
 ## Layout
 
@@ -43,8 +61,8 @@ npm install @skyphusion-labs/vivijure-core
 ```
 ~/dev/
   vivijure-core/
-  vivijure-local/    # package.json: "^0.9.0" — override with file:../vivijure-core locally
-  vivijure/
+  vivijure-local/    # package.json: "^0.9.0" -- override with file:../vivijure-core locally
+  vivijure-cf/
 ```
 
 ```bash
@@ -85,4 +103,4 @@ into ported handlers.
 
 ## License
 
-AGPL-3.0-only. Same as Vivijure Studio upstream.
+AGPL-3.0-only. Same as the rest of the Vivijure constellation.

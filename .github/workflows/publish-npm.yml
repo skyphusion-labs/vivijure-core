@@ -27,7 +27,7 @@ jobs:
       - name: Checkout vivijure (quality-tier-drift module manifests)
         uses: actions/checkout@v7
         with:
-          repository: skyphusion-labs/vivijure
+          repository: skyphusion-labs/vivijure-cf
           path: vivijure
           sparse-checkout: |
             modules/keyframe

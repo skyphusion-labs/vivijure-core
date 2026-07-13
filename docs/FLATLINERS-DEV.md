@@ -63,7 +63,7 @@ git pull --ff-only origin feat/your-branch
 npm ci && npm run typecheck && npm test
 ```
 
-Same pattern for `vivijure` if the branch touches the contract.
+Same pattern for `vivijure-cf` if the branch touches the contract.
 
 ## Do not
 

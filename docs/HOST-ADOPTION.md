@@ -134,7 +134,7 @@ ACCESS). Only orchestration paths go through `Platform`.
 |-------|-------------------|
 | Module contract byte match | `diff vivijure/src/modules/types.ts vivijure-core/src/modules/types.ts` |
 | Platform ICD version | `PLATFORM_ICD_VERSION` in core + contract tests |
-| HTTP CONTRACT | `vivijure` canon `docs/CONTRACT.md`; local `docs/PARITY.md` |
+| HTTP CONTRACT | `vivijure-cf` canon `docs/CONTRACT.md`; local `docs/PARITY.md` |
 | Conformance harness | `npm test` in `vivijure-core`; live sidecars in `vivijure-local` |
 
 ---

@@ -127,7 +127,7 @@ main gap; the scaffold + `plan.enhance` split above brings planning in line with
 | Host | Planner scaffold | Notes |
 |------|------------------|-------|
 | `vivijure-local` | Module-driven `plan.enhance` | Reference implementation for this doc |
-| `vivijure` (CF) | Partial | `/api/storyboard/enhance` uses modules; plan/refine/chat and models catalog still call core providers in host `planner.ts` until host adoption catches up |
+| `vivijure-cf` (CF) | Partial | `/api/storyboard/enhance` uses modules; plan/refine/chat and models catalog still call core providers in host `planner.ts` until host adoption catches up |
 
 Track host migration in [HOST-ADOPTION.md](HOST-ADOPTION.md). **Do not fork module logic back into
 core** to paper over a host that has not adopted the scaffold yet.

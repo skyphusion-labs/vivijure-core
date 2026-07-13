@@ -77,7 +77,7 @@ Avoid package self-imports (`renders-db` must use `./film-advance-lease.js`, not
 |---------|-----------|---------------------|
 | `vivijure-core` | `0.8.x` (extraction) | `1.0.0` when CF host deletes duplicates |
 | `vivijure` | `0.x` CF-native | `2.0.0` depends on `vivijure-core@^1` |
-| `vivijure-local` | `0.1.x` alpha | `2.0.0` depends on `vivijure-core@^1` |
+| `vivijure-local` | consumes `vivijure-core` (semver) | `2.0.0` depends on `vivijure-core@^1` |
 
 Hosts pin semver once `vivijure-core` publishes to GitHub npm. Until then, sibling `file:../vivijure-core`.
 
@@ -87,7 +87,7 @@ Hosts pin semver once `vivijure-core` publishes to GitHub npm. Until then, sibli
 |------|------|
 | `vivijure-core` | Platform contract tests, conformance, db-helpers, bundle-assembler, preflight |
 | `vivijure-local` | Route integration, parity smoke, docker-build (checks out core sibling) |
-| `vivijure` | Worker integration, module worker builds, upstream CONTRACT tests |
+| `vivijure-cf` | Worker integration, module worker builds, upstream CONTRACT tests |
 
 ## Related docs
 
