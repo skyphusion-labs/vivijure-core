@@ -2247,6 +2247,12 @@ async function advanceFilmJobLocked(env: Env, filmId: string): Promise<{ job: Fi
   // container), then -> done. The final clips are the finish-chain outputs if finish ran, else the
   // raw rendered clips; either way ordered by the storyboard. Reached inline once finish/clips
   // complete (the intermediate "assemble" was persisted above, so a timed-out concat just retries).
+  // #26: assemble/master/mux are chained as if/else-if so a phase is driven AT MOST ONCE per tick. Each
+  // helper chains forward INTERNALLY (enterAssemblePhase -> finishAssembledFilm -> enterMasterOrMux ->
+  // enterMuxPhase -> transitionToDone), so when the entry phase's block runs and a later leg hits a
+  // transient (leaving job.phase = "master"/"mux"), the sequential block for that phase must NOT re-drive
+  // it in the SAME tick -- that fired a duplicate remux/master container POST and burned two of
+  // MAX_ASSEMBLE_ATTEMPTS. The else-if drives only the tick's ENTRY phase; a transient resumes next tick.
   if (job.phase === "assemble") {
     const source = job.finish_shots
       ? job.finish_shots
@@ -2257,17 +2263,13 @@ async function advanceFilmJobLocked(env: Env, filmId: string): Promise<{ job: Fi
           .map((s) => ({ shot_id: s.shot_id, clip_key: s.clip_key as string }));
     await enterAssemblePhase(env, job, orderFinalClips(job.scenes, source), modules);
     await putFilm(env, job);
-  }
-
-  // Phase 4.5: master the assembled film's audio bed (music upscale + loudness) before mux. Pollable
-  // like dialogue; FAIL-SAFE -- a master miss passes the bed through and proceeds to mux (#249 / #77).
-  if (job.phase === "master") {
+  } else if (job.phase === "master") {
+    // Phase 4.5: master the assembled film's audio bed (music upscale + loudness) before mux. Pollable
+    // like dialogue; FAIL-SAFE -- a master miss passes the bed through and proceeds to mux (#249 / #77).
     await advanceMasterPhase(env, job, modules);
     await putFilm(env, job);
-  }
-
-  // Phase 5: mux the (mastered) audio bed onto the silent film via video-finish (VPC remuxAudioOnly).
-  if (job.phase === "mux") {
+  } else if (job.phase === "mux") {
+    // Phase 5: mux the (mastered) audio bed onto the silent film via video-finish (VPC remuxAudioOnly).
     await enterMuxPhase(env, job, modules);
     await putFilm(env, job);
   }

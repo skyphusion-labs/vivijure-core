@@ -131,6 +131,24 @@ describe("gatherDecision", () => {
     if (d.kind === "failed") expect(d.reason).toContain("s2");
   });
 
+  it("fails (does NOT hang) when a COMPLETED shard delivered a PARTIAL clip set (#27)", () => {
+    // #27: a scatter shard is a real film job that can reach done with fewer clips than it owns
+    // (keyframes-incomplete #619 / finish-unavailable clips-only #519). Its owning shard is COMPLETED
+    // (not a dead status), so pre-fix the still-missing shot was counted recoverable and the gather
+    // waited forever. A COMPLETED shard emits no more clips -> the missing shot is DOOMED, fail honestly.
+    const d = gatherDecision(["s1"], ["s1", "s2"], [done(["s1", "s2"])]);
+    expect(d.kind).toBe("failed");
+    if (d.kind === "failed") expect(d.reason).toContain("s2");
+  });
+
+  it("still waits for a live shard even when a sibling shard COMPLETED with all of its own shots", () => {
+    // Guard the fix's boundary: a COMPLETED shard that delivered ALL its shots (s1) must not doom a
+    // DIFFERENT shot (s2) that a live shard still owns -> keep waiting, not a false failure.
+    expect(
+      gatherDecision(["s1"], ["s1", "s2"], [done(["s1"]), live(["s2"])]),
+    ).toEqual({ kind: "waiting", remaining: 1 });
+  });
+
   it("waits while live shards could still fill every hole", () => {
     expect(
       gatherDecision([], ["s1", "s2"], [live(["s1"]), live(["s2"])]),

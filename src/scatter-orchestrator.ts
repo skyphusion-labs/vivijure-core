@@ -652,6 +652,13 @@ export async function advanceScatterJob(
     shardStatuses.push({ status, shots });
   }
 
+  // #26: shards/gather/mux are chained as if/else-if so a phase is driven AT MOST ONCE per tick.
+  // advanceScatterGather chains forward INTERNALLY (assembleScatterClips -> muxScatterAudio ->
+  // maybeFinalizeScatter), so when the "shards" block transitions to gather and drives it, and the
+  // assemble transport returns "retry" (leaving job.phase = "gather") or the gather chains into "mux",
+  // the sequential gather/mux blocks must NOT re-drive the same phase this tick -- that double-POSTed the
+  // video-finish container and incremented assemble_attempts twice. The else-if drives only the entry
+  // phase; a transient resumes next tick.
   if (job.phase === "shards") {
     const decision = gatherDecision([...present], job.expected_shot_ids, shardStatuses);
     if (decision.kind === "failed") {
@@ -662,11 +669,9 @@ export async function advanceScatterJob(
       job.phase = "gather";
       await advanceScatterGather(env, job);
     }
-  }
-  if (job.phase === "gather") {
+  } else if (job.phase === "gather") {
     await advanceScatterGather(env, job);
-  }
-  if (job.phase === "mux") {
+  } else if (job.phase === "mux") {
     await muxScatterAudio(env, job);
     await maybeFinalizeScatter(env, job);
   }

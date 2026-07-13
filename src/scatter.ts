@@ -131,10 +131,18 @@ export function scatterShards(
     }));
 }
 
-// A shard's terminal RunPod statuses that mean "this slice will never produce
+// A shard's terminal-FAILURE RunPod statuses that mean "this slice will never produce
 // its clips" (so if its shots are still missing, the gather is doomed, not just
 // slow). Mirrors RunpodStatus.
 const SHARD_DEAD_STATUSES = new Set(["FAILED", "CANCELLED", "TIMED_OUT"]);
+
+// A shard's TERMINAL statuses -- it will emit no more clips. A dead shard never produced them; a
+// COMPLETED shard already delivered whatever it will (#27): a scatter shard is a real film job that can
+// reach phase==="done" with a PARTIAL clip set via a keyframes-incomplete degrade (#619) or a
+// finish-unavailable clips-only delivery (#519), so a shot it still owns but never emitted will NEVER
+// arrive. Either way, a shot still missing from `present` whose owning shard is terminal is DOOMED, not
+// merely slow -- so the gather must fail honestly instead of waiting forever for a clip that is gone.
+const SHARD_TERMINAL_STATUSES = new Set([...SHARD_DEAD_STATUSES, "COMPLETED"]);
 
 export type GatherDecision =
   | { kind: "finish" }
@@ -185,12 +193,14 @@ export function gatherDecision(
   const missing = expectedShots.filter((id) => !presentSet.has(id));
   if (missing.length === 0) return { kind: "finish" };
 
-  // A missing shot can still arrive only if a NON-dead shard owns it. Missing
-  // shots whose owning shard is dead -- or that no shard owns at all -- can never
-  // land, so the gather is doomed for exactly those shots.
+  // A missing shot can still arrive only if a LIVE (non-terminal) shard owns it. Missing shots whose
+  // owning shard is terminal -- dead (never produced them) OR COMPLETED-without-them (#27: a done shard
+  // emits no more clips) -- or that no shard owns at all, can never land, so the gather is doomed for
+  // exactly those shots. (A COMPLETED shard that DID re-emit a clip put that shot in `present`, so it is
+  // not in `missing` here; only genuinely-absent shots of a done shard are caught.)
   const recoverable = new Set<string>();
   for (const shard of shards) {
-    if (!SHARD_DEAD_STATUSES.has(shard.status)) {
+    if (!SHARD_TERMINAL_STATUSES.has(shard.status)) {
       for (const shot of shard.shots) recoverable.add(shot);
     }
   }
@@ -198,7 +208,7 @@ export function gatherDecision(
   if (doomed.length > 0) {
     return {
       kind: "failed",
-      reason: `${doomed.length} shot(s) can never arrive (owning shard dead or unassigned): ${doomed.join(", ")}`,
+      reason: `${doomed.length} shot(s) can never arrive (owning shard dead, completed-without-it, or unassigned): ${doomed.join(", ")}`,
     };
   }
   return { kind: "waiting", remaining: missing.length };
