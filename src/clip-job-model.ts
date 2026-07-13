@@ -26,6 +26,10 @@ export interface ClipShot extends ClipShotInput {
   // #719: consecutive TRANSIENT poll-error count (see applyPoll). Reset on any successful poll;
   // the shot fails loud at CLIP_POLL_MAX_ATTEMPTS instead of on the first blip.
   poll_attempts?: number;
+  // #767: the resolved, validated motion config for this shot, retained so the R2-presence reclaim can
+  // fingerprint what produced a clip (motion_backend + config + keyframe + prompt) and refuse to adopt a
+  // clip a DIFFERENT-config render of the same project+shot wrote. Absent on legacy job docs.
+  config?: Record<string, unknown>;
 }
 
 export interface ClipJob {
