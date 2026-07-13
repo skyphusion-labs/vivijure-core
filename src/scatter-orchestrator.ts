@@ -41,6 +41,7 @@ import {
   claimFinish,
   getFinishState,
   getRenderIdByJobId,
+  getScatterChildren,
   insertRender,
   buildInsertRenderStmt,
   markFinishDone,
@@ -568,20 +569,47 @@ export async function ensureScatterRenderRow(
   ctx?: ExecutionContext,
 ): Promise<void> {
   try {
-    if ((await getRenderIdByJobId(env, job.scatter_id)) != null) return;
     const view = scatterJobToPollView(job);
-    await insertRender(env, {
-      jobId: job.scatter_id,
-      project: job.project,
-      bundleKey: job.bundle_key,
-      qualityTier: job.quality_tier,
-      renderOverrides: job.render_overrides,
-      status: view.status,
-      mode: "full",
-      projectId: job.project_id ?? null,
-    });
-    if (view.status !== "IN_PROGRESS") await updateRenderFromView(env, view, ctx);
-    console.log(JSON.stringify({ ev: "scatter.selfheal.row", scatter_id: job.scatter_id, status: view.status }));
+    let parentId = await getRenderIdByJobId(env, job.scatter_id);
+    if (parentId == null) {
+      await insertRender(env, {
+        jobId: job.scatter_id,
+        project: job.project,
+        bundleKey: job.bundle_key,
+        qualityTier: job.quality_tier,
+        renderOverrides: job.render_overrides,
+        status: view.status,
+        mode: "full",
+        projectId: job.project_id ?? null,
+      });
+      if (view.status !== "IN_PROGRESS") await updateRenderFromView(env, view, ctx);
+      console.log(JSON.stringify({ ev: "scatter.selfheal.row", scatter_id: job.scatter_id, status: view.status }));
+      parentId = await getRenderIdByJobId(env, job.scatter_id);
+    }
+    // #33: also backfill any MISSING shard rows. finalizeScatterSubmit writes the parent then the shard-row
+    // BATCH as separate D1 ops; a blip between them (parent committed, shards not) leaves the shards
+    // permanently absent from /api/storyboard/renders + getScatterChildren -- the render still completes
+    // (gather runs off the R2 doc), but the per-shard rows never appear. Reconcile the expected shard ids
+    // against the rows that exist and insert the gap, linked to the parent; the normal shard-advance path
+    // then updates each shard's status. (One indexed getScatterChildren read per scatter advance.)
+    if (parentId != null && job.shard_film_ids.length) {
+      const existing = new Set((await getScatterChildren(env, parentId)).map((c) => c.job_id));
+      for (const shardFilmId of job.shard_film_ids) {
+        if (existing.has(shardFilmId)) continue;
+        await insertRender(env, {
+          jobId: shardFilmId,
+          project: job.project,
+          bundleKey: job.bundle_key,
+          qualityTier: job.quality_tier,
+          renderOverrides: job.render_overrides,
+          status: "IN_PROGRESS",
+          mode: "full",
+          projectId: job.project_id ?? null,
+          parentId,
+        });
+        console.log(JSON.stringify({ ev: "scatter.selfheal.shard", scatter_id: job.scatter_id, shard: shardFilmId }));
+      }
+    }
   } catch (e) {
     if (!isTransientD1Error(e)) {
       console.log(JSON.stringify({ ev: "d1.error", op: "scatter.selfheal.row", scatter_id: job.scatter_id, code: d1ErrorCode(e) }));

@@ -11,7 +11,9 @@ export interface R2ObjectBody {
 
 export interface R2ListedObject {
   key: string;
-  uploaded: Date;
+  /** ICD-optional: a host ObjectStore may omit upload time (ObjectHead.uploaded is optional). Consumers
+   *  applying a freshness floor must treat `undefined` as "unknown", not "ancient" (#19). */
+  uploaded?: Date;
 }
 
 export interface R2ListResult {

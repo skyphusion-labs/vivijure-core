@@ -13,6 +13,18 @@ const MIN_PNG = Uint8Array.from(
 );
 
 describe("bundle-assembler pure helpers", () => {
+  it("safeCharFilename strips path traversal from a cast name (#28)", () => {
+    // A crafted cast name must never inject `/`, `\`, `..`, or NUL into the tar entry path.
+    const f = safeCharFilename("A", "x/../../../../tmp/pwn");
+    expect(f.startsWith("char_A_")).toBe(true);
+    expect(f).not.toContain("/");
+    expect(f).not.toContain(".."); // the security property: no separator, no traversal survives
+    expect(safeCharFilename("A", "..")).toBe("char_A__.png"); // pure traversal collapses, never empty-to-`..`
+    expect(safeCharFilename("B", "a\\b")).toBe("char_B_a_b.png"); // backslash too
+    // Legit names keep the byte-for-byte space convention (no over-sanitizing).
+    expect(safeCharFilename("A", "Neon Runner")).toBe("char_A_Neon_Runner.png");
+  });
+
   it("safeCharFilename mirrors the GPU worker convention", () => {
     expect(safeCharFilename("A", "Neon Runner")).toBe("char_A_Neon_Runner.png");
   });

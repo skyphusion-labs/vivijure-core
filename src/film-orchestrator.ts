@@ -107,6 +107,7 @@ import {
   type ClipJob,
   type JobSummary,
 } from "./render-orchestrator.js";
+import { markRenderFailedByJobId } from "./renders-db.js";
 import { finishStepInputHash } from "./finish-hash.js";
 import { presignR2Get, presignR2Put, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
@@ -1898,7 +1899,9 @@ export async function listProjectKeyframes(env: Env, project: string, scenes: Fi
     for (const o of listed.objects) {
       // Freshness guard (#661): skip any object written BEFORE this run started (R2Object.uploaded is a Date,
       // job stamps are epoch ms -- normalize explicitly). Only enforced when a floor is passed.
-      if (createdAtMs && o.uploaded.getTime() < createdAtMs) continue;
+      // #19: uploaded is ICD-optional; unknown upload time under an active floor -> exclude (safe: re-render
+      // beats adopting a possibly-stale prior-run keyframe).
+      if (createdAtMs && (!o.uploaded || o.uploaded.getTime() < createdAtMs)) continue;
       const file = o.key.slice(prefix.length);
       // Images only: the backend also writes a `<shot_id>.hash` param-hash sidecar per keyframe
       // (backend #112, reuse-vs-regen). Without this filter the sidecar shares the shot_id, sorts
@@ -2144,6 +2147,18 @@ export async function advanceFilmJob(env: Env, filmId: string): Promise<{ job: F
   if (!claim.won) return readFilmJobReadOnly(env, filmId);
   try {
     return await advanceFilmJobLocked(env, filmId);
+  } catch (e) {
+    // #32: a corrupt / truncated R2 job doc makes JSON.parse throw on EVERY advance tick, so the render
+    // never advances and never fails -- a silent forever-stall (the lease still releases in `finally`, so
+    // it isn't a lock leak, just a wedge). Fail it LOUDLY: mark the render FAILED and stop re-driving. R2
+    // puts are atomic and the orchestrator authors these docs, so a parse failure is defense-in-depth; a
+    // SyntaxError in this async path has no source other than the job-doc JSON.parse.
+    if (e instanceof SyntaxError) {
+      console.error(JSON.stringify({ ev: "film.doc_corrupt", film_id: filmId, error: e.message }));
+      await markRenderFailedByJobId(env, filmId, `job doc corrupt/unparseable: ${e.message}`);
+      return null;
+    }
+    throw e;
   } finally {
     if (claim.lease !== undefined) {
       try {

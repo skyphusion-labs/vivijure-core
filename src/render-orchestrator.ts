@@ -161,7 +161,10 @@ export async function listClipsByShotId(
       // path; without this the stall/fail reclaim adopts a 4-day-old clip and ships wrong content silently
       // (the #245/#249 class). This run own clips always upload AFTER the job created_at, so the legit #141
       // reclaim survives. R2Object.uploaded is a Date; job stamps are epoch ms -- normalize explicitly.
-      if (minUploadedMs && o.uploaded.getTime() < minUploadedMs) continue;
+      // #19: a host may omit uploaded (ICD-optional). Unknown upload time under an active floor can't be
+      // proven fresh, so exclude it -- adopting a possibly-stale prior-run clip is the #245/#249 dishonesty
+      // class; re-rendering is the safe degrade.
+      if (minUploadedMs && (!o.uploaded || o.uploaded.getTime() < minUploadedMs)) continue;
       const file = o.key.slice(prefix.length);
       for (const shotId of shotIds) {
         if (!found.has(shotId) && matches(file, shotId)) found.set(shotId, o.key);
@@ -188,7 +191,8 @@ export async function listAllClipsByShotId(
   do {
     const listed = await env.R2_RENDERS.list({ prefix, cursor, limit: 1000 });
     for (const o of listed.objects) {
-      if (minUploadedMs && o.uploaded.getTime() < minUploadedMs) continue;
+      // #19: unknown upload time under an active floor -> exclude (see listClipsByShotId).
+      if (minUploadedMs && (!o.uploaded || o.uploaded.getTime() < minUploadedMs)) continue;
       const file = o.key.slice(prefix.length);
       for (const shotId of shotIds) {
         if (clipFileMatchesShot(file, shotId)) {

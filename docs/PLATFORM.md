@@ -40,6 +40,12 @@ host-side env bridge module.
 3. Module transport: `listBindings()` returns installed `MODULE_*` names; `resolve()` returns a
    `FetcherLike` that speaks `vivijure-module/2` over HTTP or service binding.
 4. Object store: `get` / `put` / `head` / `delete` semantics match R2 subset used by orchestrators.
+5. `list(prefix)` **should** return per-object metadata inline via `objects: ObjectListEntry[]` (each
+   `{ key, uploaded?, size? }`) when the host already has it (S3 `ListObjectsV2` carries `LastModified`).
+   The R2-compat adapter then skips a HEAD per key. Returning only `{ keys }` stays conformant -- the
+   adapter falls back to a HEAD per key (correct, just slower). Additive/optional: no ICD version bump.
+   Provide `uploaded` so the freshness-floor reclaim (#661/#19) can run; without it, floored reclaim
+   safely excludes the object (re-render) rather than risk adopting a stale prior-run artifact.
 
 ## Non-goals (v1 ICD)
 

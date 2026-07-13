@@ -91,7 +91,13 @@ export type AssembleBundleResult =
 // the Python str.replace(" ", "_") behavior byte-for-byte.
 export function safeCharFilename(slot: SlotId, name: string): string {
   const trimmed = name.trim();
-  const safe = trimmed.replace(/ /g, "_").slice(0, 40) || slot;
+  // #28: neutralize path traversal in a cast-supplied name BEFORE the space-convention encoding, so it can
+  // never inject `/`, `\`, `..`, or NUL into the `characters/char_<slot>_<name>.png` tar entry (a permissive
+  // GPU-side tarfile.extractall would otherwise write outside the project dir). Only path-dangerous chars are
+  // touched -- legit names keep the byte-for-byte Python str.replace(" ","_") convention the backend matches
+  // on (full sanitizeKeySegment would also rewrite legit unicode/punctuation cast names).
+  const noPath = trimmed.replace(/[/\\\0]/g, "_").replace(/\.\.+/g, "_");
+  const safe = noPath.replace(/ /g, "_").slice(0, 40) || slot;
   return `char_${slot}_${safe}.png`;
 }
 
