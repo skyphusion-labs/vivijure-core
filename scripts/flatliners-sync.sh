@@ -27,12 +27,11 @@ clone_or_pull() {
 
 mkdir -p "$DEV"
 clone_or_pull vivijure-core
-clone_or_pull vivijure
+clone_or_pull vivijure-cf   # module manifests for the quality-tier-drift test
 
 echo "flatliners-sync: npm ci + verify (vivijure-core)"
 cd "$DEV/vivijure-core"
 npm ci
 npm run typecheck
 npm test
-npm run parity:vivijure
 echo "flatliners-sync: OK"

@@ -1,92 +1,41 @@
-# Parity contract -- vivijure-core vs vivijure
+# Parity contract -- vivijure-core
 
-**Canonical source:** `skyphusion-labs/vivijure` `src/` on `main` (CF-native control plane).
+> **The core <-> monolith byte-parity sprint is DONE and its CI gate is RETIRED.** Extraction is
+> complete: `vivijure-cf` adopted the published `@skyphusion-labs/vivijure-core` and carries no
+> duplicate orchestration `src/`, so there is nothing to hold byte-parity *against* anymore. The old
+> `parity-vivijure` workflow, the `parity:vivijure` / `parity:vivijure:strict` scripts, and
+> `scripts/port-from-vivijure.sh` were removed in vivijure-core #44. This doc is kept as the record of
+> what parity meant during extraction.
 
-**Consumer:** `@skyphusion-labs/vivijure-core` must match vivijure **behavior** on every extracted file. Platform refactors (`Env` → `OrchestratorEnv`, `presign.ts`, split helpers) are allowed only when the wire behavior and public API semantics are unchanged.
+## What parity means now
 
-**Module contract:** `src/modules/types.ts` must stay **byte-identical** to `vivijure/src/modules/types.ts`. Sync: `npm run sync:module-types`.
+`vivijure-core` is the **single source of truth** for the orchestration layer and the module contract
+(`src/modules/types.ts`, `vivijure-module/2`). Consumers depend on the published package; nothing
+syncs *into* core.
 
-**Verify locally:**
+| Consumer | How it stays aligned |
+|----------|----------------------|
+| `vivijure-cf` | Pins a published `@skyphusion-labs/vivijure-core` version; bump the pin to adopt a change. |
+| `vivijure-local` | Consumes the published package via semver (`file:../vivijure-core` for local dev). |
+| Module workers | Vendor `modules/types.ts` from core; the module conformance suites enforce the contract. |
 
-```bash
-npm run parity:vivijure          # behavioral file list + modules/types.ts
-npm run parity:vivijure:strict   # + fail on any differing shared file (import-only drift)
-```
-
-Baseline contract: vivijure `de000f7` (v0.21.2). Parity sprint merged in vivijure-core **#7** + **#8** (`321e686`, npm **0.9.0**).
-
-**Status:** behavioral parity **established** for all extracted orchestration. `npm run parity:vivijure` passes; 36 files differ only by expected platform import refactors (see P2). `modules/types.ts` byte-identical.
-
----
-
-## What "full parity" means
-
-| Layer | Rule |
-|-------|------|
-| Pure helpers | Same logic as vivijure (preflight, planner-prompt, public-id, tar-emit, etc.) |
-| Orchestrators | Same state machine, retry contracts, error strings, R2 key conventions |
-| DB helpers | Same SQL and row shapes (`DbEnv` instead of `Env` is OK) |
-| Platform ICD | Core-only; vivijure adopts via `cfPlatformFromEnv()` later |
-| Host routes | Stay in vivijure / vivijure-local (never in core) |
-
-**Not in scope for byte parity:** `index.ts`, `env.ts`, auth, AI providers, cast-media HTTP routes, demo, MCP.
-
-**tar note:** core `tar.ts` ≡ vivijure `tar-emit.ts` (storyboard bundles). Vivijure `tar.ts` (cast `.vvcast`) stays host-only.
-
----
-
-## Sprint status (merged `feat/vivijure-parity-p0` → main)
-
-### P0 -- behavioral drift
-
-| ID | Area | Status |
-|----|------|--------|
-| P0-1..5 | bundle-assembler, render-orchestrator, film-orchestrator, quality_tier | **done** |
-| P0-6 | `render-log` GATEWAY_ID via `secretValue` | **done** |
-| P0-7 | `modules/registry` discovery cache (matches vivijure) | **done** |
-
-### P1 -- contract tests ported from vivijure
-
-`bundle-key-collision`, `render-orchestrator`, `quality-tier-drift`, `film-advance-lease`, `dialogue-lines`, `scatter`, `runpod-wire-contract`, `d1-retry`, `render-log`, `operator-config` -- **done** (175 tests green).
-
-### P2 -- shared files (import/platform drift expected)
-
-Run `npm run parity:vivijure` for the live diff list. Remaining diffs are mostly:
-
-- `import type { Env } from "./platform/orchestrator-context.js"` vs `./env`
-- `./presign.js` vs `./r2-presign`
-- `./storyboard-ids.js` vs `./storyboard-validate` for `coerceShotId`
-- `emitStructuredEvent` in `d1-retry` (stdout-equivalent to vivijure `console.log(JSON)`)
-
-### P3 -- extracted into core
-
-| Module | Notes |
-|--------|-------|
-| `secret-store.ts` | Secrets Store binding resolver |
-| `voices.ts`, `dialogue-lines.ts` | Dialogue batch for render |
-| `bundle-storyboard.ts` | Read `storyboard.yaml` from bundle tar |
-| `scatter.ts`, `scatter-orchestrator-types.ts`, `scatter-orchestrator.ts`, `scatter-notify.ts` | Scatter/gather conductor |
-| `lora-bundle.ts`, `cast-loras.ts`, `cast-lora-train.ts` | Cast LoRA resolution + training |
-| `runpod-submit.ts` | Full submit/poll (types re-exported via `runpod-types.ts`) |
-| `beat-analyze.ts` | Planner beat analysis |
-| `render-sweep.ts`, `render-adopt.ts`, `render-mux.ts` | Background sweep + adopt/mux |
-
-**Still host-only:** `cast-media` routes, `index.ts` HTTP handlers, auth, AI providers, demo, MCP.
-
-Port helper: `bash scripts/port-from-vivijure.sh` (after vivijure `main` changes).
-
----
-
-## CI gates
-
-1. **`parity-vivijure`** workflow (`.github/workflows/parity-vivijure.yml`): `bash scripts/parity-with-vivijure.sh ./vivijure` on every PR/push to `main` (vivijure `src/` sparse checkout). Aviation-grade ruleset check name: `parity-vivijure`.
-2. `npm run sync:module-types` + diff check in CI (covered by parity gate on `modules/types.ts`)
-3. Core test suite includes all ported contract tests from vivijure (`ci` workflow)
-
----
+The **only** ongoing parity check in the constellation is **`vivijure-local` <-> `vivijure-cf` on the
+shared `public/` planner UI**, enforced by vivijure-local's `upstream-parity` workflow (which diffs
+against `vivijure-cf`, not this repo).
 
 ## Change control
 
-1. Fix vivijure upstream first when the contract changes on `main`.
-2. Port into core in the same PR wave (or immediately after merge).
-3. Never "fix forward" only in core without a matching vivijure change unless the CF host has not adopted core yet AND the change is core-only infrastructure (`structured-events`, platform ICD).
+1. Land the orchestration or contract change here, in `vivijure-core`.
+2. Publish a new `@skyphusion-labs/vivijure-core` version.
+3. Bump the pin in `vivijure-cf` (and `vivijure-local` as needed) to adopt it.
+4. Bump `PLATFORM_ICD_VERSION` + `docs/PLATFORM.md` + the platform contract tests for any adapter
+   shape change before a host ships against it.
+
+## Historical record -- the extraction sprint
+
+The orchestration layer was extracted wave-by-wave from the (now retired) `skyphusion-labs/vivijure`
+monolith; see [EXTRACTION-STATUS.md](EXTRACTION-STATUS.md) for the file inventory. During that sprint a
+`parity-vivijure` gate diffed core against the monolith's `src/` to prove behavioral equivalence
+(bundle-assembler, render/film orchestrators, quality-tier drift, advance-lease, dialogue, scatter,
+RunPod wire contract, D1 retry, render-log). That gate served its purpose and was retired once
+`vivijure-cf` adopted the package.

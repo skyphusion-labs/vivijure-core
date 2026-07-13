@@ -1,6 +1,10 @@
 # Host adoption -- vivijure-core
 
-Checklist for wiring **vivijure** (Cloudflare) and **vivijure-local** (Node) onto
+> **Status: COMPLETE.** `vivijure-cf` (the Cloudflare host) has adopted the published
+> `@skyphusion-labs/vivijure-core` and carries no duplicate orchestration `src/`; `vivijure-local`
+> consumes it via semver. The phases below are kept as the historical migration record.
+
+Checklist for wiring **vivijure-cf** (Cloudflare) and **vivijure-local** (Node) onto
 `@skyphusion-labs/vivijure-core` with minimal churn.
 
 ## vivijure-local (Node) -- done / in progress
@@ -111,8 +115,8 @@ ACCESS). Only orchestration paths go through `Platform`.
 
 1. Delete all duplicated orchestration files from `vivijure/src/`.
 2. Bump `vivijure` to `2.0.0` with `vivijure-core@^1.0.0`.
-3. Lock `modules/types.ts` sync: `vivijure-core` `npm run sync:module-types` in CI when upstream
-   contract changes.
+3. `modules/types.ts` lives canonically in `vivijure-core`; module workers vendor it from here
+   (no inbound sync -- core is the source of truth for the module contract).
 
 ### What never moves to core (CF host keeps)
 

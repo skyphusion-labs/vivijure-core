@@ -23,7 +23,7 @@ cd ~/dev
 ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
 
 gh repo clone skyphusion-labs/vivijure-core
-gh repo clone skyphusion-labs/vivijure
+gh repo clone skyphusion-labs/vivijure-cf   # module manifests for the quality-tier-drift test
 # optional:
 # gh repo clone skyphusion-labs/vivijure-local
 ```
@@ -50,7 +50,6 @@ cd ~/dev/vivijure-core
 npm ci
 npm run typecheck
 npm test
-npm run parity:vivijure    # needs sibling ../vivijure on main
 ```
 
 ## Feature branch (before merge)
