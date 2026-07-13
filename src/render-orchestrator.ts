@@ -36,6 +36,7 @@ import type {
 } from "./modules/types.js";
 import { validateClipArtifact } from "./clip-validate.js";
 import { clipProvenanceHash, chooseProvenanceMatch, headEtag, writeProv } from "./clip-provenance.js";
+import { BUCKET_KEYFRAME_MOTION_BACKENDS, ensureClipKeyframeInR2 } from "./stage-clip-keyframe.js";
 
 export type { ClipShotInput, ClipShot, ClipJob, JobSummary };
 export { summarizeJob };
@@ -260,9 +261,28 @@ export async function startClipJob(
       shots.push(shot);
       continue;
     }
+    let motionInput: ClipShotInput = sh;
+    if (mb.name && BUCKET_KEYFRAME_MOTION_BACKENDS.has(mb.name)) {
+      try {
+        motionInput = await ensureClipKeyframeInR2(env, args.project, sh);
+        shot.keyframe_key = motionInput.keyframe_key;
+        shot.keyframe_url = motionInput.keyframe_url;
+      } catch (e) {
+        shot.status = "failed";
+        shot.error = e instanceof Error ? e.message : String(e);
+        shots.push(shot);
+        continue;
+      }
+    }
     const r = await invokeModule<MotionBackendInput, MotionBackendOutput>(fetcher, {
       hook: "motion.backend",
-      input: { shot_id: sh.shot_id, keyframe_url: sh.keyframe_url, keyframe_key: sh.keyframe_key, prompt: sh.prompt, seconds: sh.seconds },
+      input: {
+        shot_id: motionInput.shot_id,
+        keyframe_url: motionInput.keyframe_url,
+        keyframe_key: motionInput.keyframe_key,
+        prompt: motionInput.prompt,
+        seconds: motionInput.seconds,
+      },
       config,
       context: { project: args.project, job_id },
     });

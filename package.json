@@ -1,6 +1,6 @@
 {
   "name": "@skyphusion-labs/vivijure-core",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "Shared Vivijure orchestration: module registry, film pipeline, platform ICD. Consumed by vivijure (CF) and vivijure-local (Node).",
   "license": "AGPL-3.0-only",
   "type": "module",
