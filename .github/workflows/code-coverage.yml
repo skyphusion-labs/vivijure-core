@@ -31,7 +31,7 @@ jobs:
       - name: Checkout vivijure (module manifest drift guard)
         uses: actions/checkout@v7
         with:
-          repository: skyphusion-labs/vivijure
+          repository: skyphusion-labs/vivijure-cf
           path: vivijure
           sparse-checkout: |
             modules/keyframe
