@@ -61,8 +61,7 @@ export async function muxAudioOntoVideoKey(
   if (body.hasAudio === false) {
     return {
       ok: false,
-      error:
-        "video-finish mux completed without audio (bed fetch blocked or failed; check S3_PRESIGN_ENDPOINT and S3_FETCH_ALLOW_HOSTS)",
+      error: "video-finish could not attach the audio bed (the bed exceeded the container audio cap or was undecodable); no audio track written",
     };
   }
   return { ok: true, output_key: outKey };
