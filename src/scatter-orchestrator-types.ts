@@ -34,7 +34,11 @@ export interface ScatterJob {
   // storyboard_projects; render_overrides round-trips the submit knobs). Optional / back-compat.
   project_id?: number | null;
   render_overrides?: Record<string, unknown>;
-  phase: "shards" | "gather" | "mux" | "done" | "failed";
+  // "finishing" (#23): the film is assembled+muxed but an ASYNC film.finish step (title/credit card
+  // dispatched as a module job) is still in flight. Non-terminal: the next poll tick re-drives the
+  // finish chain (resuming its persisted polls) WITHOUT re-assembling, and only finalizes to "done"
+  // once the chain completes -- so the render is never marked done with the cards silently dropped.
+  phase: "shards" | "gather" | "mux" | "finishing" | "done" | "failed";
   film_key?: string;
   silent_film_key?: string;
   mux_output_key?: string;
