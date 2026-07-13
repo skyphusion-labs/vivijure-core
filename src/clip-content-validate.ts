@@ -106,9 +106,14 @@ export async function contentValidateDoneClips(
   if (!env.VIDEO_FINISH_VPC) return false; // tier not installed: Layer 2 is unavailable, Layer 1 stands
   let changed = false;
   for (const shot of job.shots) {
-    if (shot.status !== "done" || !shot.clip_key || shot.content_validated) continue;
+    // #30: "skip" (a transient /inspect outage or the tier being unavailable) is NOT a validation result, so
+    // it must not short-circuit re-inspection -- only a terminal verdict (ok / suspect / corrupt) counts as
+    // done. Otherwise a single-moment inspector blip at the one tick the finish phase runs disables Layer 2
+    // (the pixel/noise gate) for the whole pass and the clip ships ungated.
+    if (shot.status !== "done" || !shot.clip_key || (shot.content_validated && shot.content_validated !== "skip")) continue;
     const v = await inspect(env, shot.clip_key, shot.keyframe_key);
-    shot.content_validated = v.verdict;
+    // Don't persist "skip" as a verdict: leave it unset so a later tick re-inspects.
+    if (v.verdict !== "skip") shot.content_validated = v.verdict;
     emitStructuredEvent({
       ev: "clip.content_validate",
       job_id: job.job_id,
