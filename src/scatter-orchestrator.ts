@@ -310,10 +310,22 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
 }
 
 async function maybeFinalizeScatter(env: Env, job: ScatterJob): Promise<void> {
-  if (job.phase !== "done" || !job.film_key) return;
+  // Re-entrant from either the terminal "done" transition or the non-terminal "finishing" resume
+  // phase (#23): an async film.finish step still encoding must NOT let the render finalize.
+  if ((job.phase !== "done" && job.phase !== "finishing") || !job.film_key) return;
   const st = await getFinishState(env, job.scatter_id);
   if (st?.finish_state === "done") return;
-  await runScatterFilmFinish(env, job);
+  const complete = await runScatterFilmFinish(env, job);
+  if (!complete) {
+    // #23: film.finish is in flight (a card step returned a poll token). Park in the non-terminal
+    // "finishing" phase and DO NOT finalize -- the next gather tick re-drives runScatterFilmFinish,
+    // resuming its persisted polls (#600/#602/#663), and only finalizes once the chain completes.
+    // The single-film path does the equivalent by leaving transitionToDone's phase non-terminal.
+    job.phase = "finishing";
+    await saveScatterJob(env, job);
+    return;
+  }
+  job.phase = "done";
   await finalizeScatterDone(env, job);
 }
 
@@ -322,8 +334,8 @@ async function maybeFinalizeScatter(env: Env, job: ScatterJob): Promise<void> {
  *  expected_shot_ids order (orderFinalClips), so the FULL scenes + dialogue_lines give correctly aligned
  *  cumulative captions. FAIL-SAFE + idempotent: guarded by job.film_finish so a re-driven finalize never
  *  double-runs, and runFilmFinish soft-degrades (a card miss never drops the assembled film). */
-async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<void> {
-  if (job.film_finish || !job.film_key) return; // already run (or nothing to card)
+async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<boolean> {
+  if (job.film_finish || !job.film_key) return true; // already run (or nothing to card) -> complete
   job.film_finish_dispatched ??= {};
   job.film_finish_polls ??= {};
   job.film_finish_attempts ??= {};
@@ -359,13 +371,14 @@ async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<void> {
     prepends: job.film_finish_prepend,
     persistPrepend: async (key, seconds) => { job.film_finish_prepend![key] = seconds; await saveScatterJob(env, job); },
   });
-  if (!r.ran) { job.film_finish = { applied: [], errors: [] }; return; } // no film.finish module -> mark + skip
+  if (!r.ran) { job.film_finish = { applied: [], errors: [] }; return true; } // no film.finish module -> mark + skip -> complete
   if (r.errors.length > 0) console.warn(`scatter film.finish errors for ${job.scatter_id}: ${r.errors.join("; ")}`);
   if (r.degraded) console.warn(`scatter film.finish degraded for ${job.scatter_id}: ${r.degraded} -- film shipped WITHOUT cards`);
-  if (!r.complete) { await saveScatterJob(env, job); return; } // #600 in-flight: leave film_finish UNSET so the next gather tick resumes; dispatched map already persisted
+  if (!r.complete) { await saveScatterJob(env, job); return false; } // #600 in-flight: leave film_finish UNSET so the next gather tick resumes; dispatched map already persisted. NOT complete -> caller parks in "finishing" and skips finalize (#23)
   job.film_finish = { applied: r.applied, adopted: r.adopted, errors: r.errors, steps: r.steps, degraded: r.degraded, sidecar_key: r.sidecar_key };
   job.film_key = r.film_key;
   await saveScatterJob(env, job); // persist carded key + outcome before finalize records it
+  return true;
 }
 
 async function assembleScatterClips(
@@ -590,6 +603,17 @@ export async function advanceScatterJob(
   await ensureScatterRenderRow(env, job, ctx);
   if (job.cancelled) return scatterJobToPollView(job);
   if (job.phase === "done" || job.phase === "failed") return scatterJobToPollView(job);
+
+  // #23: the film is assembled+muxed but an async film.finish (title/credit card) is still in flight.
+  // Re-drive ONLY the finish chain (resuming its persisted polls) and finalize once complete -- the
+  // shards are already done, so skip the shard-advance loop entirely.
+  if (job.phase === "finishing") {
+    await maybeFinalizeScatter(env, job);
+    await saveScatterJob(env, job);
+    const fview = scatterJobToPollView(job);
+    if (fview.status !== "IN_PROGRESS") await updateRenderFromView(env, fview, ctx);
+    return fview;
+  }
 
   const shardStatuses: ShardStatus[] = [];
   const present = new Set<string>();
