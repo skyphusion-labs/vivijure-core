@@ -20,7 +20,6 @@ src/
   platform/          Platform ICD + orchestratorContextFromPlatform()
   modules/           vivijure-module/2 contract, registry, conformance
   film-*.ts          Film + clip orchestration
-  mcp*.ts            Studio MCP (stateless HTTP proxy for agents; any host)
   *-db.ts            D1-shaped metadata helpers (DbEnv)
   preflight.ts       Planner pre-render validation
   ...
