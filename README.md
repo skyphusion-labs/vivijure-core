@@ -9,9 +9,9 @@ Cloudflare Workers or a provider-neutral Node host.
 | [`vivijure-cf`](https://github.com/skyphusion-labs/vivijure-cf) | CF-native control plane (D1, R2, service bindings) |
 | [`vivijure-local`](https://github.com/skyphusion-labs/vivijure-local) | Homelab control plane (SQLite, S3/MinIO, HTTP sidecars) |
 
-**Status:** Parity with the `vivijure-cf` orchestration established (see [docs/PARITY.md](docs/PARITY.md)).
-Published on npm as `@skyphusion-labs/vivijure-core`. `vivijure-local` consumes semver; `vivijure-cf`
-still carries duplicate `src/` copies until [docs/HOST-ADOPTION.md](docs/HOST-ADOPTION.md).
+**Status:** Published on npm as `@skyphusion-labs/vivijure-core` and consumed by both hosts.
+`vivijure-cf` has adopted the published package (no duplicate orchestration `src/` remains) and
+`vivijure-local` consumes it via semver.
 
 ## Where it fits
 
