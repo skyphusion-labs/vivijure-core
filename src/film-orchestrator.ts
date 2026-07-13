@@ -1898,7 +1898,9 @@ export async function listProjectKeyframes(env: Env, project: string, scenes: Fi
     for (const o of listed.objects) {
       // Freshness guard (#661): skip any object written BEFORE this run started (R2Object.uploaded is a Date,
       // job stamps are epoch ms -- normalize explicitly). Only enforced when a floor is passed.
-      if (createdAtMs && o.uploaded.getTime() < createdAtMs) continue;
+      // #19: uploaded is ICD-optional; unknown upload time under an active floor -> exclude (safe: re-render
+      // beats adopting a possibly-stale prior-run keyframe).
+      if (createdAtMs && (!o.uploaded || o.uploaded.getTime() < createdAtMs)) continue;
       const file = o.key.slice(prefix.length);
       // Images only: the backend also writes a `<shot_id>.hash` param-hash sidecar per keyframe
       // (backend #112, reuse-vs-regen). Without this filter the sidecar shares the shot_id, sorts
