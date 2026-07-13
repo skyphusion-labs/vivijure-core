@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PLATFORM_ICD_VERSION,
+  ObjectStoreR2Bucket,
   platformAsEnv,
   orchestratorContextFromPlatform,
   type Database,
@@ -42,12 +43,14 @@ describe("Platform ICD", () => {
     expect(PLATFORM_ICD_VERSION).toBe(1);
   });
 
-  it("platformAsEnv maps db, buckets, bindings, and vars", () => {
+  it("platformAsEnv maps db, R2-shaped buckets, bindings, and vars", () => {
     const platform = minimalPlatform();
     const env = platformAsEnv(platform);
     expect(env.DB).toBe(platform.db);
-    expect(env.R2_RENDERS).toBe(platform.renders);
-    expect(env.R2).toBe(platform.chatBucket);
+    // #21: buckets are wrapped R2-shaped, NOT the raw ObjectStore (which would throw on .text()/.json()).
+    expect(env.R2_RENDERS).not.toBe(platform.renders);
+    expect(env.R2_RENDERS).toBeInstanceOf(ObjectStoreR2Bucket);
+    expect(env.R2).toBeInstanceOf(ObjectStoreR2Bucket);
     expect(env.MODULE_KEYFRAME).toBeUndefined();
     expect(env.MODULE_LOCAL_GPU).toBeUndefined();
     expect(env.AUTH_MODE).toBe("token");

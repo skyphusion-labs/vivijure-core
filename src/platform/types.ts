@@ -5,6 +5,12 @@
 // so it can lift into the shared package unchanged.
 //
 // ICD: docs/PLATFORM.md -- bump PLATFORM_ICD_VERSION on breaking changes.
+//
+// wrapR2Bucket is imported for the platformAsEnv helper below. object-store-r2 imports only TYPES from
+// this file (erased at compile), so there is no runtime import cycle -- and it carries no Node/Workers
+// import, so this file still lifts into the shared package unchanged.
+
+import { wrapR2Bucket } from "./object-store-r2.js";
 
 /** Frozen host-adapter contract version (Phase 3). */
 export const PLATFORM_ICD_VERSION = 1;
@@ -31,6 +37,13 @@ export interface ObjectHead {
   httpMetadata?: { contentType?: string };
 }
 
+/** Per-object metadata a host MAY return inline from `list()` so the R2-compat adapter can skip a HEAD. */
+export interface ObjectListEntry {
+  key: string;
+  uploaded?: Date;
+  size?: number;
+}
+
 /** R2-shaped object store (renders bucket + optional chat bucket alias). */
 export interface ObjectStore {
   get(key: string): Promise<ArrayBuffer | null>;
@@ -41,7 +54,10 @@ export interface ObjectStore {
   ): Promise<void>;
   head(key: string): Promise<ObjectHead | null>;
   delete(key: string): Promise<void>;
-  list?(prefix: string): Promise<{ keys: string[] }>;
+  // #20: a host MAY return `objects` (per-key uploaded/size, e.g. from an S3 ListObjectsV2 that already
+  // carries LastModified) so the R2-compat adapter does NOT issue a HEAD per key. A host that returns only
+  // `{ keys }` stays fully conformant -- the adapter falls back to a HEAD per key. Additive/backward-compat.
+  list?(prefix: string): Promise<{ keys: string[]; objects?: ObjectListEntry[] }>;
 }
 
 /** Presigned URL minting for CPU containers and modules (r2-presign.ts parity). */
@@ -98,8 +114,12 @@ export interface Platform {
 export function platformAsEnv(platform: Platform): Record<string, unknown> {
   const env: Record<string, unknown> = { ...platform.vars };
   env.DB = platform.db;
-  env.R2_RENDERS = platform.renders;
-  env.R2 = platform.chatBucket;
+  // #21: expose R2-SHAPED buckets (get()->R2ObjectBody with .text()/.json(), R2ListResult from list()),
+  // not the raw ObjectStore. The raw store's get() returns an ArrayBuffer and list() returns { keys } --
+  // any orchestrator code reading env.R2_RENDERS through this bag would throw on `.text()`/`.json()`. Only
+  // orchestratorContextFromPlatform used to wrap; making the public helper honest removes the footgun.
+  env.R2_RENDERS = wrapR2Bucket(platform.renders);
+  env.R2 = wrapR2Bucket(platform.chatBucket);
   for (const binding of platform.modules.listBindings()) {
     const fetcher = platform.modules.resolve(binding);
     if (fetcher) env[binding] = fetcher;
