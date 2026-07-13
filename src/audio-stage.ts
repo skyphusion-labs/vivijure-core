@@ -4,7 +4,13 @@ import { needsAudioCrossBucketCopy } from "./audio-routing.js";
 export async function stageAudioKeyForRenders(env: Env, audioKey: string): Promise<string> {
   const key = audioKey.trim();
   if (!key) throw new Error("audioKey required");
-  if (!needsAudioCrossBucketCopy(key)) return key;
+  if (!needsAudioCrossBucketCopy(key)) {
+    // #31: an already-in-renders key (audio/… , dialogue/…) was returned unchecked; a stale or never-staged
+    // key then yields a MISSING object downstream -> a silent audio track shipped as success. Verify presence
+    // and fail loudly on a miss, matching the out/ branch below.
+    if (!(await env.R2_RENDERS.head(key))) throw new Error(`audio source not found: ${key}`);
+    return key;
+  }
   if (await env.R2_RENDERS.head(key)) return key;
   const src = await env.R2.get(key);
   if (!src) throw new Error(`audio source not found: ${key}`);

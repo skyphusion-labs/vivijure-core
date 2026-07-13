@@ -107,6 +107,7 @@ import {
   type ClipJob,
   type JobSummary,
 } from "./render-orchestrator.js";
+import { markRenderFailedByJobId } from "./renders-db.js";
 import { finishStepInputHash } from "./finish-hash.js";
 import { presignR2Get, presignR2Put, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
@@ -2146,6 +2147,18 @@ export async function advanceFilmJob(env: Env, filmId: string): Promise<{ job: F
   if (!claim.won) return readFilmJobReadOnly(env, filmId);
   try {
     return await advanceFilmJobLocked(env, filmId);
+  } catch (e) {
+    // #32: a corrupt / truncated R2 job doc makes JSON.parse throw on EVERY advance tick, so the render
+    // never advances and never fails -- a silent forever-stall (the lease still releases in `finally`, so
+    // it isn't a lock leak, just a wedge). Fail it LOUDLY: mark the render FAILED and stop re-driving. R2
+    // puts are atomic and the orchestrator authors these docs, so a parse failure is defense-in-depth; a
+    // SyntaxError in this async path has no source other than the job-doc JSON.parse.
+    if (e instanceof SyntaxError) {
+      console.error(JSON.stringify({ ev: "film.doc_corrupt", film_id: filmId, error: e.message }));
+      await markRenderFailedByJobId(env, filmId, `job doc corrupt/unparseable: ${e.message}`);
+      return null;
+    }
+    throw e;
   } finally {
     if (claim.lease !== undefined) {
       try {
