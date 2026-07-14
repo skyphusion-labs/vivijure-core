@@ -1,8 +1,10 @@
 # @skyphusion-labs/vivijure-core
 
-Shared orchestration for [Vivijure Studio](https://github.com/skyphusion-labs/vivijure-cf): module
-registry, film pipeline, planner helpers, and the **Platform ICD** that lets one codebase run on
-Cloudflare Workers or a provider-neutral Node host.
+**Shared orchestration that unifies both Vivijure control panels.** Module registry, film pipeline,
+planner helpers, and the **Platform ICD** that lets one codebase run on Cloudflare Workers
+([`vivijure-cf`](https://github.com/skyphusion-labs/vivijure-cf)) or on a home computer / any cloud
+server ([`vivijure-local`](https://github.com/skyphusion-labs/vivijure-local)). Product site:
+[vivijure.com](https://vivijure.com).
 
 | Consumer | Role |
 |----------|------|
