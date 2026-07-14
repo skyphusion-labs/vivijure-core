@@ -1,7 +1,7 @@
 {
   "name": "@skyphusion-labs/vivijure-core",
   "version": "0.9.5",
-  "description": "Shared Vivijure orchestration: module registry, film pipeline, platform ICD. Consumed by vivijure-cf and vivijure-local. Studio MCP: @skyphusion-labs/vivijure-mcp.",
+  "description": "Shared Vivijure orchestration unifying vivijure-cf and vivijure-local: module registry, film pipeline, Platform ICD.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "homepage": "https://github.com/skyphusion-labs/vivijure-core",
@@ -54,6 +54,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage.enabled=true --coverage.provider=v8 --coverage.reporter=cobertura --coverage.reporter=text",
+    "sync:module-types": "cp ../vivijure/src/modules/types.ts src/modules/types.ts",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "engines": {
