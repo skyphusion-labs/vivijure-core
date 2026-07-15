@@ -32,7 +32,7 @@ jobs:
             modules/keyframe
             modules/own-gpu
           sparse-checkout-cone-mode: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
