@@ -9,7 +9,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 function vivijureModulesDir(): string {
   const candidates = [
     resolve(root, "vivijure/modules"), // CI: vivijure-cf sparse-checkout into repo-root/vivijure (see ci/publish workflows)
-    resolve(root, "../vivijure-cf/modules"), // dev/flatliners: sibling clone (~/dev/{core,vivijure-cf})
+    resolve(root, "../vivijure-cf/modules"), // sibling clone (local or propagandhi) (~/dev/{core,vivijure-cf})
     resolve(root, "../vivijure/modules"), // legacy alias when a sibling is named plain "vivijure"
     resolve(root, "../../vivijure/modules"), // vivijure-local CI: workspace/{core,vivijure}
   ];
