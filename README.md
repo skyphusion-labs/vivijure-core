@@ -15,6 +15,8 @@ server ([`vivijure-local`](https://github.com/skyphusion-labs/vivijure-local)). 
 `vivijure-cf` has adopted the published package (no duplicate orchestration `src/` remains) and
 `vivijure-local` consumes it via semver.
 
+**Vivijure Studio:** https://vivijure.com · **Live demo:** https://demo.vivijure.com · **Skyphusion Labs:** https://skyphusion.org
+
 ## Where it fits
 
 `vivijure-core` is a library, not a runnable app: host repos depend on it and provide the runtime
