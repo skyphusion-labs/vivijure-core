@@ -1,6 +1,19 @@
-# flatliners dev box
+# HISTORICAL: flatliners dev box (RETIRED 2026-07-16)
 
-**Host:** `flatliners` (`178.105.200.248`, `User conrad` in laptop `~/.ssh/config`).
+> **Do not use.** The Hetzner cloud server `flatliners` (`150062483` / `178.105.200.248`) was
+> deleted after the vivijure-local cutover to **propagandhi**. Laptop `Host flatliners` SSH is
+> commented retired. GPU + studio ops live on propagandhi (`10.1.1.7`).
+>
+> Topology: fleet-chezmoi `system/stacks/propagandhi/RUNBOOK-vivijure-local-topology.md`.
+
+The sections below are kept only so old links and chat transcripts still resolve. Commands that
+`ssh flatliners` will fail.
+
+---
+
+# flatliners dev box (archived)
+
+**Former host:** `flatliners` (`178.105.200.248`, `User conrad` in laptop `~/.ssh/config`).
 
 Use **git from GitHub `main`**, not laptop rsync. `gh` is installed and authenticated as `skyphusion`.
 
@@ -13,58 +26,18 @@ Use **git from GitHub `main`**, not laptop rsync. `gh` is installed and authenti
   vivijure-local/   # optional Node host
 ```
 
-## Bootstrap (first time)
+## Bootstrap (first time) -- archived
+
+Prefer propagandhi / local laptop clones. Historical bootstrap:
 
 ```bash
 mkdir -p ~/dev
 cd ~/dev
-
-# One-time if SSH clone hits "Host key verification failed":
-ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
-
 gh repo clone skyphusion-labs/vivijure-core
-gh repo clone skyphusion-labs/vivijure-cf   # module manifests for the quality-tier-drift test
-# optional:
-# gh repo clone skyphusion-labs/vivijure-local
+gh repo clone skyphusion-labs/vivijure-cf
 ```
 
-## Sync to latest `main`
+## Sync script
 
-From laptop:
-
-```bash
-ssh flatliners 'bash -s' < scripts/flatliners-sync.sh
-```
-
-Or on flatliners:
-
-```bash
-cd ~/dev/vivijure-core && git fetch origin && git checkout main && git pull --ff-only origin main
-cd ~/dev/vivijure      && git fetch origin && git checkout main && git pull --ff-only origin main
-```
-
-## Verify (core)
-
-```bash
-cd ~/dev/vivijure-core
-npm ci
-npm run typecheck
-npm test
-```
-
-## Feature branch (before merge)
-
-```bash
-cd ~/dev/vivijure-core
-git fetch origin
-git checkout feat/your-branch
-git pull --ff-only origin feat/your-branch
-npm ci && npm run typecheck && npm test
-```
-
-Same pattern for `vivijure-cf` if the branch touches the contract.
-
-## Do not
-
-- `rsync` laptop trees onto flatliners (stale, no `.git`, wrong workflow).
-- Commit from flatliners unless you intend to; laptop is the default author surface for Conrad PRs.
+`scripts/flatliners-sync.sh` remains in-tree as a historical helper name. It is not an active
+operator path. Do not schedule it.
