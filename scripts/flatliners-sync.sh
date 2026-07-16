@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Sync vivijure-core + vivijure sibling clones on flatliners from GitHub main.
+# RETIRED 2026-07-16 -- flatliners Hetzner box deleted. Do not run.
+# Historical: sync vivijure-core + vivijure sibling clones on flatliners from GitHub main.
 #
 #   ssh flatliners 'bash -s' < scripts/flatliners-sync.sh
 #   BRANCH=feat/vivijure-parity-p0 ssh flatliners 'bash -s' < scripts/flatliners-sync.sh
@@ -7,6 +8,9 @@
 # Requires: gh auth, git, node 22+, ~/dev layout below.
 
 set -euo pipefail
+
+echo "flatliners-sync: RETIRED (box deleted 2026-07-16). Use propagandhi / laptop clones." >&2
+exit 1
 
 DEV="${DEV:-$HOME/dev}"
 BRANCH="${BRANCH:-main}"

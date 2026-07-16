@@ -83,8 +83,8 @@ git push origin vivijure-core-v0.9.0
 
 Or trigger the **Publish npm package** workflow manually after bumping `package.json` version.
 
-**flatliners** (Hetzner test box): clone/pull from GitHub `main` via `gh`, not laptop rsync.
-See [docs/FLATLINERS-DEV.md](docs/FLATLINERS-DEV.md) and `scripts/flatliners-sync.sh`.
+**flatliners** (Hetzner test box): **retired 2026-07-16**. Historical notes only:
+[docs/FLATLINERS-DEV.md](docs/FLATLINERS-DEV.md). Active GPU/studio host is **propagandhi**.
 
 ## Key exports
 
