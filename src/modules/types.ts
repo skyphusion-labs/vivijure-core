@@ -30,6 +30,7 @@ export type HookName =
   | "dialogue"       // per-shot dialogue lines -> TTS audio (one voice per cast member). Pick one.
   | "speech"         // per-shot dialogue audio -> cleaned / enhanced dialogue audio. Post-dialogue, pre-finish. Chainable.
   | "plan.enhance"   // expand a storyboard before render: LLM auto-direction. Chainable.
+  | "image.generate" // prompt -> a single generated image. Pick one.
   | "cast.image"     // character portrait + bible -> LoRA training reference images. Cast-prep, pick one.
   | "notify"         // film done -> deliver a render-complete notification (email / webhook / ...). Chain.
   | "master"         // assembled film's audio bed -> mastered audio (music upscale + loudness). Pre-mux. Chain.
@@ -43,6 +44,7 @@ export const HOOK_NAMES: readonly HookName[] = [
   "dialogue",
   "speech",
   "plan.enhance",
+  "image.generate",
   "cast.image",
   "notify",
   "master",
@@ -58,6 +60,7 @@ export const HOOK_CARDINALITY: Record<HookName, "pick_one" | "chain"> = {
   dialogue: "pick_one",
   speech: "chain",
   "plan.enhance": "chain",
+  "image.generate": "pick_one",
   "cast.image": "pick_one",
   notify: "chain",
   master: "chain",
@@ -74,6 +77,7 @@ export const HOOK_BLURBS: Record<HookName, string> = {
   dialogue: "spoken lines -> per-character voice (TTS)",
   speech: "clean / enhance dialogue audio",
   "plan.enhance": "LLM auto-direction",
+  "image.generate": "prompt -> a generated image",
   "cast.image": "character refs from a portrait + bible",
   notify: "render-complete notification (email / webhook)",
   master: "film-level audio mastering: music upscale + loudness",
@@ -458,6 +462,43 @@ export interface ScoreOutput {
  *  upstream of keyframe: the generated images become the cast member's training refs. The portrait /
  *  source URLs are presigned + fetchable (the core presigns the private R2 objects so a cloud image
  *  model can pull them), mirroring how motion.backend gets keyframe_url. */
+/** What an `image.generate` module is given: a prompt and the knobs a text-to-image model takes.
+ *  Deliberately NOT a cast/storyboard shape -- this hook exists because there was no honest home for
+ *  a plain prompt -> image call. `cast.image` looks similar and is not: its input is a cast record
+ *  plus a portrait, and its job is LoRA training references, so routing chat image generation
+ *  through it would have meant lying about the input at the contract boundary (cf#129). */
+export interface ImageGenerateInput {
+  prompt: string;
+  /** Steering away from content, where the model supports it (maps to negative_prompt). */
+  negative_prompt?: string;
+  /** Reference images as data URLs, for multi-reference models. Ignored by models without support. */
+  refs?: string[];
+  width?: number;
+  height?: number;
+}
+
+/** What an `image.generate` module returns: THE IMAGE ITSELF, not a storage key.
+ *
+ *  This is a DELIBERATE inconsistency with `cast.image`, which writes its own artifacts to R2 and
+ *  returns keys. Do not "fix" it back into that shape. The reason is cf#140: chat image artifacts
+ *  were written to one bucket and served from another, so every preview 404'd in production while
+ *  every gate was green. A module that never holds a bucket binding cannot reintroduce that split,
+ *  and a third-party module cannot invent its own namespace. The core owns persistence and places
+ *  the bytes where its own serve route reads. The cost is one base64 hop per image, which is cheap
+ *  at image sizes and buys structural unreachability of a whole defect class.
+ *
+ *  `cast.image` keeps the write-and-return-keys pattern because it produces a SET of training refs
+ *  destined for LoRA training rather than a single artifact to serve back, and because it is
+ *  already shipped; the inconsistency is known and recorded, not an oversight. */
+export interface ImageGenerateOutput {
+  image: {
+    /** Base64-encoded image bytes (no data: prefix). */
+    bytes_b64: string;
+    /** The real mime of those bytes, e.g. "image/png". The core trusts this for the stored object. */
+    mime: string;
+  };
+}
+
 export interface CastImageInput {
   cast_id: number;
   portrait_url: string;   // presigned URL of the character portrait (the generation seed)
