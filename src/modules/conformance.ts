@@ -175,6 +175,20 @@ const HOOK_OUTPUT_CHECKS: Record<HookName, (o: Record<string, unknown>) => strin
     }
     return null;
   },
+  // The image is returned INLINE (bytes, not a storage key) -- see ImageGenerateOutput for why that
+  // differs from cast.image on purpose (cf#140). So the check is on the payload, not on a key.
+  "image.generate": (o) => {
+    if (!isRec(o.image)) return "image.generate output needs an image object";
+    const img = o.image as Record<string, unknown>;
+    if (!isStr(img.bytes_b64) || !img.bytes_b64) return "image.generate output needs image.bytes_b64";
+    if (!isStr(img.mime) || !img.mime) return "image.generate output needs an image.mime";
+    // A module that hands back a data: URL instead of raw base64 would decode to garbage bytes and
+    // store a corrupt object that only fails when a human looks at the picture. Catch it at the seam.
+    if (img.bytes_b64.startsWith("data:")) {
+      return "image.generate image.bytes_b64 must be raw base64, not a data: URL";
+    }
+    return null;
+  },
   "cast.image": (o) => {
     if (!isNum(o.cast_id)) return "cast.image output needs a numeric cast_id";
     if (!Array.isArray(o.images)) return "cast.image output needs an images[]";
