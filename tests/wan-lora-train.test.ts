@@ -2,12 +2,12 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Env } from "../src/platform/orchestrator-context.js";
 import type { CastMember } from "../src/cast-db.js";
 
-// Override only pollRenderJob; keep the real submit/payload builders (importOriginal spread).
+// Override only pollCastLoraJob; keep the real submit/payload builders (importOriginal spread).
 // vi.hoisted so the mock exists before vi.mock's hoisted factory references it.
 const { pollMock } = vi.hoisted(() => ({ pollMock: vi.fn() }));
 vi.mock("../src/runpod-submit.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/runpod-submit.js")>();
-  return { ...actual, pollRenderJob: pollMock };
+  return { ...actual, pollCastLoraJob: pollMock };
 });
 
 import { refreshTrainingLora } from "../src/cast-lora-train.js";
