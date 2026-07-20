@@ -11,6 +11,11 @@ import { coerceVoiceId, DEFAULT_VOICE_ID } from "./voices.js";
 
 export interface ResolvedCastLoras {
   pretrained: Record<string, string>;
+  // slot -> the two Wan 2.2 A14B expert keys, for a cast trained on the Wan family (cf#29). DISJOINT
+  // from `pretrained` (the single-file SDXL key): a ready cast lands in exactly one of the two maps,
+  // so the render path forwards SDXL adapters as pretrained_loras and Wan adapters into the
+  // alibaba-wan-lora high/low_noise_loras module config, and the two can never cross-wire.
+  wanPretrained: Record<string, { high: string; low: string }>;
   // slot -> aura-1 voice_id for dialogue, captured for every slot with a cast row regardless of LoRA
   // readiness (a character can speak while its face LoRA is still training). DEFAULT_VOICE_ID when the
   // cast member has no voice assigned. The dialogue stage reads this; no second cast lookup.
@@ -44,12 +49,13 @@ export async function resolveCastLoras(
   castLoras: Record<string, unknown> | undefined,
 ): Promise<ResolvedCastLoras> {
   const pretrained: Record<string, string> = {};
+  const wanPretrained: Record<string, { high: string; low: string }> = {};
   const voices: Record<string, string> = {};
   const castIds: Record<string, number> = {};
   const skipped: string[] = [];
   const skippedDetail: SkippedCast[] = [];
   const skip = (d: SkippedCast) => { skipped.push(d.slot); skippedDetail.push(d); };
-  if (!castLoras || typeof castLoras !== "object") return { pretrained, voices, castIds, skipped, skippedDetail };
+  if (!castLoras || typeof castLoras !== "object") return { pretrained, wanPretrained, voices, castIds, skipped, skippedDetail };
 
   for (const [slot, raw] of Object.entries(castLoras)) {
     if (typeof slot !== "string" || !slot.trim()) continue;
@@ -77,16 +83,29 @@ export async function resolveCastLoras(
       skip({ slot, reason: "cast member not found" });
       continue;
     }
-    if (cast.lora_status !== "ready" || !cast.lora_key || !cast.lora_key.startsWith("loras/")) {
+    if (cast.lora_status !== "ready") {
       skip({
         slot, name: cast.name,
         reason: cast.lora_status === "training" ? "LoRA still training" : "no trained LoRA",
       });
       continue;
     }
-    pretrained[slot] = cast.lora_key;
+    // A ready cast carries EITHER an SDXL adapter (lora_key) OR a Wan two-expert pair
+    // (wan_lora_key_high/low). Resolve into the matching, DISJOINT map -- SDXL wins if both somehow
+    // exist -- so the two families never cross-wire downstream. A ready-but-keyless row (should not
+    // happen) fails safe into the "no trained LoRA" skip rather than resolving to nothing.
+    const sdxlKey = cast.lora_key && cast.lora_key.startsWith("loras/") ? cast.lora_key : null;
+    const wanHigh = cast.wan_lora_key_high && cast.wan_lora_key_high.startsWith("loras/") ? cast.wan_lora_key_high : null;
+    const wanLow = cast.wan_lora_key_low && cast.wan_lora_key_low.startsWith("loras/") ? cast.wan_lora_key_low : null;
+    if (sdxlKey) {
+      pretrained[slot] = sdxlKey;
+    } else if (wanHigh && wanLow) {
+      wanPretrained[slot] = { high: wanHigh, low: wanLow };
+    } else {
+      skip({ slot, name: cast.name, reason: "no trained LoRA" });
+    }
   }
-  return { pretrained, voices, castIds, skipped, skippedDetail };
+  return { pretrained, wanPretrained, voices, castIds, skipped, skippedDetail };
 }
 
 /** Build an actionable, per-character rejection message from the skipped slots: name who needs
