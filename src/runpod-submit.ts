@@ -722,14 +722,13 @@ export async function cancelRenderJob(
   );
 }
 
-// Poll one job's status.
-export async function pollRenderJob(
+// Poll one job on a specific RunPod endpoint (shared by render + Wan-train status checks).
+export async function pollRunpodJob(
   env: Env,
+  endpointId: string,
   jobId: string,
   opts?: RunpodTransportOpts,
 ): Promise<RunpodResult> {
-  const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
-  if (!endpointId) return runpodMissingEndpoint();
   return runpodRequest(
     env,
     {
@@ -739,6 +738,51 @@ export async function pollRenderJob(
     },
     opts,
   );
+}
+
+// Poll one job's status on the render endpoint.
+export async function pollRenderJob(
+  env: Env,
+  jobId: string,
+  opts?: RunpodTransportOpts,
+): Promise<RunpodResult> {
+  const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
+  if (!endpointId) return runpodMissingEndpoint();
+  return pollRunpodJob(env, endpointId, jobId, opts);
+}
+
+// Merge Wan-train + render poll results for cast LoRA status. Exported for unit tests.
+export function mergeCastLoraPollResults(
+  wanPoll: RunpodResult | undefined,
+  renderPoll: RunpodResult,
+): RunpodResult {
+  if (wanPoll?.ok) return wanPoll;
+  if (wanPoll && !wanPoll.ok && wanPoll.status !== 404) return wanPoll;
+  return renderPoll;
+}
+
+// Poll a cast LoRA training job. Wan trains submit to RUNPOD_WAN_TRAIN_ENDPOINT_ID; SDXL trains
+// submit to RUNPOD_ENDPOINT_ID. RunPod job ids are scoped per endpoint, so a Wan job 404s on the
+// render endpoint (the /lora-status 502 users saw). Try the Wan train endpoint first when configured;
+// a 404 there means "not this endpoint's job" and we fall through to the render endpoint. Any
+// non-404 from either endpoint is authoritative.
+export async function pollCastLoraJob(
+  env: Env,
+  jobId: string,
+  opts?: RunpodTransportOpts,
+): Promise<RunpodResult> {
+  const wanEndpointId = await secretValue(
+    (env as { RUNPOD_WAN_TRAIN_ENDPOINT_ID?: unknown }).RUNPOD_WAN_TRAIN_ENDPOINT_ID as
+      SecretsStoreSecret | string | undefined,
+  );
+  let wanPoll: RunpodResult | undefined;
+  if (wanEndpointId) {
+    wanPoll = await pollRunpodJob(env, wanEndpointId, jobId, opts);
+    if (wanPoll.ok) return wanPoll;
+    if (wanPoll.status !== 404) return wanPoll;
+  }
+  const renderPoll = await pollRenderJob(env, jobId, opts);
+  return mergeCastLoraPollResults(wanPoll, renderPoll);
 }
 
 // ---------- Audio beat-sync (CPU Cloudflare Container) ----------

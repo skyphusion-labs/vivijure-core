@@ -12,7 +12,7 @@ import {
 } from "./cast-db.js";
 import { assembleBundle } from "./bundle-assembler.js";
 import {
-  pollRenderJob,
+  pollCastLoraJob,
   submitTrainLoraJob,
   submitTrainWanLoraJob,
   type RunpodResult,
@@ -23,6 +23,7 @@ import {
   deriveWanLoraDestKeys,
   extractTrainedLoraKey,
   extractTrainedWanLoraKeys,
+  type WanLoraDestKeys,
 } from "./lora-bundle.js";
 
 const MIN_TRAINING_REFS = 4;
@@ -68,7 +69,7 @@ export function trainingAgeSeconds(cast: CastMember, now: number): number | null
 }
 
 // Pure decision: should a `training` row whose backing job we just polled be force-failed? `poll` is
-// the pollRenderJob result; ageSeconds is trainingAgeSeconds (null => unknown, never reconcile). A 404
+// the pollCastLoraJob result; ageSeconds is trainingAgeSeconds (null => unknown, never reconcile). A 404
 // past the grace window means the job is gone from RunPod retention; the max-age ceiling is the
 // backstop for a job that simply never reported terminal.
 export function decideStuckTraining(
@@ -96,6 +97,69 @@ export function decideStuckTraining(
   return { reconcile: false };
 }
 
+async function harvestCompletedLora(
+  env: Env,
+  cast: CastMember,
+  output: unknown,
+): Promise<CastMember | null> {
+  const wanKeys = extractTrainedWanLoraKeys(output);
+  if (wanKeys) return (await markWanLoraReady(env, cast.id, wanKeys.high, wanKeys.low)) || cast;
+  const loraKey = extractTrainedLoraKey(output);
+  if (loraKey) return (await markLoraReady(env, cast.id, loraKey)) || cast;
+  return (
+    (await markLoraFailed(
+      env,
+      cast.id,
+      "GPU job completed but envelope carried no harvestable LoRA key (neither SDXL nor Wan experts)",
+    )) || cast
+  );
+}
+
+// When RunPod retention drops the job before any poll catches COMPLETED, the dual Wan expert keys may
+// still exist in R2 under loras/lora-{slug}-{timestamp}/A/. Safe only when BOTH experts are present
+// for the same project prefix; picks the newest pair by upload time.
+async function discoverWanLoraKeysInR2(env: Env, cast: CastMember): Promise<WanLoraDestKeys | null> {
+  const safeSlug = cast.slug || `cast-${cast.id}`;
+  const prefix = `loras/lora-${safeSlug}-`;
+  const highSuffix = "/A/wan_high_noise.safetensors";
+  const lowSuffix = "/A/wan_low_noise.safetensors";
+  let cursor: string | undefined;
+  let best: { high: string; low: string; uploaded: number } | null = null;
+
+  do {
+    const page = await env.R2_RENDERS.list({ prefix, cursor, limit: 100 });
+    for (const obj of page.objects) {
+      if (!obj.key.endsWith(highSuffix)) continue;
+      const base = obj.key.slice(0, -highSuffix.length);
+      const lowKey = `${base}${lowSuffix}`;
+      const lowListed = page.objects.some((o) => o.key === lowKey);
+      if (!lowListed && (await env.R2_RENDERS.head(lowKey)) === null) continue;
+      const uploaded = obj.uploaded?.getTime() ?? 0;
+      if (!best || uploaded > best.uploaded) {
+        best = { high: obj.key, low: lowKey, uploaded };
+      }
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  return best ? { high: best.high, low: best.low } : null;
+}
+
+async function tryReconcileWanLoraFromR2(
+  env: Env,
+  cast: CastMember,
+): Promise<CastMember | null> {
+  if (cast.wan_lora_key_high || cast.wan_lora_key_low) return null;
+  let keys: WanLoraDestKeys | null;
+  try {
+    keys = await discoverWanLoraKeysInR2(env, cast);
+  } catch {
+    return null;
+  }
+  if (!keys) return null;
+  return (await markWanLoraReady(env, cast.id, keys.high, keys.low)) || cast;
+}
+
 export async function refreshTrainingLora(
   env: Env,
   cast: CastMember | null,
@@ -105,29 +169,14 @@ export async function refreshTrainingLora(
   const ageSeconds = trainingAgeSeconds(cast, now);
   let poll: RunpodResult;
   try {
-    poll = await pollRenderJob(env, cast.lora_job_id);
+    poll = await pollCastLoraJob(env, cast.lora_job_id);
   } catch {
     poll = { ok: false, error: "poll threw" };
   }
   if (poll.ok) {
     const view = poll.view;
     if (view.status === "COMPLETED") {
-      // Shape-dispatch by family: the result envelope is the authoritative source of which family
-      // trained, so try the Wan two-expert shape first, then the SDXL single-file shape, then the
-      // existing no-key failure. The two extractors are disjoint (each returns null on the other
-      // family), and a COMPLETED job carrying NEITHER shape must never mark a cast ready with null
-      // keys -- it takes the honest failure path.
-      const wanKeys = extractTrainedWanLoraKeys(view.output);
-      if (wanKeys) return (await markWanLoraReady(env, cast.id, wanKeys.high, wanKeys.low)) || cast;
-      const loraKey = extractTrainedLoraKey(view.output);
-      if (loraKey) return (await markLoraReady(env, cast.id, loraKey)) || cast;
-      return (
-        (await markLoraFailed(
-          env,
-          cast.id,
-          "GPU job completed but envelope carried no harvestable LoRA key (neither SDXL nor Wan experts)",
-        )) || cast
-      );
+      return harvestCompletedLora(env, cast, view.output);
     }
     if (
       view.status === "FAILED" ||
@@ -148,7 +197,13 @@ export async function refreshTrainingLora(
   // wedged in `training` (that 409s every retry).
   const decision = decideStuckTraining(poll, ageSeconds);
   if (decision.reconcile) {
+    const fromR2 = await tryReconcileWanLoraFromR2(env, cast);
+    if (fromR2) return fromR2;
     return (await markLoraFailed(env, cast.id, decision.reason as string)) || cast;
+  }
+  if (!poll.ok && poll.status === 404) {
+    const fromR2 = await tryReconcileWanLoraFromR2(env, cast);
+    if (fromR2) return fromR2;
   }
   return cast;
 }
@@ -343,7 +398,7 @@ export async function handleCastLoraStatus(
   const ageSeconds = trainingAgeSeconds(cast, Date.now());
   let poll: RunpodResult;
   try {
-    poll = await pollRenderJob(env, cast.lora_job_id);
+    poll = await pollCastLoraJob(env, cast.lora_job_id);
   } catch {
     poll = { ok: false, error: "poll threw" };
   }
@@ -351,23 +406,7 @@ export async function handleCastLoraStatus(
   if (poll.ok) {
     const view = poll.view;
     if (view.status === "COMPLETED") {
-      // Shape-dispatch by family (see refreshTrainingLora): Wan two-expert shape first, then SDXL,
-      // then the honest no-key failure -- never mark ready with null keys.
-      const wanKeys = extractTrainedWanLoraKeys(view.output);
-      if (wanKeys) {
-        const updated = await markWanLoraReady(env, cast.id, wanKeys.high, wanKeys.low);
-        return json({ cast: toPublicCast(updated || cast), view });
-      }
-      const loraKey = extractTrainedLoraKey(view.output);
-      if (!loraKey) {
-        const updated = await markLoraFailed(
-          env,
-          cast.id,
-          "GPU job completed but envelope carried no harvestable LoRA key (neither SDXL nor Wan experts)",
-        );
-        return json({ cast: toPublicCast(updated || cast), view });
-      }
-      const updated = await markLoraReady(env, cast.id, loraKey);
+      const updated = await harvestCompletedLora(env, cast, view.output);
       return json({ cast: toPublicCast(updated || cast), view });
     }
     if (view.status === "FAILED" || view.status === "TIMED_OUT" || view.status === "CANCELLED") {
@@ -384,8 +423,18 @@ export async function handleCastLoraStatus(
   if (cast.lora_status === "training") {
     const decision = decideStuckTraining(poll, ageSeconds);
     if (decision.reconcile) {
+      const fromR2 = await tryReconcileWanLoraFromR2(env, cast);
+      if (fromR2) {
+        return json({ cast: toPublicCast(fromR2), view: null, reconciledFromR2: true });
+      }
       const updated = await markLoraFailed(env, cast.id, decision.reason as string);
       return json({ cast: toPublicCast(updated || cast), view: null, reconciled: true });
+    }
+    if (!poll.ok && poll.status === 404) {
+      const fromR2 = await tryReconcileWanLoraFromR2(env, cast);
+      if (fromR2) {
+        return json({ cast: toPublicCast(fromR2), view: null, reconciledFromR2: true });
+      }
     }
   }
   return json({ error: poll.error, cast: toPublicCast(cast) }, 502);
