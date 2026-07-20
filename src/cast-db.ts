@@ -43,6 +43,11 @@ export interface CastMember {
   // Dialogue: Aura-1 speaker name (see src/voices.ts); the voice this character speaks in across
   // every shot/film. NULL = unassigned. Sibling of lora_key (face) -- both pin the same identity.
   voice_id: string | null;
+  // Wan 2.2 A14B two-expert adapter keys (cf#29). A Wan character LoRA is TWO files, so it needs
+  // two columns beside the single-file lora_key; lora_status/lora_job_id are shared with the SDXL
+  // path. Both NULL until a wan train completes; markWanLoraReady sets them together.
+  wan_lora_key_high: string | null;
+  wan_lora_key_low: string | null;
 }
 
 interface CastRow {
@@ -65,6 +70,8 @@ interface CastRow {
   lora_error: string | null;
   lora_trained_at: string | null;
   voice_id: string | null;
+  wan_lora_key_high: string | null;
+  wan_lora_key_low: string | null;
 }
 
 // Shared parser for the two JSON-array image-key columns (ref_keys_json
@@ -108,6 +115,8 @@ function rowToCast(row: CastRow): CastMember {
     lora_error: row.lora_error,
     lora_trained_at: row.lora_trained_at,
     voice_id: row.voice_id,
+    wan_lora_key_high: row.wan_lora_key_high,
+    wan_lora_key_low: row.wan_lora_key_low,
   };
 }
 
@@ -160,7 +169,7 @@ export async function listCast(env: DbEnv): Promise<CastMember[]> {
   const result = await env.DB.prepare(
     `SELECT id, public_id, slug, name, bible, portrait_key, portrait_mime,
             ref_keys_json, source_keys_json, created_at, updated_at,
-            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id
+            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low
        FROM cast_members
       ORDER BY created_at DESC
       LIMIT ?`
@@ -186,7 +195,7 @@ export async function getCastById(env: DbEnv, id: number): Promise<CastMember | 
   const row = await env.DB.prepare(
     `SELECT id, public_id, slug, name, bible, portrait_key, portrait_mime,
             ref_keys_json, source_keys_json, created_at, updated_at,
-            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id
+            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low
        FROM cast_members
       WHERE id = ?
       LIMIT 1`
@@ -208,7 +217,7 @@ export async function createCast(
      VALUES (?, ?, ?, ?)
      RETURNING id, public_id, slug, name, bible, portrait_key, portrait_mime,
                ref_keys_json, source_keys_json, created_at, updated_at,
-            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id`
+            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low`
   )
     .bind(newPublicId(), slug, input.name, input.bible ?? null)
     .first<CastRow>();
@@ -245,7 +254,7 @@ export async function updateCast(
       WHERE id = ?
      RETURNING id, public_id, slug, name, bible, portrait_key, portrait_mime,
                ref_keys_json, source_keys_json, created_at, updated_at,
-            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id`
+            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low`
   )
     .bind(...values)
     .first<CastRow>();
@@ -278,7 +287,7 @@ export async function setPortrait(
       WHERE id = ?
      RETURNING id, public_id, slug, name, bible, portrait_key, portrait_mime,
                ref_keys_json, source_keys_json, created_at, updated_at,
-            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id`
+            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low`
   )
     .bind(key, mime, id)
     .first<CastRow>();
@@ -292,7 +301,7 @@ export async function clearPortrait(env: DbEnv, id: number): Promise<CastMember 
       WHERE id = ?
      RETURNING id, public_id, slug, name, bible, portrait_key, portrait_mime,
                ref_keys_json, source_keys_json, created_at, updated_at,
-            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id`
+            lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low`
   )
     .bind(id)
     .first<CastRow>();
@@ -303,7 +312,7 @@ export async function clearPortrait(env: DbEnv, id: number): Promise<CastMember 
 const CAST_ROW_COLUMNS =
   `id, public_id, slug, name, bible, portrait_key, portrait_mime,
    ref_keys_json, source_keys_json, created_at, updated_at,
-   lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id`;
+   lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low`;
 
 // Optimistic-concurrency update of one of a cast member's JSON-array image-key columns
 // (ref_keys_json / source_keys_json). The old code was read-modify-write across two statements, so
@@ -454,7 +463,7 @@ export async function setLoraJob(
       WHERE id = ?
      RETURNING id, public_id, slug, name, bible, portrait_key, portrait_mime,
                ref_keys_json, source_keys_json, created_at, updated_at,
-               lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id`
+               lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low`
   )
     .bind(jobId, id)
     .first<CastRow>();
@@ -477,9 +486,37 @@ export async function markLoraReady(
       WHERE id = ?
      RETURNING id, public_id, slug, name, bible, portrait_key, portrait_mime,
                ref_keys_json, source_keys_json, created_at, updated_at,
-               lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id`
+               lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low`
   )
     .bind(loraKey, id)
+    .first<CastRow>();
+  return result ? rowToCast(result) : null;
+}
+
+// Wan sibling of markLoraReady: a wan train completes with TWO expert keys, so it writes both wan
+// columns together (status -> ready). lora_key (the single-file SDXL column) is left untouched: a
+// cast can carry either family independently. Called by the wan poll route on COMPLETED.
+export async function markWanLoraReady(
+  env: DbEnv,
+  id: number,
+  highKey: string,
+  lowKey: string,
+): Promise<CastMember | null> {
+  const result = await env.DB.prepare(
+    `UPDATE cast_members
+        SET lora_status = 'ready',
+            wan_lora_key_high = ?,
+            wan_lora_key_low = ?,
+            lora_trained_at = datetime('now'),
+            lora_job_id = NULL,
+            lora_error = NULL,
+            updated_at = datetime('now')
+      WHERE id = ?
+     RETURNING id, public_id, slug, name, bible, portrait_key, portrait_mime,
+               ref_keys_json, source_keys_json, created_at, updated_at,
+               lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low`
+  )
+    .bind(highKey, lowKey, id)
     .first<CastRow>();
   return result ? rowToCast(result) : null;
 }
@@ -498,7 +535,7 @@ export async function markLoraFailed(
       WHERE id = ?
      RETURNING id, public_id, slug, name, bible, portrait_key, portrait_mime,
                ref_keys_json, source_keys_json, created_at, updated_at,
-               lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id`
+               lora_key, lora_status, lora_job_id, lora_error, lora_trained_at, voice_id, wan_lora_key_high, wan_lora_key_low`
   )
     .bind(errorMessage.slice(0, 4000), id)
     .first<CastRow>();
