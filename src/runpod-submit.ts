@@ -167,6 +167,11 @@ export interface TrainLoraJobInput {
   project: string;
   bundle_key: string;
   render_overrides?: Record<string, unknown>;
+  // Which LoRA family the GPU trains: omitted/"sdxl" = the in-process SDXL adapter (default);
+  // "wan" = the Wan 2.2 A14B two-expert adapter via ai-toolkit (cf#29). The backend orchestrator
+  // routes on this; a wan train is submitted to the DEDICATED Wan-training endpoint (see
+  // submitTrainWanLoraJob).
+  model_family?: "sdxl" | "wan";
 }
 
 // RunPod queue-based job status. The platform uses these literal strings
@@ -293,6 +298,14 @@ export function buildTrainLoraPayload(args: TrainLoraArgs): { input: TrainLoraJo
   };
   const ro = normalizeRenderOverrides(args.renderOverrides);
   if (ro) input.render_overrides = ro;
+  return { input };
+}
+
+// A Wan train is the same train_lora action + payload, plus model_family:"wan" so the backend
+// routes to the ai-toolkit two-expert trainer. Submitted to the dedicated Wan-training endpoint.
+export function buildTrainWanLoraPayload(args: TrainLoraArgs): { input: TrainLoraJobInput } {
+  const { input } = buildTrainLoraPayload(args);
+  input.model_family = "wan";
   return { input };
 }
 
@@ -650,6 +663,41 @@ export async function submitTrainLoraJob(
     },
     opts,
   );
+}
+
+// Submit a Wan 2.2 A14B LoRA training job to the DEDICATED Wan-training endpoint (the lead's
+// deploy-shape call, cf#29): its 80GB-card GPU-hours are isolated from the render endpoint's
+// billing, and the training card class is decoupled from render. Differs from submitTrainLoraJob
+// only in the endpoint binding (RUNPOD_WAN_TRAIN_ENDPOINT_ID) and the model_family:"wan" payload.
+export async function submitTrainWanLoraJob(
+  env: Env,
+  args: TrainLoraArgs,
+  opts?: RunpodTransportOpts,
+): Promise<RunpodResult> {
+  const endpointId = await secretValue(
+    (env as { RUNPOD_WAN_TRAIN_ENDPOINT_ID?: unknown }).RUNPOD_WAN_TRAIN_ENDPOINT_ID as
+      SecretsStoreSecret | string | undefined,
+  );
+  if (!endpointId) return runpodMissingWanEndpoint();
+  return runpodRequest(
+    env,
+    {
+      method: "POST",
+      url: buildSubmitUrl(endpointId),
+      body: JSON.stringify(buildTrainWanLoraPayload(args)),
+      label: "train-wan-lora submit",
+    },
+    opts,
+  );
+}
+
+function runpodMissingWanEndpoint(): RunpodResult {
+  return {
+    ok: false,
+    error:
+      "RUNPOD_WAN_TRAIN_ENDPOINT_ID must be set on the Worker (the dedicated Wan-training endpoint; " +
+      "Secrets Store binding or npx wrangler secret put)",
+  };
 }
 
 // Cancel one job. RunPod's cancel endpoint is POST /v2/<id>/cancel/<job>; we

@@ -6,15 +6,23 @@ import {
   toPublicCast,
   markLoraFailed,
   markLoraReady,
+  markWanLoraReady,
   setLoraJob,
   type CastMember,
 } from "./cast-db.js";
 import { assembleBundle } from "./bundle-assembler.js";
-import { pollRenderJob, submitTrainLoraJob, type RunpodResult } from "./runpod-submit.js";
+import {
+  pollRenderJob,
+  submitTrainLoraJob,
+  submitTrainWanLoraJob,
+  type RunpodResult,
+} from "./runpod-submit.js";
 import {
   buildLoraTrainingBundleArgs,
   deriveLoraDestKey,
+  deriveWanLoraDestKeys,
   extractTrainedLoraKey,
+  extractTrainedWanLoraKeys,
 } from "./lora-bundle.js";
 
 const MIN_TRAINING_REFS = 4;
@@ -104,13 +112,20 @@ export async function refreshTrainingLora(
   if (poll.ok) {
     const view = poll.view;
     if (view.status === "COMPLETED") {
+      // Shape-dispatch by family: the result envelope is the authoritative source of which family
+      // trained, so try the Wan two-expert shape first, then the SDXL single-file shape, then the
+      // existing no-key failure. The two extractors are disjoint (each returns null on the other
+      // family), and a COMPLETED job carrying NEITHER shape must never mark a cast ready with null
+      // keys -- it takes the honest failure path.
+      const wanKeys = extractTrainedWanLoraKeys(view.output);
+      if (wanKeys) return (await markWanLoraReady(env, cast.id, wanKeys.high, wanKeys.low)) || cast;
       const loraKey = extractTrainedLoraKey(view.output);
       if (loraKey) return (await markLoraReady(env, cast.id, loraKey)) || cast;
       return (
         (await markLoraFailed(
           env,
           cast.id,
-          "GPU job completed but envelope did not include lora_key",
+          "GPU job completed but envelope carried no harvestable LoRA key (neither SDXL nor Wan experts)",
         )) || cast
       );
     }
@@ -225,6 +240,96 @@ export async function handleCastTrainLora(
   });
 }
 
+// Mirror of handleCastTrainLora for the Wan 2.2 A14B family (cf#29): same single-slot bundle + the
+// SHARED lora_status/lora_job_id lifecycle (the poll path shape-dispatches on the result envelope,
+// so no family column is needed), differing only in submitting to the DEDICATED Wan-training
+// endpoint (submitTrainWanLoraJob) and returning the TWO dest keys. The training hyperparams still
+// ride render_overrides.lora; model_family:"wan" is added by the submit payload builder.
+export async function handleCastTrainWanLora(
+  request: Request,
+  env: Env,
+  id: number,
+): Promise<Response> {
+  let bodyRenderOverrides: Record<string, unknown> | undefined;
+  try {
+    const ct = (request.headers.get("content-type") || "").toLowerCase();
+    if (ct.includes("application/json")) {
+      const parsed = (await request.json()) as { renderOverrides?: unknown };
+      if (
+        parsed?.renderOverrides &&
+        typeof parsed.renderOverrides === "object" &&
+        !Array.isArray(parsed.renderOverrides)
+      ) {
+        bodyRenderOverrides = parsed.renderOverrides as Record<string, unknown>;
+      }
+    }
+  } catch {
+    /* empty body is fine */
+  }
+
+  const cast = await getCastById(env, id);
+  if (!cast) return json({ error: "cast not found" }, 404);
+  if (cast.lora_status === "training") {
+    return json(
+      {
+        error: "a LoRA training job is already in flight for this cast member",
+        jobId: cast.lora_job_id,
+      },
+      409,
+    );
+  }
+  if (!cast.portrait_key) {
+    return json(
+      { error: "cast member needs a portrait before training (set one via /cast)" },
+      400,
+    );
+  }
+  if (cast.ref_keys.length < MIN_TRAINING_REFS) {
+    return json(
+      {
+        error: `cast member has only ${cast.ref_keys.length} training refs; need at least ${MIN_TRAINING_REFS}. Use the training-set generator on /cast.`,
+      },
+      400,
+    );
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const args = buildLoraTrainingBundleArgs(cast, String(timestamp));
+
+  let bundleResult;
+  try {
+    bundleResult = await assembleBundle(env, args);
+  } catch (err) {
+    const m = err instanceof Error ? err.message : String(err);
+    return json({ error: `bundle assembly failed: ${m}` }, 500);
+  }
+  if (!bundleResult.ok) {
+    return json({ error: "bundle assembly failed", details: bundleResult.errors }, 500);
+  }
+
+  const loraDestKeys = deriveWanLoraDestKeys(cast.id, timestamp);
+  const submit = await submitTrainWanLoraJob(env, {
+    project: args.storyboard.projectName,
+    bundleKey: bundleResult.bundleKey,
+    renderOverrides: bodyRenderOverrides,
+  });
+  if (!submit.ok) {
+    return json({ error: submit.error }, 502);
+  }
+
+  const updated = await setLoraJob(env, cast.id, submit.view.jobId);
+  return json({
+    ok: true,
+    jobId: submit.view.jobId,
+    status: submit.view.status,
+    statusRaw: submit.view.statusRaw,
+    bundleKey: bundleResult.bundleKey,
+    loraDestKeys,
+    modelFamily: "wan",
+    cast: toPublicCast(updated || cast),
+  });
+}
+
 export async function handleCastLoraStatus(
   env: Env,
   id: number,
@@ -246,12 +351,19 @@ export async function handleCastLoraStatus(
   if (poll.ok) {
     const view = poll.view;
     if (view.status === "COMPLETED") {
+      // Shape-dispatch by family (see refreshTrainingLora): Wan two-expert shape first, then SDXL,
+      // then the honest no-key failure -- never mark ready with null keys.
+      const wanKeys = extractTrainedWanLoraKeys(view.output);
+      if (wanKeys) {
+        const updated = await markWanLoraReady(env, cast.id, wanKeys.high, wanKeys.low);
+        return json({ cast: toPublicCast(updated || cast), view });
+      }
       const loraKey = extractTrainedLoraKey(view.output);
       if (!loraKey) {
         const updated = await markLoraFailed(
           env,
           cast.id,
-          "GPU job completed but envelope did not include lora_key",
+          "GPU job completed but envelope carried no harvestable LoRA key (neither SDXL nor Wan experts)",
         );
         return json({ cast: toPublicCast(updated || cast), view });
       }
