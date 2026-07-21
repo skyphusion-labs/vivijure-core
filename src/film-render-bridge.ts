@@ -10,6 +10,7 @@ import {
   KEYFRAME_STALL_SECONDS,
 } from "./film-model.js";
 import type { RunpodJobView, RunpodStatus } from "./runpod-types.js";
+import { resolveFilmOutputKey } from "./film-output-key.js";
 import {
   resolveModuleRenderConfigs,
   type RenderTier,
@@ -149,7 +150,7 @@ export function filmJobToPollView(job: FilmJob, clipJob: ClipJob | null, keyfram
     status = "COMPLETED";
     const mode = job.derive_mode ?? (job.keyframes_only ? "keyframes-only" : "full");
     output = {
-      output_key: job.film_key,
+      output_key: resolveFilmOutputKey(job),
       project: job.project,
       mode,
     };

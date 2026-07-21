@@ -3,6 +3,15 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.2.3] -- 2026-07-21
+
+**Fix: COMPLETED film renders record `output_key` when `film.mp4` exists (local#99).** PATCH.
+
+- Single-film completion now mirrors scatter: `transitionToDone` calls `markFinishDone` with a
+  resolved deliverable key (`film_key`, `silent_film_key`, or deterministic `renders/<film-id>/film.mp4`).
+- `filmJobToPollView` and `updateRenderFromView` backfill `output_key` from store when the envelope
+  omitted it (subset-shot / completion-order gap).
+
 ## [1.2.2] -- 2026-07-21
 
 **Fix: revert #584 as the dialogue finish-order default (cf#29).** PATCH.
