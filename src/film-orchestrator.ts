@@ -320,6 +320,25 @@ export function finishChainForShot(serving: RegisteredModule[], isDialogueShot: 
   return [...serving.filter((m) => m.finish_consumes_audio), ...serving.filter((m) => !m.finish_consumes_audio)];
 }
 
+/** Opt-in per-film override for finish-order A/B (#584): when `finish_config["finish-order"].dialogue_legacy`
+ *  is true, dialogue shots keep the plain ui.order (legacy: rife -> lipsync -> upscale) instead of hoisting
+ *  lip-sync first. Default unchanged (#584 still applies when the flag is absent). */
+export function finishOrderLegacyDialogue(finishConfig?: Record<string, Record<string, unknown>>): boolean {
+  const row = finishConfig?.["finish-order"];
+  if (!row || typeof row !== "object") return false;
+  return row.dialogue_legacy === true || row.legacy === true;
+}
+
+/** Resolve the finish chain for one shot, honoring an opt-in legacy-order override on dialogue shots. */
+export function resolveFinishChainForShot(
+  serving: RegisteredModule[],
+  isDialogueShot: boolean,
+  finishConfig?: Record<string, Record<string, unknown>>,
+): RegisteredModule[] {
+  if (finishOrderLegacyDialogue(finishConfig)) return serving;
+  return finishChainForShot(serving, isDialogueShot);
+}
+
 /** Internal: clips done -> set up the finish chain (one FinishShot per done clip). No finish modules
  *  installed -> skip straight to assemble (the raw clips). No clips rendered at all -> fail (nothing
  *  to assemble). */
@@ -358,7 +377,7 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
     (job.dialogue_lines ?? []).filter((l) => l.shot_id && (l.text ?? "").trim().length > 0).map((l) => l.shot_id),
   );
   job.finish_shots = doneClips.map((s) => {
-    const ordered = finishChainForShot(serving, dialogueShotIds.has(s.shot_id));
+    const ordered = resolveFinishChainForShot(serving, dialogueShotIds.has(s.shot_id), job.finish_config);
     return {
       shot_id: s.shot_id,
       clip_key: s.clip_key as string,
