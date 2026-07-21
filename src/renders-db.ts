@@ -18,6 +18,7 @@ import type { RunpodJobView } from "./runpod-types.js";
 import { writeRenderLog } from "./render-log.js";
 import { withD1Retry } from "./d1-retry.js";
 import { newPublicId } from "./public-id.js";
+import { adoptFilmOutputKeyFromStore } from "./film-output-key.js";
 
 // Surface a corrupted *_json column instead of swallowing it silently (issue #15).
 // The empty / NULL case is handled by a length guard BEFORE the parse, so this only
@@ -323,6 +324,27 @@ export async function updateRenderFromView(
     // action; same COALESCE-write pattern.
     if (typeof o.mode === "string" && o.mode.length > 0) {
       modeFromOutput = o.mode;
+    }
+  }
+
+  // #99: heal COMPLETED rows whose envelope omitted output_key while film.mp4 exists at the
+  // deterministic assemble key (subset-shot / completion-order gap). Best-effort store HEAD only.
+  if (
+    !outputKey &&
+    view.status === "COMPLETED" &&
+    typeof view.jobId === "string" &&
+    view.jobId.startsWith("film-")
+  ) {
+    const mode =
+      view.output &&
+      typeof view.output === "object" &&
+      !Array.isArray(view.output) &&
+      typeof (view.output as Record<string, unknown>).mode === "string"
+        ? String((view.output as Record<string, unknown>).mode)
+        : "full";
+    if (mode !== "keyframes-only") {
+      const adopted = await adoptFilmOutputKeyFromStore(env, view.jobId);
+      if (adopted) outputKey = adopted;
     }
   }
 

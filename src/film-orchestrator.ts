@@ -107,7 +107,12 @@ import {
   type ClipJob,
   type JobSummary,
 } from "./render-orchestrator.js";
-import { markRenderFailedByJobId } from "./renders-db.js";
+import { markFinishDone, markRenderFailedByJobId } from "./renders-db.js";
+import {
+  adoptFilmOutputKeyFromStore,
+  defaultFilmOutputKey,
+  resolveFilmOutputKey,
+} from "./film-output-key.js";
 import { finishStepInputHash } from "./finish-hash.js";
 import { presignR2Get, presignR2Put, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
@@ -852,8 +857,6 @@ async function mixFilmAudio(env: Env, job: FilmJob, videoKey: string, bedKey: st
   return mixKey; // mixed dialogue + ducked music + loudnorm; remux this in place of the bare bed
 }
 
-const filmOutKey = (filmId: string) => `renders/${filmId}/film.mp4`;
-
 // Cap on across-polls assemble re-attempts before a transient failure goes terminal (issue #82).
 const MAX_ASSEMBLE_ATTEMPTS = 6;
 
@@ -927,6 +930,37 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
   // deterministic artifact lands; the in-flight guard stops a duplicate encode meanwhile.
   if (!complete) return;
   job.phase = "done";
+  // Mirror scatter finalizeScatterDone: stamp output_key on the renders row when the film
+  // artifact is known. Single-film jobs previously relied on updateRenderFromView alone;
+  // a done job doc with a missing film_key (but film.mp4 in store) left output_key null (#99).
+  let filmKey = resolveFilmOutputKey(job);
+  if (!filmKey && !job.keyframes_only) {
+    const adopted = await adoptFilmOutputKeyFromStore(env, job.film_id);
+    if (adopted) {
+      filmKey = adopted;
+      if (!job.film_key) job.film_key = adopted;
+    }
+  }
+  if (filmKey) {
+    const mode = job.derive_mode ?? (job.keyframes_only ? "keyframes-only" : "full");
+    const out: Record<string, unknown> = { output_key: filmKey, project: job.project, mode };
+    if (job.film_finish?.sidecar_key) out.sidecar_key = job.film_finish.sidecar_key;
+    if (job.finish_unavailable) {
+      out.finish_unavailable = {
+        at: job.finish_unavailable.at,
+        reason: job.finish_unavailable.reason,
+        delivered: job.finish_unavailable.delivered,
+      };
+    }
+    try {
+      await markFinishDone(env, job.film_id, filmKey, JSON.stringify(out));
+    } catch (e) {
+      // Bookkeeping must not fail a delivered film; poll/sweep updateRenderFromView backfills.
+      console.warn(
+        `render row finalize failed for ${job.film_id}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
   await fireNotify(env, job, preModules);
 }
 
@@ -1627,7 +1661,7 @@ async function enterAssemblePhase(
   // the normal (gated) assemble: the source clips are never deleted by reclaim (only adopted), so
   // the re-concat is idempotent + bounded by MAX_ASSEMBLE_ATTEMPTS and degrades LOUD on exhaustion
   // -- preserving #122's anti-loop property without the honesty hole.
-  const outputKey = filmOutKey(job.film_id);
+  const outputKey = defaultFilmOutputKey(job.film_id);
   const durationsGated = !!job.actual_clip_durations && Object.keys(job.actual_clip_durations).length > 0;
   if (durationsGated && (await r2ObjectExists(env, outputKey))) {
     job.assemble_attempts = 0;
