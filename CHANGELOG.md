@@ -3,6 +3,15 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.2.3] -- 2026-07-21
+
+**Fix: advanceFilmJob wedge fails terminal (#53).** PATCH.
+
+- Non-SyntaxError throws in the advance path (presign, R2 list, clip start) no longer wedge the
+  render in IN_PROGRESS forever. Extends the #32 corrupt-doc guard: persist `phase=failed` on the R2
+  job doc when readable, mark the D1 render row FAILED with the real reason, and return instead of
+  rethrowing. Ships [core#64](https://github.com/skyphusion-labs/vivijure-core/pull/64).
+
 ## [1.2.2] -- 2026-07-21
 
 **Fix: revert #584 as the dialogue finish-order default (cf#29).** PATCH.

@@ -36,6 +36,7 @@ tagging the next release).
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.2.3` | 1.2.3 | (release commit) | 2026-07-21 | **advanceFilmJob wedge -> terminal fail (#53).** Non-SyntaxError advance throws persist failed phase + FAILED render row instead of infinite IN_PROGRESS poll loop. Ships core#64. |
 | `vivijure-core-v1.2.2` | 1.2.2 | 62c7864 | 2026-07-21 | **Finish-order default reverted (cf#29).** Dialogue shots use legacy `ui.order` (RIFE -> lipsync -> upscale). #584 reorder opt-in via `finish_config["finish-order"].dialogue_reorder`. Ships core#62. |
 | `vivijure-core-v1.2.1` | 1.2.1 | 01720e4 | 2026-07-20 | **Wan LoRA poll writeback fix (cf#29).** `fix(cast-lora): poll Wan train EP for harvest writeback` (#59). |
 | `vivijure-core-v1.2.0` | 1.2.0 | 0dd5626 | 2026-07-20 | **Portable Wan i2v LoRA support (Phases B+C, cf#29).** Wan 2.2 A14B helpers, cast columns, train orchestration + poller (#56, #57, #58). |
