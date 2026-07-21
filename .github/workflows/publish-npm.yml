@@ -1,7 +1,10 @@
 name: Publish npm package
 
 # Publish @skyphusion-labs/vivijure-core to the public npm registry.
-# Tag push: git tag vivijure-core-v0.9.0 && git push origin vivijure-core-v0.9.0
+# Tag push: git tag vivijure-core-v1.2.2 && git push origin vivijure-core-v1.2.2
+# Then create the GitHub Release (npm CI does NOT do this):
+#   gh release create vivijure-core-v1.2.2 --title "vivijure-core v1.2.2" --notes-file notes.md
+# Full release checklist: RELEASES.md
 # Or: workflow_dispatch (uses version in package.json).
 #
 # Required repo secret: NPM_TOKEN (npmjs.com automation token with publish scope

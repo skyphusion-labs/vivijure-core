@@ -76,14 +76,17 @@ npm run build   # emits dist/ (also runs on npm install via prepare)
 npm run typecheck && npm test
 ```
 
-**Publish** (maintainers): merge to `main`, ensure repo secret `NPM_TOKEN` is set, then:
+**Publish** (maintainers): merge to `main`, bump `package.json`, update `RELEASES.md` + `CHANGELOG.md`,
+ensure repo secret `NPM_TOKEN` is set, then:
 
 ```bash
-git tag vivijure-core-v0.9.0
-git push origin vivijure-core-v0.9.0
+git tag vivijure-core-v1.2.2
+git push origin vivijure-core-v1.2.2
+gh release create vivijure-core-v1.2.2 --title "vivijure-core v1.2.2" --notes-file notes.md
 ```
 
-Or trigger the **Publish npm package** workflow manually after bumping `package.json` version.
+Tag push triggers **Publish npm package** (`.github/workflows/publish-npm.yml`). GitHub Releases are
+**manual** (see [`RELEASES.md`](RELEASES.md)); npm CI does not create them.
 
 **flatliners** (Hetzner test box): **retired 2026-07-16**. Historical notes only:
 [docs/FLATLINERS-DEV.md](docs/FLATLINERS-DEV.md). Active GPU/studio host is **propagandhi**.
