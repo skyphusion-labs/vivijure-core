@@ -320,23 +320,33 @@ export function finishChainForShot(serving: RegisteredModule[], isDialogueShot: 
   return [...serving.filter((m) => m.finish_consumes_audio), ...serving.filter((m) => !m.finish_consumes_audio)];
 }
 
-/** Opt-in per-film override for finish-order A/B (#584): when `finish_config["finish-order"].dialogue_legacy`
- *  is true, dialogue shots keep the plain ui.order (legacy: rife -> lipsync -> upscale) instead of hoisting
- *  lip-sync first. Default unchanged (#584 still applies when the flag is absent). */
+/** Legacy dialogue finish order (plain ui.order: rife -> lipsync -> upscale). The June showcase
+ *  (`scatter-5581e581`) used this path and looked good; cf#29 regressed under #584's default reorder. */
 export function finishOrderLegacyDialogue(finishConfig?: Record<string, Record<string, unknown>>): boolean {
   const row = finishConfig?.["finish-order"];
   if (!row || typeof row !== "object") return false;
   return row.dialogue_legacy === true || row.legacy === true;
 }
 
-/** Resolve the finish chain for one shot, honoring an opt-in legacy-order override on dialogue shots. */
+/** Opt-in #584 reorder for dialogue shots (lipsync -> rife -> upscale). Off by default since cf#29. */
+export function finishOrderReorderDialogue(finishConfig?: Record<string, Record<string, unknown>>): boolean {
+  const row = finishConfig?.["finish-order"];
+  if (!row || typeof row !== "object") return false;
+  return row.dialogue_reorder === true || row.reorder === true;
+}
+
+/** Resolve the finish chain for one shot. Default is legacy ui.order on dialogue shots; opt in to #584
+ *  reorder via `finish_config["finish-order"].dialogue_reorder`. */
 export function resolveFinishChainForShot(
   serving: RegisteredModule[],
   isDialogueShot: boolean,
   finishConfig?: Record<string, Record<string, unknown>>,
 ): RegisteredModule[] {
   if (finishOrderLegacyDialogue(finishConfig)) return serving;
-  return finishChainForShot(serving, isDialogueShot);
+  if (isDialogueShot && finishOrderReorderDialogue(finishConfig)) {
+    return finishChainForShot(serving, true);
+  }
+  return serving;
 }
 
 /** Internal: clips done -> set up the finish chain (one FinishShot per done clip). No finish modules
