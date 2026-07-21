@@ -2159,6 +2159,23 @@ async function claimAdvanceOrFailOpen(env: Env, filmId: string): Promise<FilmAdv
   }
 }
 
+/** #53: persist phase=failed on the R2 job doc when advance throws mid-tick. Best-effort: a corrupt
+ *  doc falls back to D1-only via markRenderFailedByJobId (the #32 SyntaxError path). */
+async function persistFilmJobFailed(env: Env, filmId: string, error: string): Promise<FilmJob | null> {
+  try {
+    const obj = await env.R2_RENDERS.get(filmKey(filmId));
+    if (!obj) return null;
+    const job = JSON.parse(await obj.text()) as FilmJob;
+    if (job.phase === "done" || job.phase === "failed") return job;
+    job.phase = "failed";
+    job.error = error.slice(0, 2000);
+    await putFilm(env, job);
+    return job;
+  } catch {
+    return null;
+  }
+}
+
 /** Advance a film job across its two phases. Returns the job + the underlying clip job (for the
  *  summary), or null if no such film job exists.
  *
@@ -2177,17 +2194,25 @@ export async function advanceFilmJob(env: Env, filmId: string): Promise<{ job: F
   try {
     return await advanceFilmJobLocked(env, filmId);
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
     // #32: a corrupt / truncated R2 job doc makes JSON.parse throw on EVERY advance tick, so the render
     // never advances and never fails -- a silent forever-stall (the lease still releases in `finally`, so
     // it isn't a lock leak, just a wedge). Fail it LOUDLY: mark the render FAILED and stop re-driving. R2
     // puts are atomic and the orchestrator authors these docs, so a parse failure is defense-in-depth; a
     // SyntaxError in this async path has no source other than the job-doc JSON.parse.
     if (e instanceof SyntaxError) {
-      console.error(JSON.stringify({ ev: "film.doc_corrupt", film_id: filmId, error: e.message }));
-      await markRenderFailedByJobId(env, filmId, `job doc corrupt/unparseable: ${e.message}`);
+      console.error(JSON.stringify({ ev: "film.doc_corrupt", film_id: filmId, error: msg }));
+      await markRenderFailedByJobId(env, filmId, `job doc corrupt/unparseable: ${msg}`);
       return null;
     }
-    throw e;
+    // #53: any other throw in the advance path (presign, R2 list, clip start, ...) had the same wedge
+    // shape: host 500, putFilm never reached, D1 stuck IN_PROGRESS, every poll re-ran the same failure.
+    // Fail loud with the real reason and stop re-driving.
+    const error = `advance failed: ${msg}`;
+    console.error(JSON.stringify({ ev: "film.advance_failed", film_id: filmId, error: msg }));
+    const job = await persistFilmJobFailed(env, filmId, error);
+    await markRenderFailedByJobId(env, filmId, error);
+    return job ? { job, clipJob: null } : null;
   } finally {
     if (claim.token !== undefined) {
       try {

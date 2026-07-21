@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { contentValidateDoneClips } from "../src/clip-content-validate.js";
 import { stageAudioKeyForRenders } from "../src/audio-stage.js";
 import { advanceFilmJob } from "../src/film-orchestrator.js";
+import * as registry from "../src/modules/registry.js";
+import type { FilmJob } from "../src/film-model.js";
 import { ensureScatterRenderRow } from "../src/scatter-orchestrator.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 import type { ClipJob } from "../src/render-orchestrator.js";
@@ -38,6 +40,54 @@ describe("#31 stageAudioKeyForRenders fails loudly on a missing in-renders key",
   it("returns a present non-out/ key unchanged", async () => {
     const env = { R2_RENDERS: { head: async () => ({ size: 1 }) } } as unknown as Env;
     expect(await stageAudioKeyForRenders(env, "dialogue/s1.wav")).toBe("dialogue/s1.wav");
+  });
+});
+
+describe("#53 advanceFilmJob fails loudly on a non-SyntaxError throw (no forever-wedge)", () => {
+  it("marks the render FAILED, persists phase=failed, and does not rethrow", async () => {
+    const sqls: string[] = [];
+    const puts: string[] = [];
+    const filmJob: FilmJob = {
+      film_id: "film-presign-wedge",
+      project: "p",
+      bundle_key: "b",
+      scenes: [{ shot_id: "s1", prompt: "x", seconds: 4 }],
+      phase: "keyframe",
+      created_at: Date.now(),
+      phase_started_at: Date.now(),
+      keyframe_binding: "keyframe",
+      keyframe_poll: { token: "t" },
+    } as unknown as FilmJob;
+    const DB = {
+      prepare(sql: string) {
+        sqls.push(sql);
+        return {
+          bind: () => ({
+            run: async () => ({ meta: { changes: 1 } }),
+            first: async () => null,
+            all: async () => ({ results: [] }),
+          }),
+        };
+      },
+    };
+    const env = {
+      DB,
+      R2_RENDERS: {
+        get: async () => ({ text: async () => JSON.stringify(filmJob) }),
+        put: async (key: string, body: string) => {
+          puts.push(body);
+        },
+      },
+    } as unknown as Env;
+    vi.spyOn(registry, "discoverModules").mockRejectedValueOnce(
+      new Error("R2 presign needs R2_S3_ACCESS_KEY_ID, R2_S3_SECRET_ACCESS_KEY, R2_S3_ENDPOINT, R2_BUCKET"),
+    );
+    const r = await advanceFilmJob(env, "film-presign-wedge");
+    expect(r?.job.phase).toBe("failed");
+    expect(r?.job.error).toMatch(/advance failed:.*R2 presign needs/);
+    expect(sqls.some((s) => /status\s*=\s*'FAILED'/.test(s))).toBe(true);
+    expect(puts.some((p) => JSON.parse(p).phase === "failed")).toBe(true);
+    vi.restoreAllMocks();
   });
 });
 
