@@ -2,6 +2,7 @@
 // and the core resolves into per-hook module configs before starting a film job.
 
 import {
+  coupleLocalGpuKeyframeChoice,
   resolveRenderPipeline,
   pickOneForHook,
   type RenderPipelineSelection,
@@ -57,6 +58,8 @@ export function parseModuleRenderOverrides(raw: unknown): ModuleRenderOverridesW
   if (!isRecord(raw)) return {};
   if (isRecord(raw.config) || typeof raw.motion_backend === "string" || typeof raw.keyframe_backend === "string") {
     const out: ModuleRenderOverridesWire = {};
+    // Whitespace-only backend names are omitted (not an explicit choice). Coupling then defaults a
+    // local motion door onto a local keyframe module without a preflight/resolve mismatch (#153 audit).
     if (typeof raw.motion_backend === "string" && raw.motion_backend.trim()) {
       out.motion_backend = raw.motion_backend.trim();
     }
@@ -127,10 +130,17 @@ export function resolveModuleRenderConfigs(
   modules: RegisteredModule[],
 ): ResolvedModuleRenderConfigs {
   const parsed = parseModuleRenderOverrides(overrides);
-  const config = injectQualityTier(parsed.config ?? {}, tier, modules, parsed.keyframe_backend);
+  // Couple BEFORE injectQualityTier so quality_tier lands on the local keyframe module when
+  // motion is locality "local" and the caller omitted keyframe_backend (vivijure-local#153).
+  const keyframeChoice = coupleLocalGpuKeyframeChoice(
+    modules,
+    parsed.motion_backend,
+    parsed.keyframe_backend,
+  );
+  const config = injectQualityTier(parsed.config ?? {}, tier, modules, keyframeChoice);
   const selection: RenderPipelineSelection = {
     motion_backend_choice: parsed.motion_backend,
-    keyframe_backend_choice: parsed.keyframe_backend,
+    keyframe_backend_choice: keyframeChoice,
     config,
   };
   const pipeline = resolveRenderPipeline(modules, selection);
