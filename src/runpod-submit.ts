@@ -18,6 +18,7 @@
 
 import type { Env } from "./platform/orchestrator-context.js";
 import { secretValue, type SecretsStoreSecret } from "./secret-store.js";
+import { reconcileRunpodEndpointWorkersMax } from "./runpod-endpoint-reconcile.js";
 
 // Quality tier normalizer / validator (v0.156.3). The render tiers are keyframe (a
 // separate keyframesOnly flag) plus three real generation tiers the pod's `for_tier`
@@ -580,6 +581,65 @@ function runpodMissingEndpoint(): RunpodResult {
   };
 }
 
+/** Parse optional RUNPOD_WORKERS_MAX (cf#61 idle reconcile spec). Unset/invalid => skip reconcile. */
+function parseWorkersMaxSpec(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  if (typeof raw === "string" && raw.trim()) {
+    const n = Number(raw.trim());
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return null;
+}
+
+async function reconcileEndpointIfConfigured(
+  env: Env,
+  apiKey: string,
+  endpointId: string,
+  opts?: RunpodTransportOpts,
+): Promise<RunpodResult | null> {
+  const specRaw =
+    (env as { RUNPOD_WORKERS_MAX?: unknown }).RUNPOD_WORKERS_MAX ??
+    (env as { RUNPOD_ENDPOINT_WORKERS_MAX?: unknown }).RUNPOD_ENDPOINT_WORKERS_MAX;
+  const resolved =
+    specRaw instanceof Promise || (specRaw && typeof specRaw === "object" && "get" in (specRaw as object))
+      ? await secretValue(specRaw as SecretsStoreSecret | string | undefined)
+      : specRaw;
+  const workersMax = parseWorkersMaxSpec(resolved);
+  if (workersMax == null) return null;
+  const rec = await reconcileRunpodEndpointWorkersMax({
+    apiKey,
+    endpointId,
+    spec: { workersMax },
+    fetchImpl: opts?.fetchImpl,
+  });
+  if (rec.ok) return null;
+  const msg = rec.guidance ? `${rec.error}. ${rec.guidance}` : rec.error;
+  return { ok: false, error: msg, status: rec.status };
+}
+
+async function submitToRunpodEndpoint(
+  env: Env,
+  endpointId: string,
+  body: string,
+  label: string,
+  opts?: RunpodTransportOpts,
+): Promise<RunpodResult> {
+  const apiKey = await secretValue(env.RUNPOD_API_KEY as SecretsStoreSecret | string | undefined);
+  if (!apiKey) {
+    return {
+      ok: false,
+      error: "RUNPOD_API_KEY must be set on the Worker (Secrets Store binding or npx wrangler secret put)",
+    };
+  }
+  const reconcileErr = await reconcileEndpointIfConfigured(env, apiKey, endpointId, opts);
+  if (reconcileErr) return reconcileErr;
+  return runpodRequest(
+    env,
+    { method: "POST", url: buildSubmitUrl(endpointId), body, label },
+    opts,
+  );
+}
+
 // Submit a job to the vivijure-serverless RunPod endpoint. Returns the
 // normalized view or a transport error. Does not throw on HTTP 4xx / 5xx; the
 // caller decides how to translate to a Worker response. Optional opts inject a
@@ -591,14 +651,11 @@ export async function submitRenderJob(
 ): Promise<RunpodResult> {
   const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
   if (!endpointId) return runpodMissingEndpoint();
-  return runpodRequest(
+  return submitToRunpodEndpoint(
     env,
-    {
-      method: "POST",
-      url: buildSubmitUrl(endpointId),
-      body: JSON.stringify(buildSubmitPayload(args)),
-      label: "submit",
-    },
+    endpointId,
+    JSON.stringify(buildSubmitPayload(args)),
+    "submit",
     opts,
   );
 }
@@ -611,14 +668,11 @@ export async function submitFinalizeJob(
 ): Promise<RunpodResult> {
   const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
   if (!endpointId) return runpodMissingEndpoint();
-  return runpodRequest(
+  return submitToRunpodEndpoint(
     env,
-    {
-      method: "POST",
-      url: buildSubmitUrl(endpointId),
-      body: JSON.stringify(buildFinalizePayload(args)),
-      label: "finalize submit",
-    },
+    endpointId,
+    JSON.stringify(buildFinalizePayload(args)),
+    "finalize submit",
     opts,
   );
 }
@@ -632,14 +686,11 @@ export async function submitRegenShotJob(
 ): Promise<RunpodResult> {
   const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
   if (!endpointId) return runpodMissingEndpoint();
-  return runpodRequest(
+  return submitToRunpodEndpoint(
     env,
-    {
-      method: "POST",
-      url: buildSubmitUrl(endpointId),
-      body: JSON.stringify(buildRegenShotPayload(args)),
-      label: "regen submit",
-    },
+    endpointId,
+    JSON.stringify(buildRegenShotPayload(args)),
+    "regen submit",
     opts,
   );
 }
@@ -653,14 +704,11 @@ export async function submitTrainLoraJob(
 ): Promise<RunpodResult> {
   const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
   if (!endpointId) return runpodMissingEndpoint();
-  return runpodRequest(
+  return submitToRunpodEndpoint(
     env,
-    {
-      method: "POST",
-      url: buildSubmitUrl(endpointId),
-      body: JSON.stringify(buildTrainLoraPayload(args)),
-      label: "train-lora submit",
-    },
+    endpointId,
+    JSON.stringify(buildTrainLoraPayload(args)),
+    "train-lora submit",
     opts,
   );
 }
@@ -679,14 +727,11 @@ export async function submitTrainWanLoraJob(
       SecretsStoreSecret | string | undefined,
   );
   if (!endpointId) return runpodMissingWanEndpoint();
-  return runpodRequest(
+  return submitToRunpodEndpoint(
     env,
-    {
-      method: "POST",
-      url: buildSubmitUrl(endpointId),
-      body: JSON.stringify(buildTrainWanLoraPayload(args)),
-      label: "train-wan-lora submit",
-    },
+    endpointId,
+    JSON.stringify(buildTrainWanLoraPayload(args)),
+    "train-wan-lora submit",
     opts,
   );
 }
