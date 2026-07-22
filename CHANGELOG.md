@@ -3,6 +3,12 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased
+
+- **fix(film):** `putFilm` recovers prior phase from the R2 job doc when the in-process Map is
+  empty (cold CF isolate), so `film.phase` / `film.render.terminal` carry `from: "<prior>"` instead
+  of `from: null` (cf#110).
+
 ## [1.2.4] -- 2026-07-22
 
 **Feat: pre-submit RunPod idle workersMax reconcile (cf#61).** PATCH.
