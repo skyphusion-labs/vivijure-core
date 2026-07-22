@@ -68,10 +68,15 @@ describe("resolveFinishChainForShot (cf#29 default = legacy)", () => {
     expect(ordered.map((m) => m.name)).toEqual(["finish-rife", "finish-lipsync", "finish-upscale"]);
   });
 
+  it("non-dialogue shot: omits audio-consuming modules (no RunPod musetalk)", () => {
+    const ordered = resolveFinishChainForShot(serving, false, {});
+    expect(ordered.map((m) => m.name)).toEqual(["finish-rife", "finish-upscale"]);
+  });
+
   it("non-dialogue shot: unchanged even with reorder flag", () => {
     const ordered = resolveFinishChainForShot(serving, false, {
       "finish-order": { dialogue_reorder: true },
     });
-    expect(ordered.map((m) => m.name)).toEqual(finishChainForShot(serving, false).map((m) => m.name));
+    expect(ordered.map((m) => m.name)).toEqual(["finish-rife", "finish-upscale"]);
   });
 });
