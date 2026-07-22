@@ -13,6 +13,7 @@ import {
   invokeModule,
   pollModule,
   cancelModule,
+  localGpuKeyframePreflightError,
   resolveFetcher,
   servingForHook,
   validateConfig,
@@ -1887,7 +1888,12 @@ export async function startFilmJob(
     args.motion_backend,
     args.keyframe_backend,
   );
-  const kf = (keyframeChoice ? kfServing.find((m) => m.name === keyframeChoice) : kfServing[0]) ?? null;
+  // Fail loud for local-motion + non-local keyframe even when the HTTP door preflight was skipped
+  // (direct startFilmJob / scatter shards).
+  const pairErr = localGpuKeyframePreflightError(modules, args.motion_backend, keyframeChoice);
+  const kf = pairErr
+    ? null
+    : (keyframeChoice ? kfServing.find((m) => m.name === keyframeChoice) : kfServing[0]) ?? null;
   const job: FilmJob = {
     film_id: "film-" + crypto.randomUUID(),
     project: args.project, bundle_key: args.bundle_key, scenes,
@@ -1911,9 +1917,11 @@ export async function startFilmJob(
   const fetcher = kf ? resolveFetcher(envRec, kf.binding) : null;
   if (!kf || !fetcher) {
     job.phase = "failed";
-    job.error = kf
-      ? `keyframe module ${kf.name} (${kf.binding}) is not bound`
-      : (args.keyframe_backend ? `keyframe module ${args.keyframe_backend} not installed` : "no keyframe module installed");
+    job.error = pairErr
+      ? pairErr
+      : kf
+        ? `keyframe module ${kf.name} (${kf.binding}) is not bound`
+        : (args.keyframe_backend ? `keyframe module ${args.keyframe_backend} not installed` : "no keyframe module installed");
   } else {
     const config = validateConfig(kf.config_schema, args.keyframe_config);
     const keyframeInput: KeyframeInput = {

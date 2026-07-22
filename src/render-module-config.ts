@@ -58,6 +58,8 @@ export function parseModuleRenderOverrides(raw: unknown): ModuleRenderOverridesW
   if (!isRecord(raw)) return {};
   if (isRecord(raw.config) || typeof raw.motion_backend === "string" || typeof raw.keyframe_backend === "string") {
     const out: ModuleRenderOverridesWire = {};
+    // Whitespace-only backend names are omitted (not an explicit choice). Coupling then defaults a
+    // local motion door onto a local keyframe module without a preflight/resolve mismatch (#153 audit).
     if (typeof raw.motion_backend === "string" && raw.motion_backend.trim()) {
       out.motion_backend = raw.motion_backend.trim();
     }

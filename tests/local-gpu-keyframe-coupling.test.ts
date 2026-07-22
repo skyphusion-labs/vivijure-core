@@ -5,7 +5,7 @@ import {
   resolveRenderPipeline,
 } from "../src/modules/render-pipeline.js";
 import { localGpuKeyframePreflightError } from "../src/modules/registry.js";
-import { resolveModuleRenderConfigs } from "../src/render-module-config.js";
+import { parseModuleRenderOverrides, resolveModuleRenderConfigs } from "../src/render-module-config.js";
 import type { RegisteredModule } from "../src/modules/types.js";
 
 const runpodKeyframe = {
@@ -106,5 +106,13 @@ describe("local-gpu keyframe coupling (#153)", () => {
     expect(localGpuKeyframePreflightError(mods, "local-gpu", "local-gpu")).toBeNull();
     expect(localGpuKeyframePreflightError(mods, "local-gpu", undefined)).toBeNull();
     expect(localGpuKeyframePreflightError(mods, "own-gpu", "keyframe")).toBeNull();
+  });
+
+  it("whitespace keyframe_backend is omitted (not a crafted bypass)", () => {
+    expect(parseModuleRenderOverrides({ motion_backend: "local-gpu", keyframe_backend: "  " })).toEqual({
+      motion_backend: "local-gpu",
+    });
+    expect(coupleLocalGpuKeyframeChoice(mods, "local-gpu", "   ")).toBe("local-gpu");
+    expect(localGpuKeyframePreflightError(mods, "local-gpu", "   ")).toBeNull();
   });
 });

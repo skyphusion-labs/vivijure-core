@@ -87,9 +87,14 @@ export function coupleLocalGpuKeyframeChoice(
   keyframeChoice: string | undefined,
 ): string | undefined {
   const motion = pickOneForHook(modules, "motion.backend", motionChoice);
-  if (!motion || (motion.ui?.locality ?? "cloud") !== "local") return keyframeChoice;
-  if ((keyframeChoice ?? "").trim()) return keyframeChoice;
-  return localKeyframeModule(modules, motion.name)?.name ?? keyframeChoice;
+  if (!motion || (motion.ui?.locality ?? "cloud") !== "local") {
+    // Normalize whitespace-only to omitted so callers never carry a blank "choice".
+    const trimmed = (keyframeChoice ?? "").trim();
+    return trimmed || undefined;
+  }
+  const trimmed = (keyframeChoice ?? "").trim();
+  if (trimmed) return trimmed;
+  return localKeyframeModule(modules, motion.name)?.name;
 }
 
 /** Resolve the full render pipeline. pick_one hooks (motion.backend, keyframe) honor an optional
