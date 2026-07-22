@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## [1.2.5] -- 2026-07-22
+## [1.2.6] -- 2026-07-22
 
 **Fix: film phase `from` on cold isolate + hook catalog display order.** PATCH.
 
