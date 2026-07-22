@@ -2,3 +2,4 @@
 // Kept as a separate entry point for existing core importers.
 
 export * from "./runpod-submit.js";
+export * from "./runpod-endpoint-reconcile.js";

@@ -3,6 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.2.4] -- 2026-07-22
+
+**Feat: pre-submit RunPod idle workersMax reconcile (cf#61).** PATCH.
+
+- New `runpod-endpoint-reconcile` helpers: detect workersMax below spec via REST GET, PATCH restore
+  when the key allows management, honest idle-scale-down guidance when scoped invoke keys return 401.
+- `runpod-submit` submitters reconcile before dispatch when `RUNPOD_WORKERS_MAX` is configured.
+
 ## [1.2.3] -- 2026-07-21
 
 **Fix: advanceFilmJob wedge fails terminal (#53).** PATCH.
