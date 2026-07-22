@@ -39,6 +39,11 @@ export interface RenderPipelineSelection {
   config?: Record<string, Record<string, unknown>>;
 }
 
+export function normalizeBackendChoice(choice: string | undefined): string | undefined {
+  const trimmed = (choice ?? "").trim();
+  return trimmed || undefined;
+}
+
 function resolve(m: RegisteredModule, userConfig: Record<string, unknown> | undefined): ResolvedModule {
   return { name: m.name, binding: m.binding, config: validateConfig(m.config_schema, userConfig) };
 }
@@ -56,7 +61,8 @@ export function pickOneForHook(
   choice: string | undefined,
 ): RegisteredModule | null {
   const serving = servingForHook(modules, hook);
-  if (choice) return serving.find((m) => m.name === choice) ?? null;
+  const normalizedChoice = normalizeBackendChoice(choice);
+  if (normalizedChoice) return serving.find((m) => m.name === normalizedChoice) ?? null;
   if (hook === "keyframe") {
     const dedicated = serving.filter((m) => (m.ui?.section ?? "keyframe") === "keyframe");
     if (dedicated.length) return dedicated[0] ?? null;
@@ -86,14 +92,15 @@ export function coupleLocalGpuKeyframeChoice(
   motionChoice: string | undefined,
   keyframeChoice: string | undefined,
 ): string | undefined {
-  const motion = pickOneForHook(modules, "motion.backend", motionChoice);
+  const normalizedMotionChoice = normalizeBackendChoice(motionChoice);
+  if (!normalizedMotionChoice) return normalizeBackendChoice(keyframeChoice);
+  const motion = pickOneForHook(modules, "motion.backend", normalizedMotionChoice);
   if (!motion || (motion.ui?.locality ?? "cloud") !== "local") {
     // Normalize whitespace-only to omitted so callers never carry a blank "choice".
-    const trimmed = (keyframeChoice ?? "").trim();
-    return trimmed || undefined;
+    return normalizeBackendChoice(keyframeChoice);
   }
-  const trimmed = (keyframeChoice ?? "").trim();
-  if (trimmed) return trimmed;
+  const normalizedKeyframeChoice = normalizeBackendChoice(keyframeChoice);
+  if (normalizedKeyframeChoice) return normalizedKeyframeChoice;
   return localKeyframeModule(modules, motion.name)?.name;
 }
 

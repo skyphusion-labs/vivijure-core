@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   coupleLocalGpuKeyframeChoice,
   localKeyframeModule,
+  pickOneForHook,
   resolveRenderPipeline,
 } from "../src/modules/render-pipeline.js";
 import { localGpuKeyframePreflightError } from "../src/modules/registry.js";
+import { startFilmJob } from "../src/film-orchestrator.js";
 import { parseModuleRenderOverrides, resolveModuleRenderConfigs } from "../src/render-module-config.js";
 import type { RegisteredModule } from "../src/modules/types.js";
 
@@ -72,6 +74,11 @@ describe("local-gpu keyframe coupling (#153)", () => {
     expect(pipeline.keyframe?.name).toBe("local-gpu");
   });
 
+  it("keeps dual-hook local-gpu from stealing the global keyframe default", () => {
+    expect(pickOneForHook(mods, "keyframe", undefined)?.name).toBe("keyframe");
+    expect(resolveRenderPipeline(mods).keyframe?.name).toBe("keyframe");
+  });
+
   it("does not couple when motion is byo/cloud", () => {
     expect(coupleLocalGpuKeyframeChoice(mods, "own-gpu", undefined)).toBeUndefined();
     const pipeline = resolveRenderPipeline(mods, { motion_backend_choice: "own-gpu" });
@@ -114,5 +121,37 @@ describe("local-gpu keyframe coupling (#153)", () => {
     });
     expect(coupleLocalGpuKeyframeChoice(mods, "local-gpu", "   ")).toBe("local-gpu");
     expect(localGpuKeyframePreflightError(mods, "local-gpu", "   ")).toBeNull();
+  });
+
+  it("startFilmJob uses the dedicated keyframe default when no keyframe backend is named", async () => {
+    const calls: string[] = [];
+    const env = {
+      MODULE_KEYFRAME: {
+        fetch: async () => {
+          calls.push("keyframe");
+          return new Response(JSON.stringify({ ok: true, pending: true, poll: "kf-poll" }), {
+            headers: { "content-type": "application/json" },
+          });
+        },
+      },
+      R2_RENDERS: {
+        put: async () => undefined,
+      },
+    };
+
+    const job = await startFilmJob(
+      env as never,
+      {
+        project: "film",
+        bundle_key: "bundles/film.tar.gz",
+        scenes: [{ shot_id: "shot_01", prompt: "slow push", seconds: 5 }],
+        motion_backend: "own-gpu",
+      },
+      mods,
+    );
+
+    expect(calls).toEqual(["keyframe"]);
+    expect(job.keyframe_binding).toBe("MODULE_KEYFRAME");
+    expect(job.error).toBeUndefined();
   });
 });

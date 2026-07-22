@@ -19,7 +19,7 @@ import {
   validateConfig,
   dispatchChain,
 } from "./modules/registry.js";
-import { coupleLocalGpuKeyframeChoice } from "./modules/render-pipeline.js";
+import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook } from "./modules/render-pipeline.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
 import { coerceShotId } from "./storyboard-ids.js";
@@ -1882,22 +1882,23 @@ export async function startFilmJob(
   // with a clear "keyframe module <choice> not installed" rather than silently swapping backends.
   // When motion is a local GPU door and keyframe_backend is omitted, couple to the local keyframe
   // module so the film never silently routes keyframes through RunPod (vivijure-local#153).
-  const kfServing = servingForHook(modules, "keyframe");
+  const motionBackend = normalizeBackendChoice(args.motion_backend);
+  const explicitKeyframeChoice = normalizeBackendChoice(args.keyframe_backend);
   const keyframeChoice = coupleLocalGpuKeyframeChoice(
     modules,
-    args.motion_backend,
-    args.keyframe_backend,
+    motionBackend,
+    explicitKeyframeChoice,
   );
   // Fail loud for local-motion + non-local keyframe even when the HTTP door preflight was skipped
   // (direct startFilmJob / scatter shards).
-  const pairErr = localGpuKeyframePreflightError(modules, args.motion_backend, keyframeChoice);
+  const pairErr = localGpuKeyframePreflightError(modules, motionBackend, keyframeChoice);
   const kf = pairErr
     ? null
-    : (keyframeChoice ? kfServing.find((m) => m.name === keyframeChoice) : kfServing[0]) ?? null;
+    : pickOneForHook(modules, "keyframe", keyframeChoice);
   const job: FilmJob = {
     film_id: "film-" + crypto.randomUUID(),
     project: args.project, bundle_key: args.bundle_key, scenes,
-    motion_backend: args.motion_backend ?? null, motion_config: args.motion_config ?? {},
+    motion_backend: motionBackend ?? null, motion_config: args.motion_config ?? {},
     keyframe_config: args.keyframe_config ?? {},
     finish_config: args.finish_config ?? {},
     speech_config: args.speech_config ?? {},
@@ -1921,7 +1922,7 @@ export async function startFilmJob(
       ? pairErr
       : kf
         ? `keyframe module ${kf.name} (${kf.binding}) is not bound`
-        : (args.keyframe_backend ? `keyframe module ${args.keyframe_backend} not installed` : "no keyframe module installed");
+        : (explicitKeyframeChoice ? `keyframe module ${explicitKeyframeChoice} not installed` : "no keyframe module installed");
   } else {
     const config = validateConfig(kf.config_schema, args.keyframe_config);
     const keyframeInput: KeyframeInput = {
