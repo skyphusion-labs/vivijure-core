@@ -47,6 +47,16 @@ describe("#53 advanceFilmJob fails loudly on a non-SyntaxError throw (no forever
   it("marks the render FAILED, persists phase=failed, and does not rethrow", async () => {
     const sqls: string[] = [];
     const puts: string[] = [];
+    const events: Array<Record<string, unknown>> = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+      if (typeof line === "string") {
+        try {
+          events.push(JSON.parse(line) as Record<string, unknown>);
+        } catch {
+          /* ignore non-JSON */
+        }
+      }
+    });
     const filmJob: FilmJob = {
       film_id: "film-presign-wedge",
       project: "p",
@@ -87,6 +97,18 @@ describe("#53 advanceFilmJob fails loudly on a non-SyntaxError throw (no forever
     expect(r?.job.error).toMatch(/advance failed:.*R2 presign needs/);
     expect(sqls.some((s) => /status\s*=\s*'FAILED'/.test(s))).toBe(true);
     expect(puts.some((p) => JSON.parse(p).phase === "failed")).toBe(true);
+    // cf#110: terminal transition carries prior phase from the R2 job doc (not from: null).
+    expect(
+      events.some(
+        (e) => e.ev === "film.phase" && e.from === "keyframe" && e.to === "failed",
+      ),
+    ).toBe(true);
+    expect(
+      events.some(
+        (e) => e.ev === "film.render.terminal" && e.from === "keyframe" && e.status === "failed",
+      ),
+    ).toBe(true);
+    logSpy.mockRestore();
     vi.restoreAllMocks();
   });
 });

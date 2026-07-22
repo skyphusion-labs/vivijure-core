@@ -284,7 +284,21 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
 const lastPersistedFilmPhase = new Map<string, FilmJob["phase"]>();
 
 const putFilm = async (env: Env, job: FilmJob): Promise<void> => {
-  const prev = lastPersistedFilmPhase.get(job.film_id);
+  // Prefer the in-process Map (same-isolate consecutive puts). On Cloudflare Workers each poll
+  // tick often lands on a fresh isolate, so the Map is empty -- recover the prior phase from the
+  // R2 job doc before comparing (cf#110 / core: film.phase from: null on terminal).
+  let prev = lastPersistedFilmPhase.get(job.film_id);
+  if (prev === undefined) {
+    try {
+      const existing = await env.R2_RENDERS.get(filmKey(job.film_id));
+      if (existing) {
+        const old = JSON.parse(await existing.text()) as Pick<FilmJob, "phase">;
+        if (old?.phase) prev = old.phase;
+      }
+    } catch {
+      /* observability only -- never block persistence */
+    }
+  }
   if (prev !== job.phase) {
     emitStructuredEvent({
       ev: "film.phase",
@@ -299,6 +313,7 @@ const putFilm = async (env: Env, job: FilmJob): Promise<void> => {
         film_id: job.film_id,
         project: job.project,
         status: job.phase,
+        from: prev ?? null,
         ...(job.error ? { error: job.error } : {}),
       });
       lastPersistedFilmPhase.delete(job.film_id);
