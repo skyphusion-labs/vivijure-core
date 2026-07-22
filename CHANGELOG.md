@@ -3,11 +3,15 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased
+## [1.2.5] -- 2026-07-22
+
+**Fix: film phase `from` on cold isolate + hook catalog display order.** PATCH.
 
 - **fix(film):** `putFilm` recovers prior phase from the R2 job doc when the in-process Map is
   empty (cold CF isolate), so `film.phase` / `film.render.terminal` carry `from: "<prior>"` instead
   of `from: null` (cf#110).
+- **feat(modules):** `HookCatalogEntry.order` + `HOOK_DISPLAY_ORDER` so panels sort the pipeline from
+  the catalog instead of hardcoding hook name lists (core#54). Additive; no MODULE_API bump.
 
 ## [1.2.4] -- 2026-07-22
 

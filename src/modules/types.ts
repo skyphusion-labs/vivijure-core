@@ -84,6 +84,24 @@ export const HOOK_BLURBS: Record<HookName, string> = {
   "film.finish": "title / credit cards on the finished film",
 };
 
+/** Display / pipeline stage sort key for each hook (core#54). Panels sort GET /api/modules
+ *  `catalog[]` by this field instead of hardcoding hook name lists. Gaps of 10 leave room for
+ *  future inserts. Independent of HOOK_NAMES declaration order. */
+export const HOOK_DISPLAY_ORDER: Record<HookName, number> = {
+  "plan.enhance": 10,
+  "cast.image": 20,
+  "image.generate": 30,
+  keyframe: 40,
+  "motion.backend": 50,
+  dialogue: 60,
+  speech: 70,
+  finish: 80,
+  score: 90,
+  master: 100,
+  "film.finish": 110,
+  notify: 120,
+};
+
 // --------------------------------------------------------------------------- manifest
 
 /** Where a config field's value is sourced from.
@@ -660,6 +678,8 @@ export interface HookCatalogEntry {
   name: HookName;
   blurb: string;
   cardinality: "pick_one" | "chain";
+  /** Pipeline display sort key (see HOOK_DISPLAY_ORDER). Additive; no MODULE_API bump. */
+  order: number;
 }
 
 /** Core-owned render config the frontend projects (so the planner stops hand-authoring it in markup).

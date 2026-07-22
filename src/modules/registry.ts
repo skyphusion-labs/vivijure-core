@@ -14,6 +14,7 @@ import {
   SUPPORTED_MODULE_APIS,
   HOOK_BLURBS,
   HOOK_CARDINALITY,
+  HOOK_DISPLAY_ORDER,
   HOOK_NAMES,
   type ConfigSchema,
   type HookCatalogEntry,
@@ -166,6 +167,7 @@ export function hookCatalog(): HookCatalogEntry[] {
     name,
     blurb: HOOK_BLURBS[name],
     cardinality: HOOK_CARDINALITY[name],
+    order: HOOK_DISPLAY_ORDER[name],
   }));
 }
 
