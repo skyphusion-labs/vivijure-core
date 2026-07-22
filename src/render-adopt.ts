@@ -3,7 +3,18 @@
 import type { Env } from "./platform/orchestrator-context.js";
 import { insertRender, markFinishDone } from "./renders-db.js";
 import { coerceQualityTier, deriveProjectFromBundleKey } from "./runpod-submit.js";
-import { isSafeBundleKey } from "./key-safety.js";
+import { isSafeBundleKey, isSafeRelKey } from "./key-safety.js";
+
+interface ExistingRenderForAdopt {
+  id: number;
+  status: string;
+  output_key: string | null;
+}
+
+export function isSafeAdoptOutputKey(jobId: string, outputKey: string): boolean {
+  const prefix = `renders/${jobId}/`;
+  return isSafeRelKey(outputKey) && outputKey.startsWith(prefix) && outputKey.length > prefix.length;
+}
 
 export async function handleAdoptRender(
   request: Request,
@@ -33,6 +44,9 @@ export async function handleAdoptRender(
     typeof body.outputKey === "string" && body.outputKey.trim().length > 0
       ? body.outputKey.trim()
       : null;
+  if (outputKey && !isSafeAdoptOutputKey(jobId, outputKey)) {
+    return json({ error: "outputKey must be a safe relative key under renders/<jobId>/" }, 400);
+  }
   if (body.seconds !== undefined && (typeof body.seconds !== "number" || !Number.isFinite(body.seconds))) {
     return json({ error: "seconds must be a finite number if provided" }, 400);
   }
@@ -74,18 +88,20 @@ export async function handleAdoptRender(
 
   try {
     const existing = await env.DB.prepare(
-      "SELECT id FROM renders WHERE job_id = ? LIMIT 1",
+      "SELECT id, status, output_key FROM renders WHERE job_id = ? LIMIT 1",
     )
       .bind(jobId)
-      .first<{ id: number }>();
+      .first<ExistingRenderForAdopt>();
     if (existing) {
-      if (outputKey) await markFinishDone(env, jobId, outputKey, outJson());
+      if (outputKey && (existing.output_key !== outputKey || existing.status !== "COMPLETED")) {
+        return json({ error: "jobId already exists; adopt will not update an existing render" }, 409);
+      }
       return json({
         ok: true,
         jobId,
         project,
         adopted: true,
-        completed: !!outputKey,
+        completed: existing.status === "COMPLETED",
         deduped: true,
       });
     }
