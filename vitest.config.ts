@@ -30,9 +30,23 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
   },
   resolve: {
-    alias: {
-      "vivijure-modules/keyframe": resolve(modules, "keyframe/src/index.ts"),
-      "vivijure-modules/own-gpu": resolve(modules, "own-gpu/src/index.ts"),
-    },
+    // Sparse-checkout of vivijure-cf modules has no node_modules. Module entrypoints
+    // import `@skyphusion-labs/vivijure-core/...` subpaths; without an alias those
+    // resolve from the module file and fail (local/main CI after cf#184). Point them
+    // at this package's src so quality-tier-drift can load MANIFEST without a cf install.
+    alias: [
+      {
+        find: /^@skyphusion-labs\/vivijure-core\/(.+)$/,
+        replacement: resolve(root, "src/$1.ts"),
+      },
+      {
+        find: "vivijure-modules/keyframe",
+        replacement: resolve(modules, "keyframe/src/index.ts"),
+      },
+      {
+        find: "vivijure-modules/own-gpu",
+        replacement: resolve(modules, "own-gpu/src/index.ts"),
+      },
+    ],
   },
 });
