@@ -3,7 +3,6 @@ import {
   endpointWorkersMaxNeedsRestore,
   idleScaleDownGuidance,
   fetchEndpointWorkersMax,
-  patchEndpointWorkersMax,
   reconcileRunpodEndpointWorkersMax,
   RUNPOD_REST_BASE,
 } from "../src/runpod-endpoint-reconcile.js";
