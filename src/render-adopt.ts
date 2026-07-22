@@ -3,7 +3,58 @@
 import type { Env } from "./platform/orchestrator-context.js";
 import { insertRender, markFinishDone } from "./renders-db.js";
 import { coerceQualityTier, deriveProjectFromBundleKey } from "./runpod-submit.js";
-import { isSafeBundleKey } from "./key-safety.js";
+import { isSafeBundleKey, isSafeRelKey } from "./key-safety.js";
+
+interface ExistingRenderForAdopt {
+  id: number;
+  status: string;
+  output_key: string | null;
+}
+
+/** jobId must be a single safe path segment so `renders/<jobId>/` stays unambiguous. */
+export function isSafeAdoptJobId(jobId: string): boolean {
+  return jobId.length > 0 && jobId.length <= 256 && !jobId.includes("/") && isSafeRelKey(jobId);
+}
+
+export function isSafeAdoptOutputKey(jobId: string, outputKey: string): boolean {
+  const prefix = `renders/${jobId}/`;
+  return isSafeRelKey(outputKey) && outputKey.startsWith(prefix) && outputKey.length > prefix.length;
+}
+
+function adoptConflictResponse(): Response {
+  // Generic body: avoid confirming whether a jobId exists or its status.
+  return json({ error: "adopt conflict" }, 409);
+}
+
+function existingAdoptResponse(
+  jobId: string,
+  project: string,
+  existing: ExistingRenderForAdopt,
+  outputKey: string | null,
+): Response {
+  if (outputKey && (existing.output_key !== outputKey || existing.status !== "COMPLETED")) {
+    return adoptConflictResponse();
+  }
+  return json({
+    ok: true,
+    jobId,
+    project,
+    adopted: true,
+    completed: existing.status === "COMPLETED",
+    deduped: true,
+  });
+}
+
+async function selectExistingRender(
+  env: Env,
+  jobId: string,
+): Promise<ExistingRenderForAdopt | null> {
+  return env.DB.prepare(
+    "SELECT id, status, output_key FROM renders WHERE job_id = ? LIMIT 1",
+  )
+    .bind(jobId)
+    .first<ExistingRenderForAdopt>();
+}
 
 export async function handleAdoptRender(
   request: Request,
@@ -28,11 +79,17 @@ export async function handleAdoptRender(
     return json({ error: "jobId is required (non-empty string)" }, 400);
   }
   const jobId = body.jobId.trim();
+  if (!isSafeAdoptJobId(jobId)) {
+    return json({ error: "jobId must be a safe single path segment" }, 400);
+  }
 
   const outputKey =
     typeof body.outputKey === "string" && body.outputKey.trim().length > 0
       ? body.outputKey.trim()
       : null;
+  if (outputKey && !isSafeAdoptOutputKey(jobId, outputKey)) {
+    return json({ error: "outputKey must be a safe relative key under renders/<jobId>/" }, 400);
+  }
   if (body.seconds !== undefined && (typeof body.seconds !== "number" || !Number.isFinite(body.seconds))) {
     return json({ error: "seconds must be a finite number if provided" }, 400);
   }
@@ -73,24 +130,15 @@ export async function handleAdoptRender(
   };
 
   try {
-    const existing = await env.DB.prepare(
-      "SELECT id FROM renders WHERE job_id = ? LIMIT 1",
-    )
-      .bind(jobId)
-      .first<{ id: number }>();
+    const existing = await selectExistingRender(env, jobId);
     if (existing) {
-      if (outputKey) await markFinishDone(env, jobId, outputKey, outJson());
-      return json({
-        ok: true,
-        jobId,
-        project,
-        adopted: true,
-        completed: !!outputKey,
-        deduped: true,
-      });
+      return existingAdoptResponse(jobId, project, existing, outputKey);
     }
 
-    await insertRender(env, {
+    // INSERT is the uniqueness authority (ON CONFLICT DO NOTHING). Only the insert
+    // winner may markFinishDone — a concurrent loser must never complete/overwrite
+    // the winner's row (TOCTOU on the pre-insert SELECT).
+    const inserted = await insertRender(env, {
       jobId,
       project,
       bundleKey,
@@ -99,6 +147,13 @@ export async function handleAdoptRender(
       mode: (body.mode as "full" | "keyframes-only" | undefined) ?? "full",
       projectId: null,
     });
+    if (!inserted) {
+      const raced = await selectExistingRender(env, jobId);
+      if (!raced) {
+        return json({ error: "could not adopt render" }, 500);
+      }
+      return existingAdoptResponse(jobId, project, raced, outputKey);
+    }
     if (outputKey) {
       await markFinishDone(env, jobId, outputKey, outJson());
     }

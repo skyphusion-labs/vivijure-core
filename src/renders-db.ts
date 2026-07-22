@@ -283,8 +283,10 @@ export function buildInsertRenderStmt(env: Env, row: NewRenderRow) {
   );
 }
 
-export async function insertRender(env: Env, row: NewRenderRow): Promise<void> {
-  await buildInsertRenderStmt(env, row).run();
+/** Insert a render row. Returns true iff a new row was written (false on job_id conflict). */
+export async function insertRender(env: Env, row: NewRenderRow): Promise<boolean> {
+  const res = await buildInsertRenderStmt(env, row).run();
+  return ((res.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
 }
 
 // Best-effort UPDATE from a poll / cancel response. No-op when no row
