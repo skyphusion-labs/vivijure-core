@@ -36,6 +36,7 @@ tagging the next release).
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.2.6` | 1.2.6 | TBD | 2026-07-22 | **Adopt-render auth hardening (core#76/#77).** Safe `outputKey` under `renders/<jobId>/`; INSERT winner-only finish; no overwrite of existing rows. |
 | `vivijure-core-v1.2.5` | 1.2.5 | 632b556 | 2026-07-22 | **Film phase `from` on cold isolate (cf#110) + `HookCatalogEntry.order` (core#54).** Panels drop hardcoded HOOK_ORDER. |
 | `vivijure-core-v1.2.4` | 1.2.4 | 1d9923d | 2026-07-22 | **Pre-submit RunPod idle workersMax reconcile (cf#61).** REST GET/PATCH restore when management keys allow; honest guidance for scoped invoke keys. Ships core#69. |
 | `vivijure-core-v1.2.3` | 1.2.3 | fed694e | 2026-07-21 | **#53 advanceFilmJob wedge -> terminal fail** (core#64) + **COMPLETED renders stamp `output_key`** when `film.mp4` exists (local#99, core#65). |

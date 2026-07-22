@@ -5,10 +5,14 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased
 
+## [1.2.6] -- 2026-07-22
+
+**Fix: adopt-render hijack + TOCTOU race (core#76).** PATCH.
+
 - **fix(security):** harden `handleAdoptRender` so it validates adopted `outputKey` values under
   `renders/<jobId>/`, treats INSERT (`ON CONFLICT DO NOTHING`) as the uniqueness authority so a
   concurrent adopt loser never `markFinishDone`s another's row, and never completes or overwrites an
-  existing render row by guessed `jobId` (#76).
+  existing render row by guessed `jobId` (#76 / #77).
 
 ## [1.2.5] -- 2026-07-22
 
