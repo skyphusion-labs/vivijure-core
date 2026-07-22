@@ -18,6 +18,7 @@ import {
   validateConfig,
   dispatchChain,
 } from "./modules/registry.js";
+import { coupleLocalGpuKeyframeChoice } from "./modules/render-pipeline.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
 import { coerceShotId } from "./storyboard-ids.js";
@@ -1878,8 +1879,15 @@ export async function startFilmJob(
   // Honor the planner's keyframe backend pick (e.g. cloud-keyframe) over the ui.order default, mirroring
   // motion.backend selection. An explicit-but-unknown choice resolves to null -> the render fails loud
   // with a clear "keyframe module <choice> not installed" rather than silently swapping backends.
+  // When motion is a local GPU door and keyframe_backend is omitted, couple to the local keyframe
+  // module so the film never silently routes keyframes through RunPod (vivijure-local#153).
   const kfServing = servingForHook(modules, "keyframe");
-  const kf = (args.keyframe_backend ? kfServing.find((m) => m.name === args.keyframe_backend) : kfServing[0]) ?? null;
+  const keyframeChoice = coupleLocalGpuKeyframeChoice(
+    modules,
+    args.motion_backend,
+    args.keyframe_backend,
+  );
+  const kf = (keyframeChoice ? kfServing.find((m) => m.name === keyframeChoice) : kfServing[0]) ?? null;
   const job: FilmJob = {
     film_id: "film-" + crypto.randomUUID(),
     project: args.project, bundle_key: args.bundle_key, scenes,

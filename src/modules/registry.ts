@@ -460,6 +460,41 @@ export function motionBackendPreflightError(
   return null;
 }
 
+/** When motion is a local GPU door (ui.locality "local"), keyframes must also run on a local
+ *  keyframe module -- never silently on RunPod SDXL / cloud-keyframe (vivijure-local#153).
+ *  Returns a novice-readable 400 message, or null when the pairing is honest. */
+export function localGpuKeyframePreflightError(
+  modules: RegisteredModule[],
+  motionBackend: string | undefined,
+  keyframeBackend: string | undefined,
+): string | null {
+  const motionName = (motionBackend ?? "").trim();
+  if (!motionName) return null;
+  const motion = servingForHook(modules, "motion.backend").find((m) => m.name === motionName);
+  if (!motion || (motion.ui?.locality ?? "cloud") !== "local") return null;
+
+  const localKf =
+    servingForHook(modules, "keyframe").find((m) => (m.ui?.locality ?? "cloud") === "local") ??
+    servingForHook(modules, "keyframe").find((m) => m.name === motion.name);
+  if (!localKf) {
+    return (
+      `motion backend "${motionName}" is a local GPU door, but no local keyframe module is installed. ` +
+      `The local-gpu module must serve the keyframe hook (or install another locality:"local" keyframe module). ` +
+      `Refusing to silently route keyframes through RunPod/cloud.`
+    );
+  }
+
+  const kfName = (keyframeBackend ?? "").trim();
+  if (!kfName || kfName === localKf.name) return null;
+  const chosen = servingForHook(modules, "keyframe").find((m) => m.name === kfName);
+  if (!chosen) return null; // unknown name fails elsewhere as "no keyframe module"
+  if ((chosen.ui?.locality ?? "cloud") === "local") return null;
+  return (
+    `motion backend "${motionName}" requires local keyframes; keyframe backend "${kfName}" is not local ` +
+    `(locality "${chosen.ui?.locality ?? "cloud"}"). Use "${localKf.name}" or omit keyframe_backend to auto-select it.`
+  );
+}
+
 /** Strict schema check for a CALLER-SUPPLIED module config at the submit boundary (#577). The
  *  invoke-path clamp (validateConfig) is deliberately forgiving -- clamp, never throw -- which is
  *  right mid-pipeline but hides a caller's mistake at the API door: the bad value silently degrades
