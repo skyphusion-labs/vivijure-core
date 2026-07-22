@@ -6,7 +6,9 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 ## Unreleased
 
 - **fix(security):** harden `handleAdoptRender` so it validates adopted `outputKey` values under
-  `renders/<jobId>/` and never completes or overwrites an existing render row by guessed `jobId` (#76).
+  `renders/<jobId>/`, treats INSERT (`ON CONFLICT DO NOTHING`) as the uniqueness authority so a
+  concurrent adopt loser never `markFinishDone`s another's row, and never completes or overwrites an
+  existing render row by guessed `jobId` (#76).
 
 ## [1.2.5] -- 2026-07-22
 

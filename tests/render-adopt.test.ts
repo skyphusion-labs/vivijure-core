@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { handleAdoptRender, isSafeAdoptOutputKey } from "../src/render-adopt.js";
+import {
+  handleAdoptRender,
+  isSafeAdoptJobId,
+  isSafeAdoptOutputKey,
+} from "../src/render-adopt.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
 interface Row {
@@ -20,10 +24,14 @@ function adoptRequest(body: Record<string, unknown>): Request {
   });
 }
 
-function makeEnv(seed: Row[] = []) {
+function makeEnv(
+  seed: Row[] = [],
+  opts: { selectMissOnce?: boolean } = {},
+) {
   const rows = new Map(seed.map((r) => [r.job_id, { ...r }]));
   const inserts: Row[] = [];
   const finishUpdates: Array<{ jobId: string; outputKey: string; outputJson: string }> = [];
+  let selectMissesLeft = opts.selectMissOnce ? 1 : 0;
   const env = {
     DB: {
       prepare(sql: string) {
@@ -35,8 +43,14 @@ function makeEnv(seed: Row[] = []) {
           },
           async first<T>() {
             if (/SELECT id, status, output_key FROM renders WHERE job_id = \?/i.test(sql)) {
+              if (selectMissesLeft > 0) {
+                selectMissesLeft -= 1;
+                return null;
+              }
               const row = rows.get(String(binds[0]));
-              return (row ? { id: row.id, status: row.status, output_key: row.output_key } : null) as T | null;
+              return (row
+                ? { id: row.id, status: row.status, output_key: row.output_key }
+                : null) as T | null;
             }
             return null;
           },
@@ -52,10 +66,12 @@ function makeEnv(seed: Row[] = []) {
                 output_key: null,
                 output_json: null,
               };
-              if (!rows.has(row.job_id)) {
-                rows.set(row.job_id, row);
-                inserts.push(row);
+              if (rows.has(row.job_id)) {
+                // Mirror D1 ON CONFLICT(job_id) DO NOTHING: changes === 0.
+                return { success: true, meta: { changes: 0 } };
               }
+              rows.set(row.job_id, row);
+              inserts.push(row);
               return { success: true, meta: { changes: 1 } };
             }
             if (/UPDATE renders SET output_key = \?/i.test(sql)) {
@@ -89,6 +105,13 @@ async function responseJson(resp: Response): Promise<Record<string, unknown>> {
 }
 
 describe("render adoption hardening (#76)", () => {
+  it("validates adopted jobIds as single safe path segments", () => {
+    expect(isSafeAdoptJobId("job-1")).toBe(true);
+    expect(isSafeAdoptJobId("foo/bar")).toBe(false);
+    expect(isSafeAdoptJobId("..")).toBe(false);
+    expect(isSafeAdoptJobId("has space")).toBe(false);
+  });
+
   it("validates adopted output keys as safe keys under renders/<jobId>/", () => {
     expect(isSafeAdoptOutputKey("job-1", "renders/job-1/film.mp4")).toBe(true);
     expect(isSafeAdoptOutputKey("job-1", "renders/other/film.mp4")).toBe(false);
@@ -169,9 +192,7 @@ describe("render adoption hardening (#76)", () => {
     }), env);
 
     expect(resp.status).toBe(409);
-    expect(await responseJson(resp)).toEqual({
-      error: "jobId already exists; adopt will not update an existing render",
-    });
+    expect(await responseJson(resp)).toEqual({ error: "adopt conflict" });
     expect(rows.get("job-active")?.status).toBe("SUBMITTED");
     expect(rows.get("job-active")?.output_key).toBeNull();
     expect(finishUpdates).toEqual([]);
@@ -215,6 +236,60 @@ describe("render adoption hardening (#76)", () => {
     const resp = await handleAdoptRender(adoptRequest({
       jobId: "job-done",
       outputKey: "renders/job-done/film.mp4",
+    }), env);
+
+    expect(resp.status).toBe(200);
+    expect(await responseJson(resp)).toMatchObject({ deduped: true, completed: true });
+    expect(finishUpdates).toEqual([]);
+  });
+
+  it("does not finish-update when INSERT loses a concurrent race for the same jobId", async () => {
+    // SELECT misses (as if racing), INSERT hits ON CONFLICT DO NOTHING against a
+    // winner that already completed — loser must not call markFinishDone.
+    const { env, rows, inserts, finishUpdates } = makeEnv(
+      [{
+        id: 1,
+        job_id: "job-race",
+        project: "demo",
+        bundle_key: "",
+        quality_tier: "final",
+        status: "COMPLETED",
+        output_key: "renders/job-race/winner.mp4",
+        output_json: JSON.stringify({ output_key: "renders/job-race/winner.mp4" }),
+      }],
+      { selectMissOnce: true },
+    );
+
+    const resp = await handleAdoptRender(adoptRequest({
+      jobId: "job-race",
+      outputKey: "renders/job-race/attacker.mp4",
+    }), env);
+
+    expect(resp.status).toBe(409);
+    expect(await responseJson(resp)).toEqual({ error: "adopt conflict" });
+    expect(inserts).toHaveLength(0);
+    expect(finishUpdates).toEqual([]);
+    expect(rows.get("job-race")?.output_key).toBe("renders/job-race/winner.mp4");
+  });
+
+  it("dedupes when INSERT loses a race but the winner matches the request", async () => {
+    const { env, finishUpdates } = makeEnv(
+      [{
+        id: 1,
+        job_id: "job-race",
+        project: "demo",
+        bundle_key: "",
+        quality_tier: "final",
+        status: "COMPLETED",
+        output_key: "renders/job-race/film.mp4",
+        output_json: JSON.stringify({ output_key: "renders/job-race/film.mp4" }),
+      }],
+      { selectMissOnce: true },
+    );
+
+    const resp = await handleAdoptRender(adoptRequest({
+      jobId: "job-race",
+      outputKey: "renders/job-race/film.mp4",
     }), env);
 
     expect(resp.status).toBe(200);
