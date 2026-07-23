@@ -36,6 +36,8 @@ tagging the next release).
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.2.12` | 1.2.12 | 05ea36b | 2026-07-23 | **K3 closeout (core#89).** Reject unsafe GPU `output_key` in `updateRenderFromView`. |
+| `vivijure-core-v1.2.11` | 1.2.11 | 04fa4b3 | 2026-07-23 | **Fix: validate audioKey in stageAudioKeyForRenders (KF3 audit).** PATCH. Predates #89 merge. |
 | `vivijure-core-v1.2.10` | 1.2.10 | (this PR) | pending | **KF3 tar path safety (core#86).** `emitTar` / `readTar` reject `..` traversal via `isSafeRelKey`. |
 | `vivijure-core-v1.2.9` | 1.2.9 | f4084c6 | 2026-07-23 | **KF3 cast train family parse (core#84).** Honor `wanConfigured` when train fields live only in `renderOverrides`. |
 | `vivijure-core-v1.2.8` | 1.2.8 | 5df0d4f | 2026-07-23 | **Default cast `/train-lora` to Wan train EP when wired (cf#29 Phase E).** SDXL escape via `model_family:"sdxl"`. Tag predates #84 merge; npm 1.2.8 matches tag commit before KF3 fix. |
