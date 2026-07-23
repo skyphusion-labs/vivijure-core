@@ -314,10 +314,11 @@ export async function updateRenderFromView(
   ) {
     const o = view.output as Record<string, unknown>;
     if (typeof o.output_key === "string" && o.output_key.length > 0) {
-      if (isSafeRelKey(o.output_key)) {
-        outputKey = o.output_key;
+      const candidate = o.output_key;
+      if (isSafeRelKey(candidate)) {
+        outputKey = candidate;
       } else {
-        console.warn(`renders: rejecting unsafe output_key from GPU envelope: ${o.output_key.slice(0, 80)}`);
+        console.warn(`renders: rejecting unsafe output_key from GPU envelope: ${candidate.slice(0, 80)}`);
       }
     }
     // v0.39.0: extract the keyframes list (GPU 0.4.0+) so we can render
