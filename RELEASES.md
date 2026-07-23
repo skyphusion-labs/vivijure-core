@@ -36,6 +36,8 @@ tagging the next release).
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.2.9` | 1.2.9 | (this PR) | pending | **KF3 cast train family parse (core#84).** Honor `wanConfigured` when train fields live only in `renderOverrides`. |
+| `vivijure-core-v1.2.8` | 1.2.8 | 5df0d4f | 2026-07-23 | **Default cast `/train-lora` to Wan train EP when wired (cf#29 Phase E).** SDXL escape via `model_family:"sdxl"`. Tag predates #84 merge; npm 1.2.8 matches tag commit before KF3 fix. |
 | `vivijure-core-v1.2.7` | 1.2.7 | (this PR) | pending | **Local-GPU keyframe coupling (vivijure-local#153).** When motion is locality `local`, default/require a local keyframe module; `localGpuKeyframePreflightError`; dedicated keyframe modules keep the global default pick. |
 | `vivijure-core-v1.2.6` | 1.2.6 | 0f0f796 | 2026-07-22 | **Adopt-render auth hardening (core#76/#77).** Safe `outputKey` under `renders/<jobId>/`; INSERT winner-only finish; no overwrite of existing rows. |
 | `vivijure-core-v1.2.5` | 1.2.5 | 632b556 | 2026-07-22 | **Film phase `from` on cold isolate (cf#110) + `HookCatalogEntry.order` (core#54).** Panels drop hardcoded HOOK_ORDER. |
