@@ -1,8 +1,37 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseCastTrainBodyFields,
   resolveCastTrainFamily,
   wanTrainEndpointConfigured,
 } from "../src/cast-lora-train.js";
+
+describe("parseCastTrainBodyFields", () => {
+  it("ignores renderOverrides wan family when Wan train is not wired", () => {
+    const body = parseCastTrainBodyFields(
+      { renderOverrides: { model_family: "wan" } },
+      false,
+    );
+    expect(body.modelFamily).toBe("sdxl");
+  });
+
+  it("honors renderOverrides sdxl when Wan train is not wired", () => {
+    expect(
+      parseCastTrainBodyFields({ renderOverrides: { model_family: "sdxl" } }, false)
+        .modelFamily,
+    ).toBe("sdxl");
+  });
+
+  it("top-level model_family wins over renderOverrides", () => {
+    const body = parseCastTrainBodyFields(
+      {
+        model_family: "sdxl",
+        renderOverrides: { model_family: "wan" },
+      },
+      true,
+    );
+    expect(body.modelFamily).toBe("sdxl");
+  });
+});
 
 describe("resolveCastTrainFamily", () => {
   it("defaults to wan when the dedicated endpoint is wired and family is omitted", () => {
@@ -19,8 +48,12 @@ describe("resolveCastTrainFamily", () => {
     expect(resolveCastTrainFamily(true, "SDXL")).toBe("sdxl");
   });
 
-  it("honors explicit wan request", () => {
-    expect(resolveCastTrainFamily(false, "wan")).toBe("wan");
+  it("honors explicit wan request when wired", () => {
+    expect(resolveCastTrainFamily(true, "wan")).toBe("wan");
+  });
+
+  it("falls back to sdxl for explicit wan when not wired", () => {
+    expect(resolveCastTrainFamily(false, "wan")).toBe("sdxl");
   });
 });
 
