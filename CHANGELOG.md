@@ -5,6 +5,12 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased
 
+**Feat: default cast `/train-lora` to Wan when the dedicated train endpoint is wired (cf#29 Phase E).** MINOR.
+
+- `handleCastTrainLora` submits to `RUNPOD_WAN_TRAIN_ENDPOINT_ID` by default when configured;
+  pass `model_family:"sdxl"` (top-level or in `renderOverrides`) for the legacy render-endpoint path.
+- `handleCastTrainWanLora` remains an explicit always-Wan alias.
+
 ## [1.2.6] -- 2026-07-22
 
 **Fix: adopt-render hijack + TOCTOU race (core#76).** PATCH.
