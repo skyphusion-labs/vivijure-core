@@ -7,6 +7,12 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 (none)
 
+## [1.2.12] -- 2026-07-23
+
+**Fix: reject unsafe GPU `output_key` in `updateRenderFromView` (K3 closeout, core#89).** PATCH.
+
+- Validates `output_key` before persisting render view updates; blocks traversal and out-of-prefix keys.
+
 ## [1.2.11] -- 2026-07-23
 
 **Fix: validate audioKey in stageAudioKeyForRenders (KF3 audit).** PATCH.
