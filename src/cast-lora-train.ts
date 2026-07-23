@@ -53,13 +53,42 @@ export function resolveCastTrainFamily(
 ): CastTrainModelFamily {
   const norm = String(explicit ?? "").trim().toLowerCase();
   if (norm === "sdxl") return "sdxl";
-  if (norm === "wan") return "wan";
+  if (norm === "wan") return wanConfigured ? "wan" : "sdxl";
   return wanConfigured ? "wan" : "sdxl";
 }
 
-async function parseCastTrainRequestBody(request: Request): Promise<CastTrainRequestBody> {
+export function parseCastTrainBodyFields(
+  parsed: {
+    renderOverrides?: unknown;
+    model_family?: unknown;
+    modelFamily?: unknown;
+  } | null | undefined,
+  wanConfigured: boolean,
+): CastTrainRequestBody {
   let renderOverrides: Record<string, unknown> | undefined;
   let modelFamily: CastTrainModelFamily | undefined;
+  if (
+    parsed?.renderOverrides &&
+    typeof parsed.renderOverrides === "object" &&
+    !Array.isArray(parsed.renderOverrides)
+  ) {
+    renderOverrides = parsed.renderOverrides as Record<string, unknown>;
+    const roFamily = renderOverrides.model_family ?? renderOverrides.modelFamily;
+    if (typeof roFamily === "string") {
+      modelFamily = resolveCastTrainFamily(wanConfigured, roFamily);
+    }
+  }
+  const topFamily = parsed?.model_family ?? parsed?.modelFamily;
+  if (typeof topFamily === "string") {
+    modelFamily = resolveCastTrainFamily(wanConfigured, topFamily);
+  }
+  return { renderOverrides, modelFamily };
+}
+
+async function parseCastTrainRequestBody(
+  request: Request,
+  wanConfigured: boolean,
+): Promise<CastTrainRequestBody> {
   try {
     const ct = (request.headers.get("content-type") || "").toLowerCase();
     if (ct.includes("application/json")) {
@@ -68,26 +97,12 @@ async function parseCastTrainRequestBody(request: Request): Promise<CastTrainReq
         model_family?: unknown;
         modelFamily?: unknown;
       };
-      if (
-        parsed?.renderOverrides &&
-        typeof parsed.renderOverrides === "object" &&
-        !Array.isArray(parsed.renderOverrides)
-      ) {
-        renderOverrides = parsed.renderOverrides as Record<string, unknown>;
-        const roFamily = renderOverrides.model_family ?? renderOverrides.modelFamily;
-        if (typeof roFamily === "string") {
-          modelFamily = resolveCastTrainFamily(true, roFamily);
-        }
-      }
-      const topFamily = parsed?.model_family ?? parsed?.modelFamily;
-      if (typeof topFamily === "string") {
-        modelFamily = resolveCastTrainFamily(true, topFamily);
-      }
+      return parseCastTrainBodyFields(parsed, wanConfigured);
     }
   } catch {
     /* empty body is fine */
   }
-  return { renderOverrides, modelFamily };
+  return {};
 }
 
 // --- Stuck-training reconciler (#295) ---------------------------------------------------------
@@ -275,8 +290,8 @@ export async function handleCastTrainLora(
   env: Env,
   id: number,
 ): Promise<Response> {
-  const body = await parseCastTrainRequestBody(request);
   const wanConfigured = await wanTrainEndpointConfigured(env);
+  const body = await parseCastTrainRequestBody(request, wanConfigured);
   const family = body.modelFamily ?? resolveCastTrainFamily(wanConfigured);
   return executeCastTrain(env, id, body.renderOverrides, family);
 }
@@ -288,7 +303,8 @@ export async function handleCastTrainWanLora(
   env: Env,
   id: number,
 ): Promise<Response> {
-  const body = await parseCastTrainRequestBody(request);
+  const wanConfigured = await wanTrainEndpointConfigured(env);
+  const body = await parseCastTrainRequestBody(request, wanConfigured);
   return executeCastTrain(env, id, body.renderOverrides, "wan");
 }
 
@@ -342,6 +358,12 @@ async function executeCastTrain(
   }
 
   if (family === "wan") {
+    if (!(await wanTrainEndpointConfigured(env))) {
+      return json(
+        { error: "Wan cast LoRA training is not configured on this host (wire RUNPOD_WAN_TRAIN_ENDPOINT_ID)" },
+        501,
+      );
+    }
     const loraDestKeys = deriveWanLoraDestKeys(cast.id, timestamp);
     const submit = await submitTrainWanLoraJob(env, {
       project: args.storyboard.projectName,
