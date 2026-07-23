@@ -7,6 +7,13 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 (none)
 
+## [1.2.11] -- 2026-07-23
+
+**Fix: validate audioKey in stageAudioKeyForRenders (KF3 audit).** PATCH.
+
+- Reject unsafe or out-of-prefix keys before any R2 I/O; blocks cross-bucket reads via arbitrary
+  `bundles/` or nested `out/` paths while preserving studio `audio/`, `dialogue/`, and `renders/` beds.
+
 ## [1.2.10] -- 2026-07-23
 
 **Fix: reject path traversal in tar helpers (KF3 audit, core#86).** PATCH.
