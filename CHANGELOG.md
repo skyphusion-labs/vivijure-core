@@ -7,6 +7,12 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 (none)
 
+## [1.2.10] -- 2026-07-23
+
+**Fix: reject path traversal in tar helpers (KF3 audit, core#86).** PATCH.
+
+- `emitTar` and `readTar` validate every entry name with `isSafeRelKey`; blocks `..` and absolute paths.
+
 ## [1.2.9] -- 2026-07-23
 
 **Fix: honor `wanConfigured` in cast train body parse (KF3 audit, core#84).** PATCH.
