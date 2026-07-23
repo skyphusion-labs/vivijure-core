@@ -5,6 +5,17 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased
 
+(none)
+
+## [1.2.9] -- 2026-07-23
+
+**Fix: honor `wanConfigured` in cast train body parse (KF3 audit, core#84).** PATCH.
+
+- `resolveCastTrainFamily` no longer drops Wan routing when the client sends train fields only in
+  `renderOverrides`; matches the wired-endpoint default from 1.2.8.
+
+## [1.2.8] -- 2026-07-23
+
 **Feat: default cast `/train-lora` to Wan when the dedicated train endpoint is wired (cf#29 Phase E).** MINOR.
 
 - `handleCastTrainLora` submits to `RUNPOD_WAN_TRAIN_ENDPOINT_ID` by default when configured;
