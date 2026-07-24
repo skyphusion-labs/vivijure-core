@@ -36,6 +36,7 @@ tagging the next release).
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.2.13` | 1.2.13 | 424e418 | 2026-07-24 | **Fix: cast-LoRA stuck-training reconciler (core#92)** no longer false-fails an observed-running Wan train; adversarial-audit CI. *(Row backfilled 2026-07-25 -- the release shipped without one.)* |
 | `vivijure-core-v1.2.12` | 1.2.12 | 05ea36b | 2026-07-23 | **K3 closeout (core#89).** Reject unsafe GPU `output_key` in `updateRenderFromView`. |
 | `vivijure-core-v1.2.11` | 1.2.11 | 04fa4b3 | 2026-07-23 | **Fix: validate audioKey in stageAudioKeyForRenders (KF3 audit).** PATCH. Predates #89 merge. |
 | `vivijure-core-v1.2.10` | 1.2.10 | (this PR) | pending | **KF3 tar path safety (core#86).** `emitTar` / `readTar` reject `..` traversal via `isSafeRelKey`. |

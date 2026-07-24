@@ -717,5 +717,28 @@ export interface ModulesResponse {
     // never a hardcoded page branch. Both omitted off-demo. A module never reads these; the UI does.
     render?: { available: boolean };
     assistant?: { model: string; note: string };
+    /**
+     * Hooks this HOST cannot serve right now, mapped to an operator-honest reason (vivijure-cf#98).
+     *
+     * A key's ABSENCE means available; an empty object or an omitted block means everything the
+     * catalog lists is serviceable. The frontend renders this GENERICALLY off the hook catalog --
+     * any listed hook that appears here is shown unavailable with its reason printed VERBATIM -- so
+     * a new unserviceable hook needs no new UI and no per-feature branch.
+     *
+     * WHY THIS IS A HOST FIELD AND NOT A MODULE ONE: a module being INSTALLED and its hook being
+     * SERVICEABLE are different facts. `/api/storyboard/models` used to project planning models
+     * purely from installed `plan.enhance` modules, with no knowledge of whether the deploy actually
+     * had the AI binding and gateway configured -- so a hosted tenant provisioned without them got a
+     * fully populated model picker where every option 500s. The wire payload simply did not carry
+     * the fact, so no amount of frontend work could fix it.
+     *
+     * The principle is not new here, only generalized: `catalogForDeploy` already serves the EMPTY
+     * planning-model list to a demo deploy on the grounds that advertising capability a deployment
+     * does not have is a lie. This lets any host say the same thing for any reason, not just demo.
+     *
+     * The reason string is shown to a USER who may not be able to fix it, so write it to be
+     * actionable by its reader rather than only diagnostic for an operator.
+     */
+    hooks_unavailable?: Record<string, string>;
   };
 }

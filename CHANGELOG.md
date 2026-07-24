@@ -5,7 +5,32 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased
 
-(none)
+### Added: `host.hooks_unavailable` -- a host can declare hooks it cannot serve (vivijure-cf#98)
+
+MINOR (additive; `MODULE_API` unchanged, `host` is optional and additive by contract).
+
+- `ModulesResponse.host.hooks_unavailable?: Record<string, string>` maps a hook name to an
+  operator-honest reason. A key's **absence means available**; an omitted block or an empty object
+  means everything the catalog lists is serviceable.
+- Closes a broken-button class: a module being **installed** and its hook being **serviceable** are
+  different facts, and only the first was ever on the wire. A host without the AI binding still
+  advertised a full planning-model picker in which every option 500s, and no frontend work could fix
+  it because the payload did not carry the fact.
+- Generalizes an existing principle rather than adding one: `catalogForDeploy` already serves the
+  empty planning-model list to a demo deploy because advertising capability a deployment lacks is a
+  lie. This lets any host say so for any reason.
+- Consumers render it **generically** off the hook catalog with the reason printed verbatim, so a
+  future unserviceable hook needs no new UI.
+
+## [1.2.13] -- 2026-07-24
+
+**Backfilled 2026-07-25.** This version was tagged and published with no changelog heading and no
+`RELEASES.md` row; recorded here from the tag range rather than left as a hole in the ledger. Same
+class of gap as vivijure-local v1.1.16.
+
+- **Fix (core#92):** the cast-LoRA stuck-training reconciler no longer false-fails a Wan train that
+  is observably still running.
+- **CI:** adversarial security audit workflow added.
 
 ## [1.2.12] -- 2026-07-23
 
