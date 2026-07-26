@@ -358,17 +358,20 @@ export function finishOrderReorderDialogue(finishConfig?: Record<string, Record<
 }
 
 /** Resolve the finish chain for one shot. Default is legacy ui.order on dialogue shots; opt in to #584
- *  reorder via `finish_config["finish-order"].dialogue_reorder`. */
+ *  reorder via `finish_config["finish-order"].dialogue_reorder`. A shot with NO dialogue line omits every
+ *  `finish_consumes_audio` module (lip-sync) so the planner never routes to RunPod musetalk; module-level
+ *  noop alone is not enough (a stale sidecar can still submit and spin workers). */
 export function resolveFinishChainForShot(
   serving: RegisteredModule[],
   isDialogueShot: boolean,
   finishConfig?: Record<string, Record<string, unknown>>,
 ): RegisteredModule[] {
-  if (finishOrderLegacyDialogue(finishConfig)) return serving;
-  if (isDialogueShot && finishOrderReorderDialogue(finishConfig)) {
-    return finishChainForShot(serving, true);
-  }
-  return serving;
+  let chain: RegisteredModule[];
+  if (finishOrderLegacyDialogue(finishConfig)) chain = serving;
+  else if (isDialogueShot && finishOrderReorderDialogue(finishConfig)) chain = finishChainForShot(serving, true);
+  else chain = serving;
+  if (!isDialogueShot) chain = chain.filter((m) => !m.finish_consumes_audio);
+  return chain;
 }
 
 /** Internal: clips done -> set up the finish chain (one FinishShot per done clip). No finish modules
@@ -615,6 +618,8 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: FinishShot, pre
  *  chaining to the next module on completion. Phase -> assemble when every shot is terminal. */
 async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
   const envRec = env as unknown as Record<string, unknown>;
+  const modules = preModules ?? await discoverModules(envRec);
+  const finishModByBinding = new Map(modules.filter((m) => m.hooks.includes("finish")).map((m) => [m.binding, m]));
   // A transient invocation/poll blip re-dispatches the step (status stays `pending`) up to the cap
   // instead of failing it; a deterministic reject or the cap exhausted fails loud. `keepPoll` keeps a
   // poll token to re-poll (a lost poll) vs clearing it to re-submit (a failed invoke).
@@ -631,11 +636,26 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
   };
   for (const fs of job.finish_shots || []) {
     if (fs.status !== "pending") continue;
-    const fetcher = resolveFetcher(envRec, fs.chain[fs.idx]);
-    if (!fetcher) { fs.status = "failed"; fs.error = `finish module ${fs.chain[fs.idx]} not bound`; continue; }
+    const binding = fs.chain[fs.idx];
+    const stepMod = finishModByBinding.get(binding);
+    const dialogueAudioKey = job.dialogue_audio?.[fs.shot_id];
+    // Defense-in-depth: never invoke an audio-consuming finish module without dialogue audio (legacy
+    // jobs may still list lip-sync in chain). Fold a local noop so RunPod musetalk is never touched.
+    if (stepMod?.finish_consumes_audio && !dialogueAudioKey && !fs.poll) {
+      applyFinishOutput(fs, {
+        shot_id: fs.shot_id,
+        clip_key: fs.clip_key,
+        out_fps: 24,
+        frames: 0,
+        applied: ["noop:no-dialogue"],
+      });
+      continue;
+    }
+    const fetcher = resolveFetcher(envRec, binding);
+    if (!fetcher) { fs.status = "failed"; fs.error = `finish module ${binding} not bound`; continue; }
     const req = {
       hook: "finish" as const,
-      input: { shot_id: fs.shot_id, clip_key: fs.clip_key, audio_key: job.dialogue_audio?.[fs.shot_id] } as FinishInput,
+      input: { shot_id: fs.shot_id, clip_key: fs.clip_key, audio_key: dialogueAudioKey } as FinishInput,
       config: fs.configs?.[fs.idx] ?? {}, // validated per-module config (issue #75); {} only for legacy jobs
       context: { project: job.project, job_id: job.film_id },
     };
@@ -646,7 +666,7 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       // null etag still yields a deterministic hash); done only on invoke, never on a re-poll.
       const [clipEtag, audioEtag] = await Promise.all([
         headEtag(env, fs.clip_key),
-        headEtag(env, job.dialogue_audio?.[fs.shot_id]),
+        headEtag(env, dialogueAudioKey),
       ]);
       (req.input as FinishInput).output_hash = await finishStepInputHash(
         clipEtag, audioEtag, fs.configs?.[fs.idx] as Record<string, unknown> | undefined);
