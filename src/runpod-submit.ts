@@ -168,10 +168,9 @@ export interface TrainLoraJobInput {
   project: string;
   bundle_key: string;
   render_overrides?: Record<string, unknown>;
-  // Which LoRA family the GPU trains: omitted/"sdxl" = the in-process SDXL adapter (default);
-  // "wan" = the Wan 2.2 A14B two-expert adapter via ai-toolkit (cf#29). The backend orchestrator
-  // routes on this; a wan train is submitted to the DEDICATED Wan-training endpoint (see
-  // submitTrainWanLoraJob).
+  // Which LoRA family the GPU trains. Omitted on /train-lora defaults to Wan when
+  // RUNPOD_WAN_TRAIN_ENDPOINT_ID is wired (cf#29 Phase E); explicit "sdxl" keeps the render-endpoint
+  // escape hatch. submitTrainWanLoraJob always sets "wan".
   model_family?: "sdxl" | "wan";
 }
 

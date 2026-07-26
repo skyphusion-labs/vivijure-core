@@ -16,6 +16,8 @@
 // - Regular files only (no directories, symlinks, devices). The Python
 //   tarfile extractor creates parent dirs on extraction.
 
+import { isSafeRelKey } from "./key-safety.js";
+
 const BLOCK_SIZE = 512;
 
 export interface TarFile {
@@ -53,7 +55,14 @@ function checksumHeader(header: Uint8Array): number {
   return sum;
 }
 
+function assertSafeTarName(name: string): void {
+  if (!isSafeRelKey(name)) {
+    throw new Error(`tar: unsafe entry name: ${name}`);
+  }
+}
+
 function buildHeader(file: TarFile): Uint8Array {
+  assertSafeTarName(file.name);
   if (file.name.length === 0) {
     throw new Error("tar: empty file name");
   }
@@ -133,6 +142,7 @@ export function readTar(bytes: Uint8Array): TarFile[] {
     let nameEnd = 0;
     while (nameEnd < 100 && header[nameEnd] !== 0) nameEnd++;
     const name = decoder.decode(header.subarray(0, nameEnd));
+    assertSafeTarName(name);
     // size @ 124, width 12, octal (null/space terminated)
     const sizeStr = decoder
       .decode(header.subarray(124, 124 + 12))

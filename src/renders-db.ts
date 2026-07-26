@@ -19,6 +19,7 @@ import { writeRenderLog } from "./render-log.js";
 import { withD1Retry } from "./d1-retry.js";
 import { newPublicId } from "./public-id.js";
 import { adoptFilmOutputKeyFromStore } from "./film-output-key.js";
+import { isSafeRelKey } from "./key-safety.js";
 
 // Surface a corrupted *_json column instead of swallowing it silently (issue #15).
 // The empty / NULL case is handled by a length guard BEFORE the parse, so this only
@@ -312,8 +313,13 @@ export async function updateRenderFromView(
     !Array.isArray(view.output)
   ) {
     const o = view.output as Record<string, unknown>;
-    if (typeof o.output_key === "string" && o.output_key.length > 0) {
-      outputKey = o.output_key;
+    const rawOutputKey = o.output_key;
+    if (typeof rawOutputKey === "string" && rawOutputKey.length > 0) {
+      if (isSafeRelKey(rawOutputKey)) {
+        outputKey = rawOutputKey;
+      } else {
+        console.warn(`renders: rejecting unsafe output_key from GPU envelope: ${String(rawOutputKey).slice(0, 80)}`);
+      }
     }
     // v0.39.0: extract the keyframes list (GPU 0.4.0+) so we can render
     // thumbnails in the history row without re-parsing output_json.

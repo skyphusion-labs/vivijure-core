@@ -41,6 +41,20 @@ describe("#31 stageAudioKeyForRenders fails loudly on a missing in-renders key",
     const env = { R2_RENDERS: { head: async () => ({ size: 1 }) } } as unknown as Env;
     expect(await stageAudioKeyForRenders(env, "dialogue/s1.wav")).toBe("dialogue/s1.wav");
   });
+
+  it("rejects keys outside the renders audio prefix allowlist (KF3 #69)", async () => {
+    const env = { R2_RENDERS: { head: async () => ({ size: 1 }) } } as unknown as Env;
+    await expect(stageAudioKeyForRenders(env, "bundles/victim/secret.tar.gz")).rejects.toThrow(
+      /must start with one of/,
+    );
+  });
+
+  it("rejects unsafe out/ keys with extra path segments", async () => {
+    const env = {} as unknown as Env;
+    await expect(stageAudioKeyForRenders(env, "out/nested/extra.mp3")).rejects.toThrow(
+      /single segment under out/,
+    );
+  });
 });
 
 describe("#53 advanceFilmJob fails loudly on a non-SyntaxError throw (no forever-wedge)", () => {

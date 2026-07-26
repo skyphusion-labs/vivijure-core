@@ -17,6 +17,7 @@ import {
   submitTrainWanLoraJob,
   type RunpodResult,
 } from "./runpod-submit.js";
+import { secretValue, type SecretsStoreSecret } from "./secret-store.js";
 import {
   buildLoraTrainingBundleArgs,
   deriveLoraDestKey,
@@ -27,6 +28,82 @@ import {
 } from "./lora-bundle.js";
 
 const MIN_TRAINING_REFS = 4;
+
+export type CastTrainModelFamily = "sdxl" | "wan";
+
+export interface CastTrainRequestBody {
+  renderOverrides?: Record<string, unknown>;
+  modelFamily?: CastTrainModelFamily;
+}
+
+// True when the host wired RUNPOD_WAN_TRAIN_ENDPOINT_ID (the dedicated Wan train endpoint).
+export async function wanTrainEndpointConfigured(env: Env): Promise<boolean> {
+  const endpointId = await secretValue(
+    (env as { RUNPOD_WAN_TRAIN_ENDPOINT_ID?: unknown }).RUNPOD_WAN_TRAIN_ENDPOINT_ID as
+      SecretsStoreSecret | string | undefined,
+  );
+  return Boolean(endpointId.trim());
+}
+
+// Default cast train family: Wan when the dedicated endpoint is configured (cf#29 Phase E);
+// SDXL on the render endpoint only when explicitly requested or when Wan train is not wired.
+export function resolveCastTrainFamily(
+  wanConfigured: boolean,
+  explicit?: string | null,
+): CastTrainModelFamily {
+  const norm = String(explicit ?? "").trim().toLowerCase();
+  if (norm === "sdxl") return "sdxl";
+  if (norm === "wan") return wanConfigured ? "wan" : "sdxl";
+  return wanConfigured ? "wan" : "sdxl";
+}
+
+export function parseCastTrainBodyFields(
+  parsed: {
+    renderOverrides?: unknown;
+    model_family?: unknown;
+    modelFamily?: unknown;
+  } | null | undefined,
+  wanConfigured: boolean,
+): CastTrainRequestBody {
+  let renderOverrides: Record<string, unknown> | undefined;
+  let modelFamily: CastTrainModelFamily | undefined;
+  if (
+    parsed?.renderOverrides &&
+    typeof parsed.renderOverrides === "object" &&
+    !Array.isArray(parsed.renderOverrides)
+  ) {
+    renderOverrides = parsed.renderOverrides as Record<string, unknown>;
+    const roFamily = renderOverrides.model_family ?? renderOverrides.modelFamily;
+    if (typeof roFamily === "string") {
+      modelFamily = resolveCastTrainFamily(wanConfigured, roFamily);
+    }
+  }
+  const topFamily = parsed?.model_family ?? parsed?.modelFamily;
+  if (typeof topFamily === "string") {
+    modelFamily = resolveCastTrainFamily(wanConfigured, topFamily);
+  }
+  return { renderOverrides, modelFamily };
+}
+
+async function parseCastTrainRequestBody(
+  request: Request,
+  wanConfigured: boolean,
+): Promise<CastTrainRequestBody> {
+  try {
+    const ct = (request.headers.get("content-type") || "").toLowerCase();
+    if (ct.includes("application/json")) {
+      const parsed = (await request.json()) as {
+        renderOverrides?: unknown;
+        model_family?: unknown;
+        modelFamily?: unknown;
+      };
+      return parseCastTrainBodyFields(parsed, wanConfigured);
+    }
+  } catch {
+    /* empty body is fine */
+  }
+  return {};
+}
 
 // --- Stuck-training reconciler (#295) ---------------------------------------------------------
 // A cast LoRA training row transitions off `training` only when a poll observes a TERMINAL RunPod
@@ -40,9 +117,18 @@ const MIN_TRAINING_REFS = 4;
 // Ignore a 404 within this window of the row's last write: a just-submitted job can briefly 404 before
 // RunPod registers it (mirrors the GC-grace discipline on the status path).
 export const LORA_TRAIN_404_GRACE_SECONDS = 120;
-// Hard ceiling: cast training is ~10-15 min, so a row sitting in `training` past this was never
-// observed terminal and is treated as failed regardless of the poll (backstop for a vanished job).
+// Hard ceiling for an UNOBSERVABLE row -- a poll that could NOT read a live status (transport error,
+// or a non-404 not-ok result): a row sitting in `training` this long was never observed terminal and
+// is treated as failed (the backstop for a vanished job). This is an SDXL-era number (cast trains were
+// ~10-15 min); it must NOT judge an OBSERVED-running job (see LORA_TRAIN_OBSERVED_MAX_AGE_SECONDS, #92).
 export const LORA_TRAIN_MAX_AGE_SECONDS = 60 * 60;
+// Hard ceiling for an OBSERVED non-terminal row -- poll.ok, RunPod reporting IN_QUEUE / IN_PROGRESS. A
+// live-reporting job must never be declared dead by a wall clock tuned to a different model family: a
+// Wan A14B two-expert train legitimately runs 1-2h, and RunPod flips the job TIMED_OUT at its own 2h
+// endpoint timeout, which then takes the honest FAILED path on the next poll. This ceiling (3h) only
+// backstops a status that froze past even that endpoint timeout plus margin (#92). The measured Wan
+// wall-clock lands on vivijure-cf#177.
+export const LORA_TRAIN_OBSERVED_MAX_AGE_SECONDS = 3 * 60 * 60;
 
 export interface StuckTrainingDecision {
   reconcile: boolean;
@@ -86,11 +172,18 @@ export function decideStuckTraining(
         `${Math.round(ageSeconds)}s in training -- it cannot complete; re-fire training`,
     };
   }
-  if (ageSeconds >= LORA_TRAIN_MAX_AGE_SECONDS) {
+  // #92 observability split: an OBSERVED non-terminal poll (poll.ok -- RunPod is reporting a live
+  // IN_QUEUE / IN_PROGRESS status) may only be aged out by a ceiling covering the endpoint OWN timeout
+  // (RunPod flips TIMED_OUT at 2h, taking the honest FAILED path on the next poll). An UNOBSERVABLE
+  // poll (transport error / non-404 not-ok) keeps the original SDXL-era backstop for a vanished job.
+  // This stops a cast-status poll or resolveCastLoras refresh past T+60min from false-failing an
+  // actively-training Wan row while the GPU job is still running.
+  const ceiling = poll.ok ? LORA_TRAIN_OBSERVED_MAX_AGE_SECONDS : LORA_TRAIN_MAX_AGE_SECONDS;
+  if (ageSeconds >= ceiling) {
     return {
       reconcile: true,
       reason:
-        `training exceeded max age (${Math.round(ageSeconds)}s >= ${LORA_TRAIN_MAX_AGE_SECONDS}s); ` +
+        `training exceeded max age (${Math.round(ageSeconds)}s >= ${ceiling}s); ` +
         `backing job not observed terminal -- re-fire training`,
     };
   }
@@ -213,23 +306,30 @@ export async function handleCastTrainLora(
   env: Env,
   id: number,
 ): Promise<Response> {
-  let bodyRenderOverrides: Record<string, unknown> | undefined;
-  try {
-    const ct = (request.headers.get("content-type") || "").toLowerCase();
-    if (ct.includes("application/json")) {
-      const parsed = (await request.json()) as { renderOverrides?: unknown };
-      if (
-        parsed?.renderOverrides &&
-        typeof parsed.renderOverrides === "object" &&
-        !Array.isArray(parsed.renderOverrides)
-      ) {
-        bodyRenderOverrides = parsed.renderOverrides as Record<string, unknown>;
-      }
-    }
-  } catch {
-    /* empty body is fine */
-  }
+  const wanConfigured = await wanTrainEndpointConfigured(env);
+  const body = await parseCastTrainRequestBody(request, wanConfigured);
+  const family = body.modelFamily ?? resolveCastTrainFamily(wanConfigured);
+  return executeCastTrain(env, id, body.renderOverrides, family);
+}
 
+// Explicit Wan route (cf#29): always submits to RUNPOD_WAN_TRAIN_ENDPOINT_ID. Kept as a stable alias
+// for callers that already POST /train-wan-lora; /train-lora defaults to Wan when the endpoint is wired.
+export async function handleCastTrainWanLora(
+  request: Request,
+  env: Env,
+  id: number,
+): Promise<Response> {
+  const wanConfigured = await wanTrainEndpointConfigured(env);
+  const body = await parseCastTrainRequestBody(request, wanConfigured);
+  return executeCastTrain(env, id, body.renderOverrides, "wan");
+}
+
+async function executeCastTrain(
+  env: Env,
+  id: number,
+  bodyRenderOverrides: Record<string, unknown> | undefined,
+  family: CastTrainModelFamily,
+): Promise<Response> {
   const cast = await getCastById(env, id);
   if (!cast) return json({ error: "cast not found" }, 404);
   if (cast.lora_status === "training") {
@@ -273,6 +373,35 @@ export async function handleCastTrainLora(
     );
   }
 
+  if (family === "wan") {
+    if (!(await wanTrainEndpointConfigured(env))) {
+      return json(
+        { error: "Wan cast LoRA training is not configured on this host (wire RUNPOD_WAN_TRAIN_ENDPOINT_ID)" },
+        501,
+      );
+    }
+    const loraDestKeys = deriveWanLoraDestKeys(cast.id, timestamp);
+    const submit = await submitTrainWanLoraJob(env, {
+      project: args.storyboard.projectName,
+      bundleKey: bundleResult.bundleKey,
+      renderOverrides: bodyRenderOverrides,
+    });
+    if (!submit.ok) {
+      return json({ error: submit.error }, 502);
+    }
+    const updated = await setLoraJob(env, cast.id, submit.view.jobId);
+    return json({
+      ok: true,
+      jobId: submit.view.jobId,
+      status: submit.view.status,
+      statusRaw: submit.view.statusRaw,
+      bundleKey: bundleResult.bundleKey,
+      loraDestKeys,
+      modelFamily: "wan",
+      cast: toPublicCast(updated || cast),
+    });
+  }
+
   const loraDestKey = deriveLoraDestKey(cast.id, timestamp);
   const submit = await submitTrainLoraJob(env, {
     project: args.storyboard.projectName,
@@ -291,96 +420,7 @@ export async function handleCastTrainLora(
     statusRaw: submit.view.statusRaw,
     bundleKey: bundleResult.bundleKey,
     loraDestKey,
-    cast: toPublicCast(updated || cast),
-  });
-}
-
-// Mirror of handleCastTrainLora for the Wan 2.2 A14B family (cf#29): same single-slot bundle + the
-// SHARED lora_status/lora_job_id lifecycle (the poll path shape-dispatches on the result envelope,
-// so no family column is needed), differing only in submitting to the DEDICATED Wan-training
-// endpoint (submitTrainWanLoraJob) and returning the TWO dest keys. The training hyperparams still
-// ride render_overrides.lora; model_family:"wan" is added by the submit payload builder.
-export async function handleCastTrainWanLora(
-  request: Request,
-  env: Env,
-  id: number,
-): Promise<Response> {
-  let bodyRenderOverrides: Record<string, unknown> | undefined;
-  try {
-    const ct = (request.headers.get("content-type") || "").toLowerCase();
-    if (ct.includes("application/json")) {
-      const parsed = (await request.json()) as { renderOverrides?: unknown };
-      if (
-        parsed?.renderOverrides &&
-        typeof parsed.renderOverrides === "object" &&
-        !Array.isArray(parsed.renderOverrides)
-      ) {
-        bodyRenderOverrides = parsed.renderOverrides as Record<string, unknown>;
-      }
-    }
-  } catch {
-    /* empty body is fine */
-  }
-
-  const cast = await getCastById(env, id);
-  if (!cast) return json({ error: "cast not found" }, 404);
-  if (cast.lora_status === "training") {
-    return json(
-      {
-        error: "a LoRA training job is already in flight for this cast member",
-        jobId: cast.lora_job_id,
-      },
-      409,
-    );
-  }
-  if (!cast.portrait_key) {
-    return json(
-      { error: "cast member needs a portrait before training (set one via /cast)" },
-      400,
-    );
-  }
-  if (cast.ref_keys.length < MIN_TRAINING_REFS) {
-    return json(
-      {
-        error: `cast member has only ${cast.ref_keys.length} training refs; need at least ${MIN_TRAINING_REFS}. Use the training-set generator on /cast.`,
-      },
-      400,
-    );
-  }
-
-  const timestamp = Math.floor(Date.now() / 1000);
-  const args = buildLoraTrainingBundleArgs(cast, String(timestamp));
-
-  let bundleResult;
-  try {
-    bundleResult = await assembleBundle(env, args);
-  } catch (err) {
-    const m = err instanceof Error ? err.message : String(err);
-    return json({ error: `bundle assembly failed: ${m}` }, 500);
-  }
-  if (!bundleResult.ok) {
-    return json({ error: "bundle assembly failed", details: bundleResult.errors }, 500);
-  }
-
-  const loraDestKeys = deriveWanLoraDestKeys(cast.id, timestamp);
-  const submit = await submitTrainWanLoraJob(env, {
-    project: args.storyboard.projectName,
-    bundleKey: bundleResult.bundleKey,
-    renderOverrides: bodyRenderOverrides,
-  });
-  if (!submit.ok) {
-    return json({ error: submit.error }, 502);
-  }
-
-  const updated = await setLoraJob(env, cast.id, submit.view.jobId);
-  return json({
-    ok: true,
-    jobId: submit.view.jobId,
-    status: submit.view.status,
-    statusRaw: submit.view.statusRaw,
-    bundleKey: bundleResult.bundleKey,
-    loraDestKeys,
-    modelFamily: "wan",
+    modelFamily: "sdxl",
     cast: toPublicCast(updated || cast),
   });
 }

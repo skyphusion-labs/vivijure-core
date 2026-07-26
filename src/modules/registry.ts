@@ -188,7 +188,13 @@ function toPublic({ binding: _binding, ...manifest }: RegisteredModule): PublicM
 export function modulesResponse(
   modules: RegisteredModule[],
   render: RenderConfigProjection,
-  host?: { dispatch: boolean; readonly?: boolean; render?: { available: boolean }; assistant?: { model: string; note: string } },
+  host?: {
+    dispatch: boolean;
+    readonly?: boolean;
+    render?: { available: boolean };
+    assistant?: { model: string; note: string };
+    hooks_unavailable?: Record<string, string>;
+  },
 ): ModulesResponse {
   return {
     api: MODULE_API,

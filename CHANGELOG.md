@@ -5,6 +5,67 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased
 
+### Added: `host.hooks_unavailable` -- a host can declare hooks it cannot serve (vivijure-cf#98)
+
+MINOR (additive; `MODULE_API` unchanged, `host` is optional and additive by contract).
+
+- `ModulesResponse.host.hooks_unavailable?: Record<string, string>` maps a hook name to an
+  operator-honest reason. A key's **absence means available**; an omitted block or an empty object
+  means everything the catalog lists is serviceable.
+- Closes a broken-button class: a module being **installed** and its hook being **serviceable** are
+  different facts, and only the first was ever on the wire. A host without the AI binding still
+  advertised a full planning-model picker in which every option 500s, and no frontend work could fix
+  it because the payload did not carry the fact.
+- Generalizes an existing principle rather than adding one: `catalogForDeploy` already serves the
+  empty planning-model list to a demo deploy because advertising capability a deployment lacks is a
+  lie. This lets any host say so for any reason.
+- Consumers render it **generically** off the hook catalog with the reason printed verbatim, so a
+  future unserviceable hook needs no new UI.
+
+## [1.2.13] -- 2026-07-24
+
+**Backfilled 2026-07-25.** This version was tagged and published with no changelog heading and no
+`RELEASES.md` row; recorded here from the tag range rather than left as a hole in the ledger. Same
+class of gap as vivijure-local v1.1.16.
+
+- **Fix (core#92):** the cast-LoRA stuck-training reconciler no longer false-fails a Wan train that
+  is observably still running.
+- **CI:** adversarial security audit workflow added.
+
+## [1.2.12] -- 2026-07-23
+
+**Fix: reject unsafe GPU `output_key` in `updateRenderFromView` (K3 closeout, core#89).** PATCH.
+
+- Validates `output_key` before persisting render view updates; blocks traversal and out-of-prefix keys.
+
+## [1.2.11] -- 2026-07-23
+
+**Fix: validate audioKey in stageAudioKeyForRenders (KF3 audit).** PATCH.
+
+- Reject unsafe or out-of-prefix keys before any R2 I/O; blocks cross-bucket reads via arbitrary
+  `bundles/` or nested `out/` paths while preserving studio `audio/`, `dialogue/`, and `renders/` beds.
+
+## [1.2.10] -- 2026-07-23
+
+**Fix: reject path traversal in tar helpers (KF3 audit, core#86).** PATCH.
+
+- `emitTar` and `readTar` validate every entry name with `isSafeRelKey`; blocks `..` and absolute paths.
+
+## [1.2.9] -- 2026-07-23
+
+**Fix: honor `wanConfigured` in cast train body parse (KF3 audit, core#84).** PATCH.
+
+- `resolveCastTrainFamily` no longer drops Wan routing when the client sends train fields only in
+  `renderOverrides`; matches the wired-endpoint default from 1.2.8.
+
+## [1.2.8] -- 2026-07-23
+
+**Feat: default cast `/train-lora` to Wan when the dedicated train endpoint is wired (cf#29 Phase E).** MINOR.
+
+- `handleCastTrainLora` submits to `RUNPOD_WAN_TRAIN_ENDPOINT_ID` by default when configured;
+  pass `model_family:"sdxl"` (top-level or in `renderOverrides`) for the legacy render-endpoint path.
+- `handleCastTrainWanLora` remains an explicit always-Wan alias.
+
 ## [1.2.6] -- 2026-07-22
 
 **Fix: adopt-render hijack + TOCTOU race (core#76).** PATCH.
