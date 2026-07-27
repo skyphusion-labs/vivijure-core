@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { mergeCastLoraPollResults } from "../src/runpod-submit.js";
+import { mergeCastLoraPollResults, type RunpodResult } from "../src/runpod-submit.js";
 
 describe("mergeCastLoraPollResults", () => {
-  const renderOk = { ok: true, view: { jobId: "j1", status: "IN_PROGRESS", statusRaw: "IN_PROGRESS" } };
-  const render404 = { ok: false, status: 404, error: "not found" };
-  const wanCompleted = {
+  const renderOk: RunpodResult = { ok: true, view: { jobId: "j1", status: "IN_PROGRESS", statusRaw: "IN_PROGRESS" } };
+  const render404: RunpodResult = { ok: false, status: 404, error: "not found" };
+  const wanCompleted: RunpodResult = {
     ok: true,
     view: { jobId: "j1", status: "COMPLETED", statusRaw: "COMPLETED", output: {} },
   };
-  const wan404 = { ok: false, status: 404, error: "not found" };
-  const wan503 = { ok: false, status: 503, error: "upstream" };
+  const wan404: RunpodResult = { ok: false, status: 404, error: "not found" };
+  const wan503: RunpodResult = { ok: false, status: 503, error: "upstream" };
 
   it("prefers a successful Wan train poll", () => {
     expect(mergeCastLoraPollResults(wanCompleted, render404)).toEqual(wanCompleted);

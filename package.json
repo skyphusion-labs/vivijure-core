@@ -51,7 +51,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage.enabled=true --coverage.provider=v8 --coverage.reporter=cobertura --coverage.reporter=text",
     "sync:module-types": "cp ../vivijure/src/modules/types.ts src/modules/types.ts",
