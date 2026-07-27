@@ -3,7 +3,33 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased
+## [1.3.0] -- 2026-07-27
+
+### Added: host-neutral storage accounting + `R2_STORAGE_QUOTA_BYTES` (core#52)
+
+MINOR (additive; new module `storage-quota`, one additive optional field on `R2ListedObject`).
+
+- **`R2_STORAGE_QUOTA_BYTES`** -- an operator knob with the same shape as `SPEND_DAILY_CEILING`: unset
+  (or `0` / non-integer) = OFF, a positive integer = a byte ceiling enforced at submit with an **honest
+  deny** carrying the real numbers (`507`, used vs limit). Fail-CLOSED when the quota is set but its own
+  check cannot run (`503`), because a novice self-funds the bill.
+- **Usage is accounted at WRITE TIME in the host DB**, never read from an R2/S3 usage API. A CF-specific
+  usage read would break the Node/MinIO host, which is a parity break for a parity feature.
+  `meteredR2Bucket` / `meteredObjectStore` wrap a host renders store so every put upserts the object key
+  at its current size and every delete drops its row. Keying on the object key is what makes rewrite
+  honest: a job doc written on every advance tick updates one row instead of inflating a total. Wrapping
+  is idempotent, so a per-request seam cannot double count.
+- **Accounting never fails a write.** A ledger error warns and drifts the counter low; the gate is at
+  submit, and `reconcileStorageUsage` rebuilds the ledger from the object store (Platform ICD `list` +
+  `head`) as the repair and as the one-time backfill. Artifact sizes are not derivable from the studio
+  DB, so the counter starts at 0 on an existing studio and the operator reconciles; that is stated in the
+  docs and surfaced by the panel usage route rather than left as a quietly-wrong number.
+- `R2ListedObject.size?` is now carried through the R2-compat `list()` when the host reports it (the
+  Workers binding and an S3 `ListObjectsV2` both do), so a reconcile skips a HEAD per object. Absent means
+  "not reported", never "empty".
+- Ships parity-gated: this core release plus both panels in the same train. Operator doc:
+  [`docs/STORAGE-QUOTA.md`](docs/STORAGE-QUOTA.md).
+
 
 ### Added: `host.hooks_unavailable` -- a host can declare hooks it cannot serve (vivijure-cf#98)
 

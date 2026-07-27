@@ -97,8 +97,14 @@ export class ObjectStoreR2Bucket implements R2Bucket {
       // reads that as "older than any floor" -> excludes every object -> reclaim silently dead, with no way
       // for a consumer to tell "unknown upload time" from "genuinely ancient". Leave it undefined and let
       // the consumer choose its own safe branch (see listClipsByShotId in render-orchestrator.ts).
-      const uploaded = inline ? inline.get(key)?.uploaded : (await this.store.head(key))?.uploaded;
-      objects.push({ key, uploaded });
+      // core#52: carry `size` through the SAME honest rule as `uploaded` -- report it when the host
+      // reported it, omit it when it did not. The storage reconcile uses it to avoid a HEAD per object,
+      // and treats an omitted size as "not measured" rather than as zero.
+      const entry = inline ? inline.get(key) : undefined;
+      const head = inline ? undefined : await this.store.head(key);
+      const uploaded = inline ? entry?.uploaded : head?.uploaded;
+      const size = inline ? entry?.size : head?.size;
+      objects.push(typeof size === "number" ? { key, uploaded, size } : { key, uploaded });
     }
     const truncated = startIdx + slice.length < keys.length;
     return {
