@@ -330,6 +330,31 @@ describe("metered store (the write seam)", () => {
     expect(bucket.hostOnlyMethod()).toBe("still here");
   });
 
+  it("PRESERVES the host store type, not just the host store methods", async () => {
+    // A host store is a SUPERSET of the ICD (the Node ArtifactStore adds getBytes/getRange), and the
+    // wrapper is a pass-through Proxy, so a host method must still WORK through the wrapper. This is the
+    // RUNTIME half of that promise. The compile-time half cannot live here: `npm run typecheck` covers
+    // src only, so a type assertion in a test file would pass whatever the signature said. It is
+    // asserted in src/storage-quota.ts instead (PreservesStoreType).
+    const store = meteredObjectStore(
+      {
+        async get() {
+          return null;
+        },
+        async put() {},
+        async head() {
+          return null;
+        },
+        async delete() {},
+        async getRange(): Promise<Uint8Array> {
+          return new Uint8Array(3);
+        },
+      },
+      fakeDb(),
+    );
+    expect((await store.getRange()).byteLength).toBe(3);
+  });
+
   it("HEADs the store when the payload shape cannot be measured locally", async () => {
     const db = fakeDb();
     const inner = fakeBucket();

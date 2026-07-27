@@ -308,15 +308,32 @@ function meterStoreLike<T extends object>(target: T, db: Database): T {
 /** Wrap a Workers-shaped R2 bucket so every put/delete keeps the ledger current. Idempotent: wrapping an
  *  already-metered bucket returns it unchanged. Methods this core does not know about pass straight
  *  through, so a host binding keeps its full surface. */
-export function meteredR2Bucket(bucket: R2Bucket, db: Database): R2Bucket {
+export function meteredR2Bucket<T extends R2Bucket>(bucket: T, db: Database): T {
   return meterStoreLike(bucket, db);
 }
 
 /** Platform ICD twin of meteredR2Bucket, for a host whose renders store is an ObjectStore (the Node /
- *  MinIO door). Same accounting, same idempotence. */
-export function meteredObjectStore(store: ObjectStore, db: Database): ObjectStore {
+ *  MinIO door). Same accounting, same idempotence.
+ *
+ *  Generic in the store type because the wrapper is a pass-through Proxy: a host store that extends
+ *  ObjectStore (the Node ArtifactStore adds getBytes/getRange) keeps its full surface, and the type says
+ *  so rather than narrowing the caller down to the ICD subset. */
+export function meteredObjectStore<T extends ObjectStore>(store: T, db: Database): T {
   return meterStoreLike(store, db);
 }
+
+// COMPILE-TIME GUARD for the two signatures above. It lives in src/ deliberately: `npm run typecheck`
+// covers src only (tests/ is transpiled by vitest without being typechecked), so an assertion of this
+// kind placed in a test file would pass no matter what the signature said -- exactly the class of
+// invisible defect that motivated it. A non-generic wrapper narrows a host store down to the ICD subset
+// and breaks the Node panel, which extends ObjectStore with getBytes/getRange; that must fail HERE, in
+// core, rather than downstream after a release.
+type PreservesStoreType<F> = F extends <T extends ObjectStore>(store: T, db: Database) => T ? true : never;
+type PreservesBucketType<F> = F extends <T extends R2Bucket>(bucket: T, db: Database) => T ? true : never;
+const _meteredObjectStorePreservesItsInput: PreservesStoreType<typeof meteredObjectStore> = true;
+const _meteredR2BucketPreservesItsInput: PreservesBucketType<typeof meteredR2Bucket> = true;
+void _meteredObjectStorePreservesItsInput;
+void _meteredR2BucketPreservesItsInput;
 
 /** True when this store already meters its writes (test + wiring assertions). */
 export function isMeteredStore(store: object): boolean {
