@@ -51,7 +51,7 @@ describe("fetchEndpointWorkersMax", () => {
 
 describe("reconcileRunpodEndpointWorkersMax", () => {
   it("no-ops when live workersMax already meets spec", async () => {
-    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "GET") {
         return new Response(JSON.stringify({ workersMax: 4 }), { status: 200 });
       }
@@ -68,7 +68,7 @@ describe("reconcileRunpodEndpointWorkersMax", () => {
 
   it("PATCHes when live workersMax is below spec (full management key)", async () => {
     const calls: { method: string; body?: string }[] = [];
-    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       calls.push({ method, body: init?.body as string | undefined });
       if (method === "GET") {
@@ -95,7 +95,7 @@ describe("reconcileRunpodEndpointWorkersMax", () => {
   });
 
   it("returns guidance when PATCH is 401 (scoped invoke key)", async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "GET") {
         return new Response(JSON.stringify({ workersMax: 0 }), { status: 200 });
       }
