@@ -36,6 +36,7 @@ tagging the next release).
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.3.0` | 1.3.0 | 1cf27d8 | 2026-07-27 | **Storage accounting + `R2_STORAGE_QUOTA_BYTES` (core#52).** PRs #98 (feature) + #99 (generic wrappers, so a host store keeps its type through the metering seam). Also carries `host.hooks_unavailable` (vivijure-cf#98) and the silent-shot lip-sync omission fix (#82). Parity train with vivijure-cf v1.11.0 + vivijure-local v1.5.0. |
 | `vivijure-core-v1.2.13` | 1.2.13 | 424e418 | 2026-07-24 | **Fix: cast-LoRA stuck-training reconciler (core#92)** no longer false-fails an observed-running Wan train; adversarial-audit CI. *(Row backfilled 2026-07-25 -- the release shipped without one.)* |
 | `vivijure-core-v1.2.12` | 1.2.12 | 05ea36b | 2026-07-23 | **K3 closeout (core#89).** Reject unsafe GPU `output_key` in `updateRenderFromView`. |
 | `vivijure-core-v1.2.11` | 1.2.11 | 04fa4b3 | 2026-07-23 | **Fix: validate audioKey in stageAudioKeyForRenders (KF3 audit).** PATCH. Predates #89 merge. |
