@@ -37,6 +37,15 @@ MINOR (additive; new module `storage-quota`, one additive optional field on `R2L
   [`docs/STORAGE-QUOTA.md`](docs/STORAGE-QUOTA.md).
 
 
+### Fixed: lip-sync is omitted from the finish chain on a silent shot (core#82)
+
+- A shot with no dialogue no longer lists `finish_consumes_audio` modules in its per-shot finish chain,
+  so the planner never invokes finish-lipsync or reaches the RunPod musetalk endpoint for a silent shot.
+- `advanceFinishPhase` folds a local no-op when a legacy job still carries lip-sync without
+  `dialogue_audio`, so an in-flight job from before this fix cannot strand on it either.
+- Recorded here from the tag range: this landed on main between 1.2.14 and 1.3.0 without an entry of its
+  own, and an unlogged shipped change is the same ledger hole 1.2.13 had to be backfilled for.
+
 ### Added: `host.hooks_unavailable` -- a host can declare hooks it cannot serve (vivijure-cf#98)
 
 MINOR (additive; `MODULE_API` unchanged, `host` is optional and additive by contract).
