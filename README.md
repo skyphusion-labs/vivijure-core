@@ -99,6 +99,7 @@ Tag push triggers **Publish npm package** (`.github/workflows/publish-npm.yml`).
 | `@skyphusion-labs/vivijure-core/platform` | `Platform`, `orchestratorContextFromPlatform`, R2 shim |
 | `@skyphusion-labs/vivijure-core/film-orchestrator` | Full film state machine |
 | `@skyphusion-labs/vivijure-core/preflight` | Storyboard pre-render checks |
+| `@skyphusion-labs/vivijure-core/storage-quota` | Storage accounting ledger + `R2_STORAGE_QUOTA_BYTES` ([docs](docs/STORAGE-QUOTA.md)) |
 
 Full subpath list: `package.json` `exports` field.
 

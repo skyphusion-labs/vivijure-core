@@ -14,6 +14,10 @@ export interface R2ListedObject {
   /** ICD-optional: a host ObjectStore may omit upload time (ObjectHead.uploaded is optional). Consumers
    *  applying a freshness floor must treat `undefined` as "unknown", not "ancient" (#19). */
   uploaded?: Date;
+  /** ICD-optional: object size in bytes when the host reports it inline (the Workers R2 binding and an
+   *  S3 ListObjectsV2 both do). Absent means "not reported", never "empty" -- the storage reconcile
+   *  (core#52) falls back to a HEAD per object rather than accounting a size it did not measure. */
+  size?: number;
 }
 
 export interface R2ListResult {
