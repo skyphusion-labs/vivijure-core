@@ -27,6 +27,12 @@ MINOR (additive; new module `storage-quota`, one additive optional field on `R2L
 - `R2ListedObject.size?` is now carried through the R2-compat `list()` when the host reports it (the
   Workers binding and an S3 `ListObjectsV2` both do), so a reconcile skips a HEAD per object. Absent means
   "not reported", never "empty".
+- `meteredR2Bucket` / `meteredObjectStore` are GENERIC in the store type, because the wrapper is a
+  pass-through Proxy: a host store that extends the ICD (the Node `ArtifactStore` adds
+  `getBytes`/`getRange`) keeps its full type, not just its methods. A compile-time assertion in
+  `src/storage-quota.ts` fails the typecheck if either signature stops preserving its input; it lives in
+  `src` because `npm run typecheck` does not cover `tests/`, so the same assertion in a test file would
+  pass no matter what the signature said.
 - Ships parity-gated: this core release plus both panels in the same train. Operator doc:
   [`docs/STORAGE-QUOTA.md`](docs/STORAGE-QUOTA.md).
 
