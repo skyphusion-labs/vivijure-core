@@ -158,6 +158,86 @@ export async function storageUsedBytes(db: Database): Promise<number> {
   return (await storageUsage(db)).usedBytes;
 }
 
+// --------------------------------------------------------------------------- is the ledger TRUE?
+
+/**
+ * Companion table recording WHEN this ledger started telling the truth (cp#195, found by rollins).
+ *
+ * THE PROBLEM IT SOLVES, and it is the exact failure `complete` exists to catch. `storageUsedBytes`
+ * returns a confident integer on a studio whose ledger has never been reconciled, and that integer
+ * is a FLOOR rather than a total:
+ *
+ *   - accounting starts at 0 on any studio that predates the version shipping it, because artifact
+ *     sizes are not derivable from the DB and there is nothing honest to backfill (see the header);
+ *   - a write it could not size or account leaves the counter reading LOW, with a warn;
+ *   - a delete it could not account leaves it reading HIGH, with a warn.
+ *
+ * In `deny` mode a low counter merely denies later than it should. In `meter` mode it is a BILLING
+ * DEFECT, and in the direction that flatters us: we under-count, so we under-bill, and the
+ * cost-recovery ratio reports health. Nothing downstream can catch it, because a low number and a
+ * correct number are the same shape. That is a guard that looks exactly like success.
+ *
+ * WHY "true since" AND NOT "last reconciled". A reconcile is one way a ledger becomes true; being
+ * born with accounting already on is the other, and it is the case that covers every studio
+ * provisioned from here. A host that creates a studio at or after this version can stamp it at
+ * creation and the ledger is honest from birth with no reconcile ever run. Naming the fact rather
+ * than the procedure keeps both in one field.
+ *
+ * WHY THE TABLE IS CREATED LAZILY rather than added to the panel migrations. The panels carry
+ * STORAGE_USAGE_DDL verbatim with tests asserting their migration still matches it, so a second DDL
+ * constant would put a migration in front of this train in two more repos. Creating it where it is
+ * WRITTEN, and treating its absence as "not established" on read, needs no migration and fails in
+ * the safe direction: a studio that has never stamped anything reads as unbillable rather than as
+ * billable-at-a-floor. The constant is exported anyway, so a host that prefers a real migration can
+ * carry it.
+ */
+export const STORAGE_LEDGER_META_DDL = `CREATE TABLE IF NOT EXISTS storage_usage_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+)`;
+
+const LEDGER_TRUE_SINCE_KEY = "ledger_true_since";
+
+/**
+ * Record that the ledger is true as of `atSeconds` (default now).
+ *
+ * Called by `reconcileStorageUsage` on every successful rebuild, and callable by a HOST at studio
+ * creation to assert "this ledger has been accurate since the studio existed". The second caller is
+ * the one that matters for new tenants: without it every fresh studio would read as unbillable
+ * despite having a perfectly honest ledger.
+ */
+export async function markStorageLedgerTrue(db: Database, atSeconds?: number): Promise<void> {
+  await db.prepare(STORAGE_LEDGER_META_DDL).bind().run();
+  await db
+    .prepare(
+      `INSERT INTO storage_usage_meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    )
+    .bind(LEDGER_TRUE_SINCE_KEY, String(atSeconds ?? nowSeconds()))
+    .run();
+}
+
+/**
+ * Unix seconds since when this ledger is known true, or null when that has never been established.
+ *
+ * ANY failure reads as null, including the table simply not existing yet, and that is deliberate
+ * rather than sloppy: every failure mode here means the same thing operationally, which is that we
+ * cannot establish the ledger is complete. Guessing "true" on a read error would be the one
+ * direction that bills a customer off a number we could not stand behind.
+ */
+export async function storageLedgerTrueSince(db: Database): Promise<number | null> {
+  try {
+    const row = await db
+      .prepare("SELECT value FROM storage_usage_meta WHERE key = ?")
+      .bind(LEDGER_TRUE_SINCE_KEY)
+      .first<{ value: string | null }>();
+    const n = Number(row?.value);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 // --------------------------------------------------------------------------- enforcement
 
 export type StorageQuotaVerdict =
@@ -265,6 +345,35 @@ export async function checkStorageQuota(env: StorageQuotaEnv): Promise<StorageQu
   //
   // In `meter` mode this is not a ceiling at all, so there is no deny: the reading is complete, the
   // overage is real, and the submit proceeds.
+  // A readable number is not the same as a trustworthy one. An unreconciled ledger returns a
+  // confident integer that is a FLOOR, so in `meter` mode it would bill an overage computed from a
+  // total we cannot stand behind, in the direction that flatters us. Establishing this costs one
+  // extra read on a path that runs at submit, which is rare.
+  const trueSince = await storageLedgerTrueSince(env.DB);
+  if (trueSince === null) {
+    const reason =
+      "this studio storage ledger has never been established as true (no reconcile has run and no " +
+      "host has stamped it), so the accounted total is a FLOOR rather than a total";
+    if (mode === "meter") {
+      return { ok: true, mode, usedBytes, quotaBytes, complete: false, reason };
+    }
+    // `deny` decisions are untouched: a floor still denies, just later than a true total would.
+    // Only the advisory completeness pair reports the weaker basis.
+    if (usedBytes >= quotaBytes) {
+      return {
+        ok: false,
+        status: 507,
+        mode,
+        usedBytes,
+        quotaBytes,
+        message: `storage quota reached: ${usedBytes} bytes stored of the ${quotaBytes}-byte R2_STORAGE_QUOTA_BYTES ceiling; delete renders or raise the knob`,
+        complete: false,
+        reason,
+      };
+    }
+    return { ok: true, mode, usedBytes, quotaBytes, complete: false, reason };
+  }
+
   if (usedBytes >= quotaBytes && mode === "deny") {
     return {
       ok: false,
@@ -325,14 +434,21 @@ export async function storageQuotaState(env: StorageQuotaEnv): Promise<StorageQu
 
   try {
     const { usedBytes, objects } = await storageUsage(env.DB);
+    const trueSince = await storageLedgerTrueSince(env.DB);
     return {
       mode,
       quotaBytes,
       usedBytes,
       objects,
+      // The numbers are reported either way -- an operator staring at a usage page wants to see the
+      // floor rather than a blank -- but the completeness pair says what they rest on.
       overageBytes: quotaBytes === null ? null : Math.max(0, usedBytes - quotaBytes),
-      complete: true,
-      reason: null,
+      complete: trueSince !== null,
+      reason:
+        trueSince !== null
+          ? null
+          : "this studio storage ledger has never been established as true (no reconcile has run " +
+            "and no host has stamped it), so the accounted total is a FLOOR rather than a total",
     };
   } catch (e) {
     return {
@@ -589,6 +705,10 @@ export async function reconcileStorageUsage(
     if (db.batch) await db.batch(chunk);
     else for (const stmt of chunk) await stmt.run();
   }
+
+  // The rebuild just made this ledger true; record that, because nothing else can observe it after
+  // the fact. A total and a floor are the same shape (cp#195).
+  await markStorageLedgerTrue(db, now);
 
   return {
     objects: sized.length,

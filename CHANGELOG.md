@@ -42,6 +42,17 @@ consume and one converge downstream rather than two trains.
   CONTROL asserts a real zero, a metering gap and an unconfigured quota stay pairwise
   distinguishable. `overageBytes` follows the same rule: a real reading at or under the quota is
   `0`, never `null`.
+- **A readable total is not a TRUE total** (found by rollins). `storageUsedBytes()` returns a
+  confident integer on a studio whose ledger has never been reconciled, and that integer is a FLOOR:
+  accounting starts at 0 on any studio predating it, and both drift directions only warn. In `meter`
+  mode that bills an overage computed from a total nobody can stand behind, in the direction that
+  flatters us, and nothing downstream can catch it because a low number and a correct number are the
+  same shape. `complete` therefore requires the ledger be ESTABLISHED, via the new
+  `markStorageLedgerTrue` / `storageLedgerTrueSince` pair (written by every successful reconcile,
+  and callable by a host at studio creation). `deny` decisions are untouched: a floor still denies,
+  with the same status and message. **Consequence, stated rather than discovered: until a host
+  stamps at creation or an operator reconciles, `meter` reports every window unbillable.** That is
+  the correct default; billing off a floor is worse than not billing yet.
 - **`storageQuotaState(env)`** -- the observer surface behind the usage route and the
   used-vs-included display, with no submit semantics. ONE computation on purpose: a biller computing
   the number its own way means two numbers can disagree about the same tenant and the one that bills

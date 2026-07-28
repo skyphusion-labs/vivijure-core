@@ -10,6 +10,8 @@ import {
   recordObjectDelete,
   recordObjectWrite,
   reconcileStorageUsage,
+  markStorageLedgerTrue,
+  storageLedgerTrueSince,
   storageQuotaBytes,
   storageQuotaMode,
   storageQuotaState,
@@ -29,13 +31,16 @@ import type { R2Bucket } from "../src/platform/r2-types.js";
 interface FakeDb extends Database {
   rows: Map<string, number>;
   calls: string[];
+  /** storage_usage_meta, and whether it EXISTS yet: core creates it where it writes it. */
+  meta: Map<string, string>;
+  metaTableExists: boolean;
   failNext?: string;
 }
 
 function fakeDb(): FakeDb {
   const rows = new Map<string, number>();
   const calls: string[] = [];
-  const db = { rows, calls } as FakeDb;
+  const db = { rows, calls, meta: new Map<string, string>(), metaTableExists: false } as FakeDb;
 
   // D1 semantics: prepare() yields a statement, and bind() yields a NEW statement carrying ITS OWN
   // values, so one prepared statement can be bound many times (the pattern reconcile uses).
@@ -46,6 +51,13 @@ function fakeDb(): FakeDb {
     async first<T>() {
       calls.push(norm);
       if (db.failNext && norm.includes(db.failNext)) throw new Error("db exploded");
+      if (norm.startsWith("SELECT value FROM storage_usage_meta")) {
+        // A real database throws on a table that does not exist; so does this, because the
+        // "never established" path in core depends on that being the observed behaviour.
+        if (!db.metaTableExists) throw new Error("no such table: storage_usage_meta");
+        const value = db.meta.get(String(bound[0]));
+        return (value === undefined ? null : { value }) as T;
+      }
       if (norm.startsWith("SELECT COALESCE(SUM(bytes)")) {
         let total = 0;
         for (const v of rows.values()) total += v;
@@ -56,7 +68,11 @@ function fakeDb(): FakeDb {
     async run() {
       calls.push(norm);
       if (db.failNext && norm.includes(db.failNext)) throw new Error("db exploded");
-      if (norm.startsWith("INSERT INTO storage_usage")) {
+      if (norm.startsWith("CREATE TABLE IF NOT EXISTS storage_usage_meta")) {
+        db.metaTableExists = true;
+      } else if (norm.startsWith("INSERT INTO storage_usage_meta")) {
+        db.meta.set(String(bound[0]), String(bound[1]));
+      } else if (norm.startsWith("INSERT INTO storage_usage")) {
         rows.set(String(bound[0]), Number(bound[1]));
       } else if (norm.startsWith("DELETE FROM storage_usage WHERE object_key = ?")) {
         rows.delete(String(bound[0]));
@@ -324,6 +340,7 @@ describe("cp#195 CONTROL: deny is byte-identical to core#52, and is the default"
 describe("cp#195 meter mode", () => {
   it("does NOT deny at or over the included quota, and reports the real numbers", async () => {
     const db = fakeDb();
+    await markStorageLedgerTrue(db);
     await recordObjectWrite(db, "a", 4096);
     const verdict = await checkStorageQuota({
       DB: db,
@@ -366,6 +383,7 @@ describe("cp#195 meter mode", () => {
   // unconfigured studio -- and billed as zero. These three must be three different answers.
   it("CONTROL: a real zero, a metering gap and an unconfigured quota are distinguishable", async () => {
     const empty = fakeDb();
+    await markStorageLedgerTrue(empty);
     const realZero = await checkStorageQuota({
       DB: empty,
       R2_STORAGE_QUOTA_BYTES: "1024",
@@ -382,7 +400,9 @@ describe("cp#195 meter mode", () => {
     });
     expect(gap).toMatchObject({ complete: false, usedBytes: null, quotaBytes: 1024 });
 
-    const unconfigured = await checkStorageQuota({ DB: fakeDb(), R2_STORAGE_QUOTA_MODE: "meter" });
+    const unconfiguredDb = fakeDb();
+    await markStorageLedgerTrue(unconfiguredDb);
+    const unconfigured = await checkStorageQuota({ DB: unconfiguredDb, R2_STORAGE_QUOTA_MODE: "meter" });
     expect(unconfigured).toMatchObject({ complete: true, usedBytes: null, quotaBytes: null });
 
     // Pairwise different, which is the property a biller depends on.
@@ -395,6 +415,7 @@ describe("cp#195 meter mode", () => {
 describe("storageQuotaState (the observer surface)", () => {
   it("reports used, objects, the quota and the overage", async () => {
     const db = fakeDb();
+    await markStorageLedgerTrue(db);
     await recordObjectWrite(db, "a", 1500);
     await recordObjectWrite(db, "b", 100);
     const state = await storageQuotaState({
@@ -415,6 +436,7 @@ describe("storageQuotaState (the observer surface)", () => {
 
   it("under the quota reports ZERO overage, not null", async () => {
     const db = fakeDb();
+    await markStorageLedgerTrue(db);
     await recordObjectWrite(db, "a", 10);
     const state = await storageQuotaState({ DB: db, R2_STORAGE_QUOTA_BYTES: "1000" });
     // "nothing over" and "we do not know" are different answers.
@@ -432,9 +454,111 @@ describe("storageQuotaState (the observer surface)", () => {
 
   it("no quota configured: a real reading with no overage to compute", async () => {
     const db = fakeDb();
+    await markStorageLedgerTrue(db);
     await recordObjectWrite(db, "a", 42);
     const state = await storageQuotaState({ DB: db });
     expect(state).toMatchObject({ mode: "deny", quotaBytes: null, usedBytes: 42, overageBytes: null, complete: true });
+  });
+});
+
+// ---------------------------------------------------------------- cp#195: is the ledger TRUE?
+//
+// Found by rollins while grounding the plane side, and it is the sharpest failure in this lane:
+// storageUsedBytes() returns a confident integer on a studio whose ledger has never been
+// reconciled, and that integer is a FLOOR. In `meter` mode that bills an overage computed from a
+// total nobody can stand behind, in the direction that flatters us, and nothing downstream can
+// catch it because a low number and a correct number are the same shape.
+describe("cp#195: a readable total is not a TRUE total", () => {
+  it("an unestablished ledger is UNBILLABLE in meter mode, numbers and all", async () => {
+    const db = fakeDb();
+    await recordObjectWrite(db, "a", 4096);
+    const verdict = await checkStorageQuota({
+      DB: db,
+      R2_STORAGE_QUOTA_BYTES: "1024",
+      R2_STORAGE_QUOTA_MODE: "meter",
+    });
+    // The submit still proceeds: meter never denies. But the reading is not a billing basis.
+    expect(verdict.ok).toBe(true);
+    expect(verdict.complete).toBe(false);
+    expect(String(verdict.reason)).toContain("FLOOR");
+    // The number is still REPORTED. An operator looking at a usage page wants the floor rather
+    // than a blank; it is the completeness pair that says what it rests on.
+    expect(verdict.usedBytes).toBe(4096);
+  });
+
+  it("stamping the ledger makes it billable, and reconcile stamps it", async () => {
+    const stamped = fakeDb();
+    await markStorageLedgerTrue(stamped);
+    await recordObjectWrite(stamped, "a", 4096);
+    const afterStamp = await checkStorageQuota({
+      DB: stamped,
+      R2_STORAGE_QUOTA_BYTES: "1024",
+      R2_STORAGE_QUOTA_MODE: "meter",
+    });
+    expect(afterStamp).toMatchObject({ complete: true, reason: null, usedBytes: 4096 });
+
+    // A reconcile is the other way a ledger becomes true, and it must not need a separate call.
+    const reconciled = fakeDb();
+    const bucket = fakeBucket();
+    bucket.objects.set("a", 4096);
+    await reconcileStorageUsage(bucket, reconciled);
+    expect(await storageLedgerTrueSince(reconciled)).not.toBeNull();
+    const afterReconcile = await checkStorageQuota({
+      DB: reconciled,
+      R2_STORAGE_QUOTA_BYTES: "1024",
+      R2_STORAGE_QUOTA_MODE: "meter",
+    });
+    expect(afterReconcile).toMatchObject({ complete: true, reason: null });
+  });
+
+  it("storageLedgerTrueSince reads null when the table does not exist yet, rather than throwing", async () => {
+    // The table is created where it is WRITTEN, so a studio that has never stamped anything has no
+    // table at all. That must read as "not established", not as an exception, and not as true.
+    const db = fakeDb();
+    expect(db.metaTableExists).toBe(false);
+    expect(await storageLedgerTrueSince(db)).toBeNull();
+  });
+
+  // CONTROL: the failure this whole flag exists to prevent. An unreconciled ledger and a
+  // reconciled one holding the same bytes must NOT produce the same billing verdict.
+  it("CONTROL: an unestablished ledger and an established one differ, on identical bytes", async () => {
+    const mkEnv = (DB: FakeDb) => ({
+      DB,
+      R2_STORAGE_QUOTA_BYTES: "1024",
+      R2_STORAGE_QUOTA_MODE: "meter",
+    });
+    const cold = fakeDb();
+    await recordObjectWrite(cold, "a", 4096);
+    const warm = fakeDb();
+    await markStorageLedgerTrue(warm);
+    await recordObjectWrite(warm, "a", 4096);
+
+    const a = await checkStorageQuota(mkEnv(cold));
+    const b = await checkStorageQuota(mkEnv(warm));
+    expect(a.usedBytes).toBe(b.usedBytes);
+    // Same number, different standing. If these ever agree, the flag has stopped doing its job.
+    expect(a.complete).not.toBe(b.complete);
+  });
+
+  it("DENY decisions are untouched by the ledger rule: a floor still denies", async () => {
+    const db = fakeDb();
+    await recordObjectWrite(db, "a", 2000);
+    const verdict = await checkStorageQuota({ DB: db, R2_STORAGE_QUOTA_BYTES: "1000" });
+    if (verdict.ok) throw new Error("expected a deny");
+    // Byte-identical: same status, same message. Only the advisory pair reports the weaker basis.
+    expect(verdict.status).toBe(507);
+    expect(verdict.message).toBe(
+      "storage quota reached: 2000 bytes stored of the 1000-byte R2_STORAGE_QUOTA_BYTES ceiling; delete renders or raise the knob",
+    );
+    expect(verdict.complete).toBe(false);
+  });
+
+  it("the observer surface reports the floor AND says it is one", async () => {
+    const db = fakeDb();
+    await recordObjectWrite(db, "a", 1500);
+    const state = await storageQuotaState({ DB: db, R2_STORAGE_QUOTA_BYTES: "1000" });
+    expect(state).toMatchObject({ usedBytes: 1500, overageBytes: 500, complete: false });
+    expect(String(state.reason)).toContain("FLOOR");
   });
 });
 

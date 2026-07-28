@@ -61,6 +61,53 @@ three cases have a CONTROL asserting they stay pairwise distinguishable.
 `overageBytes` follows the same rule: a real reading at or under the quota is `0`, never `null`.
 "Nothing over" and "we do not know" are different answers.
 
+### A readable total is not a TRUE total
+
+`complete` asks one more question than "did the read succeed", and it has to. `storageUsedBytes()`
+returns a confident integer on a studio whose ledger has never been reconciled, and that integer is
+a **floor**:
+
+- accounting starts at 0 on any studio that predates the version shipping it (see *Where the number
+  comes from*), because artifact sizes are not derivable from the DB and there is nothing honest to
+  backfill;
+- a write the meter could not size or account leaves the counter reading LOW, with a warning;
+- a delete it could not account leaves it reading HIGH, with a warning.
+
+In `deny` mode a floor is nearly harmless: it denies later than a true total would. In `meter` mode
+it is a billing defect, and in the direction that flatters the operator running the meter: under-count,
+therefore under-bill, while the cost-recovery ratio reports health. Nothing downstream can catch it,
+because a low number and a correct number are the same shape.
+
+So the ledger records **when it started telling the truth**:
+
+| call | what it means |
+|---|---|
+| `markStorageLedgerTrue(db, at?)` | this ledger is accurate as of `at`. Written by every successful `reconcileStorageUsage`, and callable by a HOST at studio creation. |
+| `storageLedgerTrueSince(db)` | unix seconds, or `null` when it has never been established. |
+
+`complete` is true only when the read succeeded AND the ledger is established. An unestablished
+ledger still REPORTS its numbers (an operator staring at a usage page wants the floor rather than a
+blank), and it reports `complete: false` with a reason saying the total is a floor.
+
+**`deny` decisions are untouched by this rule**: a floor still denies at the ceiling, with the same
+status and the same message. Only the advisory pair reports the weaker basis.
+
+**Why "true since" and not "last reconciled".** A reconcile is one way a ledger becomes true; being
+born with accounting already on is the other, and it covers every studio created from here. A host
+that creates a studio at or after this version stamps it at creation, and the ledger is honest from
+birth with no reconcile ever run. Naming the FACT rather than the procedure keeps both in one field.
+
+**Why the table is created lazily.** Both panels carry `STORAGE_USAGE_DDL` verbatim with tests
+asserting their migration still matches it, so a second DDL constant would put a migration in front
+of this change in two more repos. `storage_usage_meta` is created where it is WRITTEN, and its
+absence reads as "not established", which needs no migration and fails in the safe direction:
+a studio that has never stamped anything is unbillable rather than billable-at-a-floor.
+`STORAGE_LEDGER_META_DDL` is exported anyway, for a host that prefers a real migration.
+
+**Operational consequence, stated plainly rather than discovered later:** until a host stamps at
+creation or an operator runs a reconcile, `meter` mode reports every window unbillable. That is the
+correct default. Billing off a floor is worse than not billing yet.
+
 ### The observer surface
 
 `checkStorageQuota(env)` is the SUBMIT gate and runs on the render path. `storageQuotaState(env)` is
