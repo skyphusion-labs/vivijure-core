@@ -122,6 +122,17 @@ MINOR (additive; `MODULE_API` unchanged, `host` is optional and additive by cont
 - Consumers render it **generically** off the hook catalog with the reason printed verbatim, so a
   future unserviceable hook needs no new UI.
 
+## [1.2.14] -- 2026-07-24
+
+- **MINOR, additive: `host.hooks_unavailable?: Record<string,string>` on `ModulesResponse.host`
+  (vivijure-cf#98).** Maps a hook name to a tenant-readable reason, and **key absence means
+  available**, so a host can state what it cannot serve instead of a panel inferring it. `MODULE_API`
+  is unchanged, pinned by test.
+- Release window: the vivijure-cf emission plus pin bump and the vivijure-local pin bump ride this
+  tag, cf then local, in the same window.
+- **fix(deps): patch postcss** to clear the one high npm audit finding (#95).
+  (Backfilled 2026-07-28 from the vivijure-core-v1.2.14 GitHub release; the row was missing from this file.)
+
 ## [1.2.13] -- 2026-07-24
 
 **Backfilled 2026-07-25.** This version was tagged and published with no changelog heading and no
@@ -165,6 +176,16 @@ class of gap as vivijure-local v1.1.16.
 - `handleCastTrainLora` submits to `RUNPOD_WAN_TRAIN_ENDPOINT_ID` by default when configured;
   pass `model_family:"sdxl"` (top-level or in `renderOverrides`) for the legacy render-endpoint path.
 - `handleCastTrainWanLora` remains an explicit always-Wan alias.
+
+## [1.2.7] -- 2026-07-22
+
+- **feat: couple local-gpu motion to local keyframes (vivijure-local#153).** When motion locality is
+  `local`, a local keyframe module is defaulted or required, so a film render does not quietly fall
+  back to RunPod for its keyframes: `coupleLocalGpuKeyframeChoice`, `localKeyframeModule`,
+  `localGpuKeyframePreflightError`.
+- A whitespace-only backend name is treated as omitted rather than as a name.
+- A dedicated `ui.section === "keyframe"` is preferred when picking the global default.
+  (Backfilled 2026-07-28 from the vivijure-core-v1.2.7 GitHub release; the row was missing from this file.)
 
 ## [1.2.6] -- 2026-07-22
 
