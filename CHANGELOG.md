@@ -57,18 +57,32 @@ consume and one converge downstream rather than two trains.
   used-vs-included display, with no submit semantics. ONE computation on purpose: a biller computing
   the number its own way means two numbers can disagree about the same tenant and the one that bills
   is the one nobody can see.
-- **`LLM_SPEND_ALLOWANCE_MICRO_USD`** -- the bundled-allowance knob, with rejection rules IDENTICAL
-  to `R2_STORAGE_QUOTA_BYTES` (unset / `0` / non-integer / non-string = no allowance, no unit
-  suffixes in the value). `_MICRO_USD` is in the NAME on purpose: a bare `_ALLOWANCE` invites
-  dollars, and this is the one lane where a unit confusion is a money bug. Integer micro-USD matches
-  `credit_ledger`, so the number is converted exactly once, at ingest.
-  - Note that cp#195 placing it "beside `SPEND_DAILY_CEILING`" means the same PLACE and SHAPE, not
-    the same UNIT: `SPEND_DAILY_CEILING` counts SUBMISSIONS per UTC day, not dollars. Checked rather
-    than read across from the name.
-  - Scope, stated so nobody hunts for absent enforcement: this is the KNOB. Measuring LLM spend
-    needs the gateway log stream, and the decision that turns a measured window into a charge is a
-    separate pure injected core, so it can be tested against the values that matter rather than the
-    ones an environment happens to hold.
+- **`LLM_SPEND_ALLOWANCE_MICRO_USD`** -- the bundled-allowance knob. Rejection rules identical to
+  `R2_STORAGE_QUOTA_BYTES` (empty / non-integer / non-string = no allowance, no unit suffixes in the
+  value) with ONE deliberate difference, below. `_MICRO_USD` is in the NAME on purpose: a bare
+  `_ALLOWANCE` invites dollars, and this is the one lane where a unit confusion is a money bug.
+  Integer micro-USD matches `credit_ledger`, so the number is converted exactly once, at ingest.
+  - **`"0"` is a REAL zero here, where the bytes knob refuses it.** A zero storage ceiling says
+    "store nothing", which nobody configures and which is indistinguishable from off. A zero
+    allowance says "this tier includes nothing, bill from the first token", which is a real tier
+    somebody sells; refusing it would leave an operator unable to express an intent they hold, with
+    the only workaround meaning the opposite thing. It also keeps core and the control plane
+    agreeing about one string across a binding boundary: the plane already treats a configured `"0"`
+    as deliberate, and two meanings for one value either side of a binding is a drift class.
+    Consumer trap, since the type invites it: `0` is falsy, so test against `null`.
+  - **This knob has NO core consumer today, and the doc says so in those words.** Core does not
+    measure LLM spend; that needs a gateway log stream, which the party holding the gateway
+    credential reads. A self-hoster who sets it without their own metering gets nothing. What ships
+    is the shared CONTRACT for what a valid allowance is, so the plane and any future core consumer
+    agree on one set of rules rather than growing two that drift. Closing the gap properly is
+    core#107, which also records that the pure decision core in the plane moves here at the same
+    time and not before.
+  - cp#195 placing it "beside `SPEND_DAILY_CEILING`" means the same PLACE and SHAPE, not the same
+    UNIT: `SPEND_DAILY_CEILING` counts SUBMISSIONS per UTC day, not dollars. Checked against the
+    reading code rather than read across from the name.
+  - A shared quirk, pinned rather than discovered: `Number()` accepts exponent notation, so BOTH
+    knobs read `"1e3"` as `1000`. Verified against both. Not fixed, because tightening it would
+    change the bytes knob, whose behaviour this release must not touch.
 
 ## [1.3.0] -- 2026-07-27
 
