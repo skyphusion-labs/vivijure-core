@@ -36,6 +36,7 @@ tagging the next release).
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.4.0` | 1.4.0 | a346403 | 2026-07-28 | **`R2_STORAGE_QUOTA_MODE` (cp#195).** PR #106. The bytes ceiling can be an INCLUDED quota (`meter`) instead of a hard cap; `deny` is the default and byte-identical to core#52, pinned by a six-input control over exact message strings. Carries the completeness contract (`complete` / `reason`, the LLM meter vocabulary) and the ledger-truth marker: a readable total is not a TRUE total, so `meter` reports unbillable until a reconcile runs or a host stamps at studio creation. The LLM allowance knob was built for this release and PULLED before tagging (no core consumer); parked whole on core#107. |
 | `vivijure-core-v1.3.0` | 1.3.0 | 1cf27d8 | 2026-07-27 | **Storage accounting + `R2_STORAGE_QUOTA_BYTES` (core#52).** PRs #98 (feature) + #99 (generic wrappers, so a host store keeps its type through the metering seam). Also carries `host.hooks_unavailable` (vivijure-cf#98) and the silent-shot lip-sync omission fix (#82). Parity train with vivijure-cf v1.11.0 + vivijure-local v1.5.0. |
 | `vivijure-core-v1.2.13` | 1.2.13 | 424e418 | 2026-07-24 | **Fix: cast-LoRA stuck-training reconciler (core#92)** no longer false-fails an observed-running Wan train; adversarial-audit CI. *(Row backfilled 2026-07-25 -- the release shipped without one.)* |
 | `vivijure-core-v1.2.12` | 1.2.12 | 05ea36b | 2026-07-23 | **K3 closeout (core#89).** Reject unsafe GPU `output_key` in `updateRenderFromView`. |
