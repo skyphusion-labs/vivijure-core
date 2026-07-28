@@ -55,6 +55,8 @@ export interface StorageQuotaEnv {
   DB?: Database;
   /** Positive integer BYTES as a string; unset / 0 / garbage = quota off. */
   R2_STORAGE_QUOTA_BYTES?: unknown;
+  /** "deny" (the default) or "meter"; unset / empty / unrecognised = "deny". See storageQuotaMode. */
+  R2_STORAGE_QUOTA_MODE?: unknown;
 }
 
 /** Pure: the configured ceiling in bytes, or null when the knob is off (unset / empty / 0 / garbage).
@@ -65,6 +67,50 @@ export function storageQuotaBytes(env: StorageQuotaEnv): number | null {
   if (typeof raw !== "string" || raw.trim() === "") return null;
   const n = Number(raw.trim());
   return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+// --------------------------------------------------------------------------- the mode knob
+
+/**
+ * What the ceiling MEANS (cp#195).
+ *
+ * - `deny`   -- the number is a HARD CEILING. Submit is refused at it, with the honest 507 and the
+ *               real numbers. This is what core#52 shipped and it is the DEFAULT.
+ * - `meter`  -- the number is an INCLUDED QUOTA. Nothing is refused; the studio surfaces
+ *               used-vs-included and whoever is billing meters the overage.
+ *
+ * Both ship to hosted and self-host in the same release, for the same reason the quota itself did:
+ * an enforcement posture that exists only for hosted is the drift tripwire this feature was built to
+ * avoid. A self-hoster who wants an included-quota display without a hard stop gets the identical
+ * behaviour the hosted tier runs on.
+ */
+export type StorageQuotaMode = "deny" | "meter";
+
+/**
+ * Resolve the mode. Unset, empty, or ANY unrecognised value resolves to `deny`.
+ *
+ * NOTE THE ASYMMETRY WITH THE BYTES KNOB, which is deliberate and not an inconsistency to tidy up.
+ * For `R2_STORAGE_QUOTA_BYTES`, garbage means OFF: nobody set a ceiling, so there is no ceiling, and
+ * absent knob means absent behaviour. For the MODE, garbage cannot mean "no mode" -- a studio with a
+ * ceiling set still has to pick an enforcement posture -- so it means `deny`, the conservative side.
+ * Guessing `meter` on a typo would silently turn a hard stop into unmetered spend, which is the one
+ * direction that costs somebody money they did not agree to.
+ *
+ * An unrecognised value WARNS rather than throwing. Refusing to boot over a mode string would take a
+ * studio down for a typo whose safe interpretation is obvious; going quiet would leave an operator
+ * believing they configured metering. Loud and safe beats either.
+ */
+export function storageQuotaMode(env: StorageQuotaEnv): StorageQuotaMode {
+  const raw = env.R2_STORAGE_QUOTA_MODE;
+  if (typeof raw !== "string" || raw.trim() === "") return "deny";
+  const cleaned = raw.trim().toLowerCase();
+  if (cleaned === "meter") return "meter";
+  if (cleaned !== "deny") {
+    console.warn(
+      `storage-quota: R2_STORAGE_QUOTA_MODE is set to an unrecognised value; falling back to "deny" (the safe side). Valid values are "deny" and "meter".`,
+    );
+  }
+  return "deny";
 }
 
 // --------------------------------------------------------------------------- the ledger
@@ -112,28 +158,165 @@ export async function storageUsedBytes(db: Database): Promise<number> {
   return (await storageUsage(db)).usedBytes;
 }
 
+// --------------------------------------------------------------------------- is the ledger TRUE?
+
+/**
+ * Companion table recording WHEN this ledger started telling the truth (cp#195, found by rollins).
+ *
+ * THE PROBLEM IT SOLVES, and it is the exact failure `complete` exists to catch. `storageUsedBytes`
+ * returns a confident integer on a studio whose ledger has never been reconciled, and that integer
+ * is a FLOOR rather than a total:
+ *
+ *   - accounting starts at 0 on any studio that predates the version shipping it, because artifact
+ *     sizes are not derivable from the DB and there is nothing honest to backfill (see the header);
+ *   - a write it could not size or account leaves the counter reading LOW, with a warn;
+ *   - a delete it could not account leaves it reading HIGH, with a warn.
+ *
+ * In `deny` mode a low counter merely denies later than it should. In `meter` mode it is a BILLING
+ * DEFECT, and in the direction that flatters us: we under-count, so we under-bill, and the
+ * cost-recovery ratio reports health. Nothing downstream can catch it, because a low number and a
+ * correct number are the same shape. That is a guard that looks exactly like success.
+ *
+ * WHY "true since" AND NOT "last reconciled". A reconcile is one way a ledger becomes true; being
+ * born with accounting already on is the other, and it is the case that covers every studio
+ * provisioned from here. A host that creates a studio at or after this version can stamp it at
+ * creation and the ledger is honest from birth with no reconcile ever run. Naming the fact rather
+ * than the procedure keeps both in one field.
+ *
+ * WHY THE TABLE IS CREATED LAZILY rather than added to the panel migrations. The panels carry
+ * STORAGE_USAGE_DDL verbatim with tests asserting their migration still matches it, so a second DDL
+ * constant would put a migration in front of this train in two more repos. Creating it where it is
+ * WRITTEN, and treating its absence as "not established" on read, needs no migration and fails in
+ * the safe direction: a studio that has never stamped anything reads as unbillable rather than as
+ * billable-at-a-floor. The constant is exported anyway, so a host that prefers a real migration can
+ * carry it.
+ */
+export const STORAGE_LEDGER_META_DDL = `CREATE TABLE IF NOT EXISTS storage_usage_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+)`;
+
+const LEDGER_TRUE_SINCE_KEY = "ledger_true_since";
+
+/**
+ * Record that the ledger is true as of `atSeconds` (default now).
+ *
+ * Called by `reconcileStorageUsage` on every successful rebuild, and callable by a HOST at studio
+ * creation to assert "this ledger has been accurate since the studio existed". The second caller is
+ * the one that matters for new tenants: without it every fresh studio would read as unbillable
+ * despite having a perfectly honest ledger.
+ */
+export async function markStorageLedgerTrue(db: Database, atSeconds?: number): Promise<void> {
+  await db.prepare(STORAGE_LEDGER_META_DDL).bind().run();
+  await db
+    .prepare(
+      `INSERT INTO storage_usage_meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    )
+    .bind(LEDGER_TRUE_SINCE_KEY, String(atSeconds ?? nowSeconds()))
+    .run();
+}
+
+/**
+ * Unix seconds since when this ledger is known true, or null when that has never been established.
+ *
+ * ANY failure reads as null, including the table simply not existing yet, and that is deliberate
+ * rather than sloppy: every failure mode here means the same thing operationally, which is that we
+ * cannot establish the ledger is complete. Guessing "true" on a read error would be the one
+ * direction that bills a customer off a number we could not stand behind.
+ */
+export async function storageLedgerTrueSince(db: Database): Promise<number | null> {
+  try {
+    const row = await db
+      .prepare("SELECT value FROM storage_usage_meta WHERE key = ?")
+      .bind(LEDGER_TRUE_SINCE_KEY)
+      .first<{ value: string | null }>();
+    const n = Number(row?.value);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 // --------------------------------------------------------------------------- enforcement
 
 export type StorageQuotaVerdict =
-  | { ok: true; usedBytes: number | null; quotaBytes: number | null }
+  | {
+      ok: true;
+      mode: StorageQuotaMode;
+      usedBytes: number | null;
+      quotaBytes: number | null;
+      /** See the COMPLETENESS CONTRACT below. */
+      complete: boolean;
+      reason: string | null;
+    }
   // 507 = an explicit over-quota verdict (the honest deny, real numbers in the message).
   // 503 = the quota is SET but its own check is broken (no DB / query threw): the money path fails
   //       CLOSED, exactly like the spend ceiling, because a novice self-funds the bill and must not
   //       silently run unmetered on a misconfigured studio.
-  | { ok: false; status: 507 | 503; usedBytes: number | null; quotaBytes: number; message: string };
+  // NEITHER is reachable in `meter` mode: there is no deny to make, so there is nothing to fail
+  // closed to. A broken read in `meter` mode is a METERING GAP, reported as complete:false.
+  | {
+      ok: false;
+      status: 507 | 503;
+      mode: StorageQuotaMode;
+      usedBytes: number | null;
+      quotaBytes: number;
+      message: string;
+      complete: boolean;
+      reason: string | null;
+    };
 
-/** Enforce the storage ceiling for one submission. Knob off = a pure no-op that never touches the DB. */
+// COMPLETENESS CONTRACT (cp#195), the same vocabulary the LLM meter uses, deliberately:
+//
+//   complete: true   this answer is a usable basis for billing. usedBytes is a real reading.
+//   complete: false  a METERING GAP. usedBytes is null and `reason` says why in words a human can
+//                    act on. The period is UNBILLABLE. It is NEVER zero overage.
+//
+// The distinction is load-bearing in `meter` mode and it is why the flag exists at all. `meter` has
+// no hard cap, so a silently broken storage read plus no cap is unbounded spend carried by whoever
+// is billing. "We read zero" and "we could not read" must not arrive as the same value, and before
+// this flag they did: `{ ok: true, usedBytes: null }` was ALREADY the return for a quota that is
+// simply not configured (the pure no-op below), so a failed read would have been indistinguishable
+// from an unconfigured studio, not merely from a real zero.
+//
+// Read the pair, never one field: `quotaBytes === null` means no quota is configured at all, which
+// is a third state and not an incomplete one.
+
+/**
+ * Enforce (or merely observe) the storage ceiling for one submission.
+ *
+ * Knob off = a pure no-op that never touches the DB, in BOTH modes. That is not an optimisation to
+ * be tidied away: submit is a hot-ish path and a studio with no quota configured has nothing to read.
+ *
+ * `deny` mode is byte-identical to core#52: same decisions, same statuses, same message text. The
+ * added fields are additive and no consumer serialises this verdict; the panel reads `.ok`,
+ * `.status` and `.message`. tests/storage-quota.test.ts pins all three across the whole matrix, so a
+ * drift in the default is a test failure rather than a reading exercise.
+ */
 export async function checkStorageQuota(env: StorageQuotaEnv): Promise<StorageQuotaVerdict> {
+  const mode = storageQuotaMode(env);
   const quotaBytes = storageQuotaBytes(env);
-  if (quotaBytes === null) return { ok: true, usedBytes: null, quotaBytes: null };
+  if (quotaBytes === null) {
+    return { ok: true, mode, usedBytes: null, quotaBytes: null, complete: true, reason: null };
+  }
 
   if (!env.DB) {
+    const reason = "the studio database is unavailable, so storage usage cannot be read";
+    if (mode === "meter") {
+      // No deny to make, so nothing to fail closed to. This is a metering gap and it is reported as
+      // one: the submit proceeds and the period is unbillable.
+      return { ok: true, mode, usedBytes: null, quotaBytes, complete: false, reason };
+    }
     return {
       ok: false,
       status: 503,
+      mode,
       usedBytes: null,
       quotaBytes,
       message: `storage quota is set (${quotaBytes} bytes) but the studio database is unavailable, so storage usage cannot be checked; submissions are blocked (fail-closed posture)`,
+      complete: false,
+      reason,
     };
   }
 
@@ -141,27 +324,143 @@ export async function checkStorageQuota(env: StorageQuotaEnv): Promise<StorageQu
   try {
     usedBytes = await storageUsedBytes(env.DB);
   } catch (e) {
+    const reason = `the storage usage read failed (${(e as Error).message})`;
+    if (mode === "meter") {
+      return { ok: true, mode, usedBytes: null, quotaBytes, complete: false, reason };
+    }
     return {
       ok: false,
       status: 503,
+      mode,
       usedBytes: null,
       quotaBytes,
       message: `storage quota check failed (${(e as Error).message}); submissions are blocked until the database recovers (fail-closed posture)`,
+      complete: false,
+      reason,
     };
   }
 
   // >= denies AT the ceiling: a studio exactly at its limit is full, and the next render only ever adds
   // bytes. Denying one submission early is honest; letting one through is not.
-  if (usedBytes >= quotaBytes) {
+  //
+  // In `meter` mode this is not a ceiling at all, so there is no deny: the reading is complete, the
+  // overage is real, and the submit proceeds.
+  // A readable number is not the same as a trustworthy one. An unreconciled ledger returns a
+  // confident integer that is a FLOOR, so in `meter` mode it would bill an overage computed from a
+  // total we cannot stand behind, in the direction that flatters us. Establishing this costs one
+  // extra read on a path that runs at submit, which is rare.
+  const trueSince = await storageLedgerTrueSince(env.DB);
+  if (trueSince === null) {
+    const reason =
+      "this studio storage ledger has never been established as true (no reconcile has run and no " +
+      "host has stamped it), so the accounted total is a FLOOR rather than a total";
+    if (mode === "meter") {
+      return { ok: true, mode, usedBytes, quotaBytes, complete: false, reason };
+    }
+    // `deny` decisions are untouched: a floor still denies, just later than a true total would.
+    // Only the advisory completeness pair reports the weaker basis.
+    if (usedBytes >= quotaBytes) {
+      return {
+        ok: false,
+        status: 507,
+        mode,
+        usedBytes,
+        quotaBytes,
+        message: `storage quota reached: ${usedBytes} bytes stored of the ${quotaBytes}-byte R2_STORAGE_QUOTA_BYTES ceiling; delete renders or raise the knob`,
+        complete: false,
+        reason,
+      };
+    }
+    return { ok: true, mode, usedBytes, quotaBytes, complete: false, reason };
+  }
+
+  if (usedBytes >= quotaBytes && mode === "deny") {
     return {
       ok: false,
       status: 507,
+      mode,
       usedBytes,
       quotaBytes,
       message: `storage quota reached: ${usedBytes} bytes stored of the ${quotaBytes}-byte R2_STORAGE_QUOTA_BYTES ceiling; delete renders or raise the knob`,
+      complete: true,
+      reason: null,
     };
   }
-  return { ok: true, usedBytes, quotaBytes };
+  return { ok: true, mode, usedBytes, quotaBytes, complete: true, reason: null };
+}
+
+/**
+ * The OBSERVER surface: what the operator (and, for a hosted tenant, the biller) needs to see, with
+ * no submit semantics attached. `checkStorageQuota` is the submit-time gate and runs on the render
+ * path; this is the read behind the usage route and the used-vs-included display.
+ *
+ * ONE computation, deliberately. The alternative was for the hosted plane to compute the billable
+ * number its own way from its own R2 read, which means two numbers can disagree about the same
+ * tenant and the one that bills is the one nobody can see. A self-hoster reads the identical fact
+ * off the identical surface.
+ */
+export interface StorageQuotaState {
+  mode: StorageQuotaMode;
+  /** In `deny` this is the CEILING; in `meter` it is the INCLUDED quota. null = not configured. */
+  quotaBytes: number | null;
+  usedBytes: number | null;
+  objects: number | null;
+  /**
+   * Bytes beyond `quotaBytes`, floored at 0. null when it cannot be computed (no reading, or no
+   * quota configured). A real reading at or under the quota is 0, never null: "nothing over" and
+   * "we do not know" are different answers and this field keeps them different.
+   */
+  overageBytes: number | null;
+  /** Same contract as the verdict: false = METERING GAP, unbillable, never zero overage. */
+  complete: boolean;
+  reason: string | null;
+}
+
+export async function storageQuotaState(env: StorageQuotaEnv): Promise<StorageQuotaState> {
+  const mode = storageQuotaMode(env);
+  const quotaBytes = storageQuotaBytes(env);
+
+  if (!env.DB) {
+    return {
+      mode,
+      quotaBytes,
+      usedBytes: null,
+      objects: null,
+      overageBytes: null,
+      complete: false,
+      reason: "the studio database is unavailable, so storage usage cannot be read",
+    };
+  }
+
+  try {
+    const { usedBytes, objects } = await storageUsage(env.DB);
+    const trueSince = await storageLedgerTrueSince(env.DB);
+    return {
+      mode,
+      quotaBytes,
+      usedBytes,
+      objects,
+      // The numbers are reported either way -- an operator staring at a usage page wants to see the
+      // floor rather than a blank -- but the completeness pair says what they rest on.
+      overageBytes: quotaBytes === null ? null : Math.max(0, usedBytes - quotaBytes),
+      complete: trueSince !== null,
+      reason:
+        trueSince !== null
+          ? null
+          : "this studio storage ledger has never been established as true (no reconcile has run " +
+            "and no host has stamped it), so the accounted total is a FLOOR rather than a total",
+    };
+  } catch (e) {
+    return {
+      mode,
+      quotaBytes,
+      usedBytes: null,
+      objects: null,
+      overageBytes: null,
+      complete: false,
+      reason: `the storage usage read failed (${(e as Error).message})`,
+    };
+  }
 }
 
 // --------------------------------------------------------------------------- the submit surface
@@ -406,6 +705,10 @@ export async function reconcileStorageUsage(
     if (db.batch) await db.batch(chunk);
     else for (const stmt of chunk) await stmt.run();
   }
+
+  // The rebuild just made this ledger true; record that, because nothing else can observe it after
+  // the fact. A total and a floor are the same shape (cp#195).
+  await markStorageLedgerTrue(db, now);
 
   return {
     objects: sized.length,

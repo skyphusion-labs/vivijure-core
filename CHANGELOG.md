@@ -3,6 +3,65 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.4.0] -- 2026-07-28
+
+### Added: `R2_STORAGE_QUOTA_MODE` (cp#195)
+
+MINOR (additive; one new mode knob, a ledger-truth marker, and additive fields on the storage-quota
+return types). **No existing studio changes behaviour and no migration is implied.**
+
+The LLM bundled-allowance knob was built for this release and PULLED before tagging (ruled by
+mackaye): nothing in core measures LLM spend, so a core knob would have advertised a capability that
+does not exist and a self-hoster setting it would get nothing without being told. Shipping an inert
+knob in the same release as the census that refuses inert knobs would be this repo arguing with
+itself. It stays a plane var until core can measure; the parsing work and its controls are parked on
+core#107 rather than deleted.
+
+- **`R2_STORAGE_QUOTA_MODE`** -- what the bytes number MEANS. `deny` (the DEFAULT) keeps it a hard
+  ceiling: `507` at the ceiling, `503` fail-closed when the check cannot run, exactly core#52.
+  `meter` makes it an INCLUDED quota: nothing is refused, the studio surfaces used-vs-included, and
+  whoever is billing meters the overage. cp#195 needs the second behaviour, and the rejected
+  alternative (hosted sets no ceiling and a control plane meters it) would have made only the plane
+  know the included number, so no studio could show "X of your included Y", would have deleted the
+  fail-closed property for hosted tenants, and would have unwound the cp#183 per-tenant convergence.
+- **`deny` is byte-identical to core#52**, and there is a CONTROL rather than a claim: six inputs
+  (mode unset, empty, whitespace, explicit `deny`, unrecognised, non-string) driven through the same
+  expectations, pinning the EXACT message strings rather than substrings, because the message is the
+  operator-visible behaviour. Neutering the default to `meter` fails 22 of them.
+- **An unrecognised mode falls back to `deny` and WARNS.** That is the opposite of the bytes knob,
+  where garbage means OFF, and the asymmetry is deliberate: for bytes, garbage means nobody set a
+  ceiling, so absent knob means absent behaviour; for the mode, a studio that HAS a ceiling still
+  has to pick a posture and there is no "no posture" to fall back to. Guessing `meter` on a typo
+  silently converts a hard stop into unmetered spend, the one direction that costs somebody money
+  they did not agree to. It warns rather than throwing, because refusing to boot over a mode string
+  takes a studio down for a typo whose safe reading is obvious.
+- **`complete` / `reason` on both entry points, the METERING GAP contract.** `meter` has no hard
+  cap, so there is nothing to fail closed to, which makes the completeness of the reading
+  load-bearing: a silently broken meter plus no cap is unbounded spend carried by whoever bills.
+  `complete: false` means UNBILLABLE, with `usedBytes: null` and a human-readable reason, and never
+  a zero. Same vocabulary as the LLM meter deliberately, so nobody learns two names for one idea.
+- **A hole this closes that predates the change:** `{ ok: true, usedBytes: null }` was ALREADY the
+  return for a quota that is not configured at all, so a failed read would have been
+  indistinguishable from an unconfigured studio, not merely from a real zero, and billed as zero. A
+  CONTROL asserts a real zero, a metering gap and an unconfigured quota stay pairwise
+  distinguishable. `overageBytes` follows the same rule: a real reading at or under the quota is
+  `0`, never `null`.
+- **A readable total is not a TRUE total** (found by rollins). `storageUsedBytes()` returns a
+  confident integer on a studio whose ledger has never been reconciled, and that integer is a FLOOR:
+  accounting starts at 0 on any studio predating it, and both drift directions only warn. In `meter`
+  mode that bills an overage computed from a total nobody can stand behind, in the direction that
+  flatters us, and nothing downstream can catch it because a low number and a correct number are the
+  same shape. `complete` therefore requires the ledger be ESTABLISHED, via the new
+  `markStorageLedgerTrue` / `storageLedgerTrueSince` pair (written by every successful reconcile,
+  and callable by a host at studio creation). `deny` decisions are untouched: a floor still denies,
+  with the same status and message. **Consequence, stated rather than discovered: until a host
+  stamps at creation or an operator reconciles, `meter` reports every window unbillable.** That is
+  the correct default; billing off a floor is worse than not billing yet.
+- **`storageQuotaState(env)`** -- the observer surface behind the usage route and the
+  used-vs-included display, with no submit semantics. ONE computation on purpose: a biller computing
+  the number its own way means two numbers can disagree about the same tenant and the one that bills
+  is the one nobody can see.
+
 ## [1.3.0] -- 2026-07-27
 
 ### Added: host-neutral storage accounting + `R2_STORAGE_QUOTA_BYTES` (core#52)
