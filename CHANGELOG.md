@@ -5,17 +5,13 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## [1.4.0] -- 2026-07-28
 
-### Added: `R2_STORAGE_QUOTA_MODE` (cp#195)
+### Added: `R2_STORAGE_QUOTA_MODE` and `LLM_SPEND_ALLOWANCE_MICRO_USD` (cp#195)
 
-MINOR (additive; one new mode knob, a ledger-truth marker, and additive fields on the storage-quota
-return types). **No existing studio changes behaviour and no migration is implied.**
+MINOR (additive; one new module `llm-allowance`, one new mode knob and two additive fields on the
+storage-quota return types). **No existing studio changes behaviour and no migration is implied.**
 
-The LLM bundled-allowance knob was built for this release and PULLED before tagging (ruled by
-mackaye): nothing in core measures LLM spend, so a core knob would have advertised a capability that
-does not exist and a self-hoster setting it would get nothing without being told. Shipping an inert
-knob in the same release as the census that refuses inert knobs would be this repo arguing with
-itself. It stays a plane var until core can measure; the parsing work and its controls are parked on
-core#107 rather than deleted.
+Two independent operator knobs, one release, ruled by mackaye: same ruling, same cp#183 shape, one
+consume and one converge downstream rather than two trains.
 
 - **`R2_STORAGE_QUOTA_MODE`** -- what the bytes number MEANS. `deny` (the DEFAULT) keeps it a hard
   ceiling: `507` at the ceiling, `503` fail-closed when the check cannot run, exactly core#52.
@@ -61,6 +57,18 @@ core#107 rather than deleted.
   used-vs-included display, with no submit semantics. ONE computation on purpose: a biller computing
   the number its own way means two numbers can disagree about the same tenant and the one that bills
   is the one nobody can see.
+- **`LLM_SPEND_ALLOWANCE_MICRO_USD`** -- the bundled-allowance knob, with rejection rules IDENTICAL
+  to `R2_STORAGE_QUOTA_BYTES` (unset / `0` / non-integer / non-string = no allowance, no unit
+  suffixes in the value). `_MICRO_USD` is in the NAME on purpose: a bare `_ALLOWANCE` invites
+  dollars, and this is the one lane where a unit confusion is a money bug. Integer micro-USD matches
+  `credit_ledger`, so the number is converted exactly once, at ingest.
+  - Note that cp#195 placing it "beside `SPEND_DAILY_CEILING`" means the same PLACE and SHAPE, not
+    the same UNIT: `SPEND_DAILY_CEILING` counts SUBMISSIONS per UTC day, not dollars. Checked rather
+    than read across from the name.
+  - Scope, stated so nobody hunts for absent enforcement: this is the KNOB. Measuring LLM spend
+    needs the gateway log stream, and the decision that turns a measured window into a charge is a
+    separate pure injected core, so it can be tested against the values that matter rather than the
+    ones an environment happens to hold.
 
 ## [1.3.0] -- 2026-07-27
 

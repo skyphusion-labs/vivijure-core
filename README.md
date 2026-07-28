@@ -100,6 +100,7 @@ Tag push triggers **Publish npm package** (`.github/workflows/publish-npm.yml`).
 | `@skyphusion-labs/vivijure-core/film-orchestrator` | Full film state machine |
 | `@skyphusion-labs/vivijure-core/preflight` | Storyboard pre-render checks |
 | `@skyphusion-labs/vivijure-core/storage-quota` | Storage accounting ledger + `R2_STORAGE_QUOTA_BYTES` / `R2_STORAGE_QUOTA_MODE` ([docs](docs/STORAGE-QUOTA.md)) |
+| `@skyphusion-labs/vivijure-core/llm-allowance` | The bundled LLM allowance knob `LLM_SPEND_ALLOWANCE_MICRO_USD` ([docs](docs/LLM-ALLOWANCE.md)) |
 
 Full subpath list: `package.json` `exports` field.
 
