@@ -1,6 +1,6 @@
 # HISTORICAL: flatliners dev box (RETIRED 2026-07-16)
 
-> **Do not use.** The Hetzner cloud server `flatliners` (`150062483` / `178.105.200.248`) was
+> **Do not use.** The Hetzner cloud server `flatliners` was
 > deleted after the vivijure-local cutover to **propagandhi**. Laptop `Host flatliners` SSH is
 > commented retired. GPU + studio ops live on propagandhi.
 >
@@ -13,7 +13,7 @@ The sections below are kept only so old links and chat transcripts still resolve
 
 # flatliners dev box (archived)
 
-**Former host:** `flatliners` (`178.105.200.248`, `User conrad` in laptop `~/.ssh/config`).
+**Former host:** `flatliners` (laptop `~/.ssh/config` entry, commented retired).
 
 Use **git from GitHub `main`**, not laptop rsync. `gh` is installed and authenticated as `skyphusion`.
 
