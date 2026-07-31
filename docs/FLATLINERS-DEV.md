@@ -41,5 +41,3 @@ gh repo clone skyphusion-labs/vivijure-cf
 
 `scripts/flatliners-sync.sh` remains in-tree as a historical helper name. It is not an active
 operator path. Do not schedule it.
-
-PLANTED GATE TEST, reverted in the next commit: 10.1.1.7
