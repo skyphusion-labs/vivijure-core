@@ -19,9 +19,16 @@ syncs *into* core.
 | `vivijure-local` | Consumes the published package via semver (`file:../vivijure-core` for local dev). |
 | Module workers | Vendor `modules/types.ts` from core; the module conformance suites enforce the contract. |
 
-The **only** ongoing parity check in the constellation is **`vivijure-local` <-> `vivijure-cf` on the
-shared `public/` planner UI**, enforced by vivijure-local's `upstream-parity` workflow (which diffs
-against `vivijure-cf`, not this repo).
+**There is no ongoing parity CHECK in the constellation any more.** The last one was
+`vivijure-local` <-> `vivijure-cf` on the shared `public/` planner UI, enforced by vivijure-local's
+`upstream-parity` workflow; it was retired in vivijure-local#263 once the two hosts' projectors
+legitimately diverged, at which point byte-identity of the shared frontend stopped being a true
+statement about a working system. Nothing in this repo was involved (that workflow diffed
+`vivijure-cf`, not core), and nothing here changes: consumers still align by pinning a published
+package version, per the table above.
+
+What survives is the PRODUCT rule, which was never a diff: every studio feature ships to both panels
+in the same release wave. It is a review obligation.
 
 ## Change control
 
