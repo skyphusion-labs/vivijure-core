@@ -2,7 +2,7 @@
 
 > **Do not use.** The Hetzner cloud server `flatliners` (`150062483` / `178.105.200.248`) was
 > deleted after the vivijure-local cutover to **propagandhi**. Laptop `Host flatliners` SSH is
-> commented retired. GPU + studio ops live on propagandhi (`10.1.1.7`).
+> commented retired. GPU + studio ops live on propagandhi.
 >
 > Topology: fleet-chezmoi `system/stacks/propagandhi/RUNBOOK-vivijure-local-topology.md`.
 

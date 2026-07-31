@@ -1,0 +1,33 @@
+name: doc-addresses
+
+# Docs and examples use the RFC 5737 documentation ranges rather than real internal VLAN
+# addresses (core#110). The cleanup is one-time; this check is what keeps it that way.
+# PUBLIC repo: GitHub-hosted ubuntu-latest (fork-safe).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: doc-addresses-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  doc-addresses:
+    name: doc-addresses
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check tracked files for internal VLAN addresses
+        env:
+          # Narrow path allowlist, one git pathspec per line. Empty on purpose: an
+          # exemption has to appear in THIS file's diff so a reviewer sees it. There is
+          # deliberately no marker a file can carry to exempt itself.
+          ALLOWLIST: ""
+        run: bash scripts/check-doc-addresses.sh
