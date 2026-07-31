@@ -12,6 +12,13 @@
 # check that forced them to be scrubbed would make the codebase worse and would be turned
 # off by the first person it annoyed.
 #
+# DO NOT SOLVE THAT BY PATH-EXCLUDING tests/. The scoping above is what protects those
+# vectors, and an exclusion would cost you the catch that justifies this check: when it
+# was written, a real fleet VLAN address was living in vivijure-local's
+# tests/abuse-link.test.ts as an illustrative "operator's LAN address", and ci, coverage,
+# upstream-parity, CodeQL and the adversarial audit were ALL green on it. This check was
+# the only thing that found it.
+#
 # NO SELF-EXCLUSION, NO IN-CONTENT HATCH. The pattern below is written escaped, so this
 # file does not match itself and needs no exemption of its own. There is deliberately no
 # marker a file can carry to opt out (a marker in the content is a hatch that disarms
