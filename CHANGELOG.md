@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## [Unreleased]
+## [1.5.0] -- 2026-08-01
 
 ### Added: the per-job tenant R2 credential on the invoke envelope (cp#270)
 
