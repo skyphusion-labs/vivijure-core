@@ -33,6 +33,7 @@ import {
   type RenderConfigProjection,
 } from "./types.js";
 import { validateManifest } from "./manifest-validate.js";
+import { tenantR2FromEnv, withTenantR2 } from "./tenant-r2.js";
 import type { FetcherLike } from "../platform/types.js";
 
 function isFetcher(v: unknown): v is FetcherLike {
@@ -797,7 +798,14 @@ export async function dispatchChain<I = unknown, O = unknown>(
       continue;
     }
     const config = validateConfig(module.config_schema, opts.configFor?.(module.name));
-    const r = await awaitInvoke<I, O>(fetcher, { hook, input: current, config, context });
+    // cp#270: attach the tenant R2 credential for a module that DECLARES it needs one. Resolved
+    // per module rather than once per chain because `withTenantR2` is what enforces the
+    // declaration check, and hoisting the resolve would invite a future edit to attach it
+    // unconditionally. The env read is four property lookups; the chain is a network call per step.
+    const r = await awaitInvoke<I, O>(
+      fetcher,
+      withTenantR2({ hook, input: current, config, context }, module, await tenantR2FromEnv(env)),
+    );
     if (r.ok) {
       last = r.output;
       current = await opts.nextInput(r.output, seed);

@@ -22,6 +22,25 @@ export interface OrchestratorEnv {
   R2_RENDERS: R2Bucket;
   R2: R2Bucket;
   PRESIGNER: ObjectPresigner;
+  /**
+   * The TENANT's own bucket-scoped R2 credential (cp#270). Present on a provisioned hosted studio
+   * (provisioner.ts binds all four) and on any self-host that configured presigning; absent
+   * otherwise, which is why every field is optional.
+   *
+   * DECLARED rather than left to the index signature below, deliberately. The index signature
+   * would type-check either way, and that is exactly how this codebase ended up with a
+   * `RUNPOD_ENDPOINT_ID` on an Env that nothing reads: an undeclared binding is invisible to
+   * every reader and to the compiler. A hand-authored Env is the house rule.
+   *
+   * Typed `unknown` rather than `string` because a binding here may be a plain string OR a
+   * Secrets Store handle, and pretending otherwise would push an unsafe cast onto every reader.
+   * Resolve them through `tenantR2FromEnv`, which handles both and treats a failed read as
+   * absent.
+   */
+  R2_S3_ENDPOINT?: unknown;
+  R2_S3_ACCESS_KEY_ID?: unknown;
+  R2_S3_SECRET_ACCESS_KEY?: unknown;
+  R2_S3_BUCKET?: unknown;
   /** Plain config vars (FILM_CLIP_DURATION_FLOOR, VPC bindings, etc.). */
   [key: string]: unknown;
 }
