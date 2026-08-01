@@ -197,6 +197,23 @@ export interface ModuleManifest {
    *  projects inline instead of hardcoding a model name. Distinct from provides[].label, which is
    *  the section-title-length label ("GPU Keyframe (SDXL on RunPod)"); this is the short inline noun. */
   keyframe_label?: string;
+  /**
+   * OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`). This module submits to
+   * a RunPod endpoint that may be POOLED across tenants, so it needs the tenant's per-job R2
+   * credential on the invoke envelope (cp#270). The core attaches `InvokeRequest.r2` only for a
+   * module that declares this.
+   *
+   * DECLARED BY THE MODULE, never decided here, and that is the whole reason it is a manifest
+   * field rather than a list of module names in the core. Which modules ride a pooled endpoint is
+   * a property of the module, and the bare-skeleton rule is that core does not branch on module
+   * identity -- the same discipline `hooks`, `config_schema` and `cancelable` already follow.
+   *
+   * SET IT ONLY IF THE MODULE ACTUALLY NEEDS IT. Declaring it hands a live tenant credential to a
+   * worker that has no use for one, which is a widening with nothing bought. Absent is the right
+   * default and every module that reaches a non-RunPod provider, or a credentialless presigned
+   * endpoint, should leave it absent.
+   */
+  needs_tenant_r2?: boolean;
   /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`). A finish module sets this
    *  true when it drives its output from the shot dialogue audio (`FinishInput.audio_key`), i.e. it
    *  lip-syncs. It carries TWO facts the core needs: (a) this finish step CONSUMES the shot dialogue
@@ -228,18 +245,68 @@ export interface DurationGridDecl {
 
 // --------------------------------------------------------------------------- invocation
 
-/** Per-job context the core passes to every invoke (never secrets). */
+/**
+ * The TENANT's R2 job-I/O settings for ONE job, matching the backend contract exactly
+ * (`vivijure-backend/docs/contract.md`, `R2Config.from_payload_or_env`).
+ *
+ * DEFINED HERE, in the dependency-free shared-shape file, because both the core (which builds it)
+ * and every module (which receives it) import this file and nothing else in common.
+ *
+ * All four fields are REQUIRED by that contract, and a partial block FAILS the job at the far end
+ * rather than degrading -- so a producer that cannot fill all four must omit the block entirely.
+ * `session_token` exists in the backend contract for temporary credentials and is deliberately NOT
+ * here: nothing in this codebase mints those, and a field we never populate advertises a capability
+ * that does not exist.
+ */
+export interface TenantR2Config {
+  endpoint: string;
+  access_key_id: string;
+  secret_access_key: string;
+  bucket: string;
+}
+
+/** Per-job context the core passes to every invoke (never secrets -- see InvokeRequest.r2,
+ *  which is a SIBLING of this field rather than part of it, exactly so this stays true). */
 export interface InvokeContext {
   project: string;
   job_id: string;
 }
 
-/** The single entry point the core calls on a module: POST /invoke. */
+/**
+ * The single entry point the core calls on a module: POST /invoke.
+ *
+ * READ THE `r2` NOTE BELOW BEFORE ASSUMING THIS ENVELOPE IS SECRET-FREE. `InvokeContext` still
+ * carries "never secrets" and that remains LITERALLY true of `context`; `r2` is a sibling of it
+ * precisely so that invariant did not have to be quietly falsified to make room for this. The
+ * envelope as a whole is no longer secret-free, and saying so here is the point.
+ */
 export interface InvokeRequest<I = unknown> {
   hook: HookName;
   input: I;
   config: Record<string, unknown>; // already validated against the module's config_schema
   context: InvokeContext;
+  /**
+   * The TENANT's per-job R2 credential (cp#270), present ONLY for a module whose manifest sets
+   * `needs_tenant_r2`, and only on a host that carries a full credential set.
+   *
+   * THE ONLY SECRET THIS ENVELOPE HAS EVER CARRIED. It exists because pooling the hosted shared
+   * tier means one RunPod endpoint serves many tenants, so the R2 destination cannot live in the
+   * endpoint's template environment any more -- it has to arrive per job, and the worker that
+   * submits holds no credential of its own.
+   *
+   * BOUNDED residency, chosen over STANDING residency, deliberately: the alternative was binding
+   * the credential onto every tenant module script, which puts each copy on the credential-roll
+   * list forever with a silent staleness failure mode (vivijure-cf#83 is that bug having already
+   * happened). Here it lives for one hop and is removed on receipt.
+   *
+   * OPTIONAL, and absent means ABSENT: the key is omitted, never set to null. The backend REFUSES
+   * an explicit null rather than reading it as "use the environment" (vivijure-backend#393), so
+   * a producer that emits null fails every job. Build it with `withTenantR2`.
+   *
+   * A RECEIVER MUST STRIP IT: call `takeTenantR2(req)` at the top of the handler, which reads and
+   * removes it in one step, so nothing downstream holds an object that still contains it.
+   */
+  r2?: TenantR2Config;
 }
 
 /** A module failure is data, never an exception across the wire: the core degrades, it does not

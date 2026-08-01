@@ -3,6 +3,51 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [Unreleased]
+
+### Added: the per-job tenant R2 credential on the invoke envelope (cp#270)
+
+MINOR (additive; one optional envelope field, one optional manifest field, one new module, four
+optional Env declarations). **No existing module changes behaviour**: a module that does not
+declare `needs_tenant_r2` receives a byte-identical envelope to the one it receives today.
+
+WHY. Pooling the hosted shared tier (cp#270) means one RunPod endpoint serves many tenants, so
+the tenant's R2 destination can no longer live in the endpoint's template environment. It has to
+arrive per job, and the worker that submits is a tenant MODULE worker which holds no R2
+credential of its own.
+
+THE TRADE, stated rather than presented as free. Two ways to get a credential to the submitter:
+
+- **STANDING residency** -- bind it onto every tenant module script. Each copy then joins the list
+  of consumers that must be updated on every credential roll, with a silent staleness failure
+  mode. That bug has already happened: vivijure-cf#83, where adopted RunPod templates kept a
+  revoked credential after a re-mint and the tenant's first render died 401 on R2.
+- **BOUNDED residency** -- the studio, which already holds the credential, passes it on the one
+  hop to the module, which uses it and drops it.
+
+This is the bounded option. The credential now exists in a worker-to-worker request body for the
+duration of one call, and that is acceptable on a MEASURED basis rather than an assumed one:
+Cloudflare's `workers_trace_events` dataset carries no request-body field, and `Logs` is defined
+as console messages. The platform does not capture the body; the only way this leaks is if our
+own code writes it to a log.
+
+So the guard ships with the field, not after it:
+
+- `withTenantR2` attaches the block ONLY for a module whose manifest declares `needs_tenant_r2`,
+  and OMITS the key entirely when there is nothing to attach. The backend REFUSES an explicit
+  `"r2": null` rather than reading it as absent, so a producer that emits null fails every job.
+- `takeTenantR2` reads and REMOVES the block in one call, the mirror of the backend's
+  `strip_from_payload`, so nothing downstream holds an object that still contains the credential.
+
+`InvokeContext` still says "never secrets" and that stays LITERALLY true: `r2` is a SIBLING of
+`context`, deliberately, so the existing invariant did not have to be quietly falsified to make
+room. The envelope as a whole is no longer secret-free and `InvokeRequest` now says so.
+
+STANDING CONDITION: enabling Logpush **Custom Fields** on tenant module workers requires
+revisiting this design. Custom Fields is the documented mechanism for capturing more of a request
+than the default dataset, and it is the one configuration change that could make this unsafe with
+no code changing.
+
 ## [1.4.0] -- 2026-07-28
 
 ### Added: `R2_STORAGE_QUOTA_MODE` (cp#195)

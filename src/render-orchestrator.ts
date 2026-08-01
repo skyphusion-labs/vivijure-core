@@ -19,6 +19,7 @@ import {
   servingForHook,
   validateConfig,
 } from "./modules/registry.js";
+import { tenantR2FromEnv, withTenantR2 } from "./modules/tenant-r2.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
 import {
@@ -278,18 +279,29 @@ export async function startClipJob(
         continue;
       }
     }
-    const r = await invokeModule<MotionBackendInput, MotionBackendOutput>(fetcher, {
-      hook: "motion.backend",
-      input: {
-        shot_id: motionInput.shot_id,
-        keyframe_url: motionInput.keyframe_url,
-        keyframe_key: motionInput.keyframe_key,
-        prompt: motionInput.prompt,
-        seconds: motionInput.seconds,
-      },
-      config,
-      context: { project: args.project, job_id },
-    });
+    // cp#270: `own-gpu` submits to the vivijure-backend endpoint, which may be POOLED across
+    // tenants, so it declares `needs_tenant_r2` and gets the tenant credential attached here.
+    // withTenantR2 is what enforces the declaration -- a module that does not ask for it (every
+    // cloud motion backend) gets the envelope back unchanged, with the key ABSENT rather than null.
+    const r = await invokeModule<MotionBackendInput, MotionBackendOutput>(
+      fetcher,
+      withTenantR2(
+        {
+          hook: "motion.backend",
+          input: {
+            shot_id: motionInput.shot_id,
+            keyframe_url: motionInput.keyframe_url,
+            keyframe_key: motionInput.keyframe_key,
+            prompt: motionInput.prompt,
+            seconds: motionInput.seconds,
+          },
+          config,
+          context: { project: args.project, job_id },
+        },
+        mb,
+        await tenantR2FromEnv(envRec),
+      ),
+    );
     if (!r.ok) {
       shot.status = "failed";
       shot.error = r.error;
