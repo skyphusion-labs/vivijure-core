@@ -3,6 +3,37 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.7.1] -- 2026-08-02
+
+### Fixed: `renders.output_ms` was WRITE-ONLY -- nothing could read it back (vivijure-cf#268)
+
+PATCH. Completes 1.7.0 rather than adding to it; no behaviour changes for module authors.
+
+1.7.0 shipped the capture -- `markFinishDone` writes `renders.output_ms`, the metering basis -- and
+added the column to **no read path at all**: not the shared `RENDER_ROW_COLUMNS` list, not
+`RawRenderRow`, not `normalizeRow`. So the value was written and then invisible. Not to the panel,
+not to the meter that will eventually bill on it, and not to the smoke meant to prove it landed. The
+only way to observe it was an account-credentialled D1 query.
+
+Added at all the hops it was missing. `PublicRenderRow` needed no change: it is
+`Omit<RenderRow, ...>` and `toPublicRenderRow` spreads, so the field reaches clients by
+construction once it is on `RenderRow`.
+
+**Why it survived review and a full test suite.** Every 1.7.0 test asserted the WRITE, through a
+stubbed D1 binding, by inspecting the UPDATE's bind parameters. **A capture path with no reader
+passes every test that only exercises capture** -- the stub was the boundary, so the read side was
+not merely untested, it was out of frame. The new suite drives the REAL read functions and asserts
+the SQL, and it fails on 1.7.0 in all six cases, which is the only reason to trust it.
+
+The four-hop shape is the hazard worth naming: `RENDER_ROW_COLUMNS` -> `RawRenderRow` ->
+`normalizeRow` -> `RenderRow` -> `toPublicRenderRow`. The column list is a **template string the
+compiler cannot check against the row interface**, so a field dropped at that hop vanishes with no
+type error. That is exactly how it went missing.
+
+NULL semantics are preserved and asserted: NULL means NOT MEASURED and is never coalesced to 0 -- a
+zero is a film of no length, and a billing query that cannot tell them apart bills nothing for a
+real render. A legacy row predating migration `0016` reads `null` rather than `NaN`.
+
 ## [1.7.0] -- 2026-08-02
 
 ### Added: the DELIVERED film length, captured and written to `renders.output_ms` (vivijure-cf#268, skyphusion-labs/vivijure#805)
