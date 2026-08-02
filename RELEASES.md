@@ -27,16 +27,46 @@ gh release create vivijure-core-v1.2.2 \
 # 4. Confirm npm publish workflow succeeded
 gh run list --workflow publish-npm.yml --limit 3
 npm view @skyphusion-labs/vivijure-core@1.2.2 version
+
+# 5. CLOSE THE LEDGER ROW -- see "Closing the row" below. Not optional, not a tidy-up.
 ```
 
-Update this ledger and `CHANGELOG.md` in the same PR as the version bump (or a follow-up PR before
-tagging the next release).
+## Closing the row (step 5, and the one that gets skipped)
+
+The ledger row is written in TWO moments against TWO different pieces of evidence, and only the
+first has ever been reliable:
+
+1. **SEEDED** in the version-bump PR: tag name, version, notes. Leave `source commit` and
+   `published` EMPTY -- do not write `pending`. An empty cell reads as "nobody has filled this in";
+   `pending` reads as a claim about the world, and it is a claim nobody checks.
+2. **CLOSED** after the publish: fill `source commit` with the tag's commit and `published` with the
+   date **the registry reports**.
+
+```bash
+git rev-list -n 1 vivijure-core-v<semver> | cut -c1-7          # source commit
+npm view @skyphusion-labs/vivijure-core time --json            # published date, from the REGISTRY
+npm view @skyphusion-labs/vivijure-core@9.9.9 version          # negative control: must be E404
+```
+
+**Settle it at the registry, never at the publish run.** A green workflow is not a published
+package, and `npm view` has served a cached answer immediately after a publish before -- so the read
+belongs AFTER the confirmation in step 4, as its own act, with a negative control proving the check
+can come back absent.
+
+WHY THIS IS A NUMBERED STEP RATHER THAN A NOTE. `published` used to be filled in at PR time, before
+the fact, and never corrected -- so `pending` was the value for a published release and an
+unpublished one alike, and the column could not answer the one question the ledger exists for. Every
+`pending` row in this file was false when that was measured (`v1.6.0`, `v1.2.10`, `v1.2.7`;
+`v1.2.14` had no row at all). See core#126.
+
+Seed the ledger and `CHANGELOG.md` in the same PR as the version bump; CLOSE the ledger row once the
+publish is confirmed at the registry.
 
 ## Release ledger
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
-| `vivijure-core-v1.7.0` | 1.7.0 | (this PR) | pending | **The DELIVERED film length -> `renders.output_ms` (vivijure-cf#268, vivijure#805).** PR #124. Conrad's metering basis is "we bill on the last writer": a carded film is longer than its assemble output, so billing assemble under-bills by every title card. `film_output_seconds` maps FILM ARTIFACT KEY -> measured seconds and every stage that writes a film records into it, so the delivered length is a LOOKUP OF THE FINAL KEY -- last-writer-wins as a property of the data, not an ordering rule. Persisted because the `film.finish` chain ADOPTS an artifact already in R2 (#600) with NO container call, so a live-result-only read loses the length on exactly the films long enough to span ticks, as a NULL on a COMPLETED row that bills nothing. `markFinishDone` gains optional `outputMs`; `COALESCE(?, output_ms)` is last-writer-wins, not a first-writer guard. **BEHAVIOUR CHANGE: `film.finish` conformance now REJECTS `duration_seconds <= 0`** -- a module that cannot measure must OMIT the field. Caught a real regression in vivijure-cf#359 (subtitle's sidecar-only run puts a `0.0` initialiser on the wire). REQUIRES vivijure-cf migration `0016` applied before the dep bump. |
+| `vivijure-core-v1.7.0` | 1.7.0 | 705a628 | 2026-08-02 | **The DELIVERED film length -> `renders.output_ms` (vivijure-cf#268, vivijure#805).** PR #124. Conrad's metering basis is "we bill on the last writer": a carded film is longer than its assemble output, so billing assemble under-bills by every title card. `film_output_seconds` maps FILM ARTIFACT KEY -> measured seconds and every stage that writes a film records into it, so the delivered length is a LOOKUP OF THE FINAL KEY -- last-writer-wins as a property of the data, not an ordering rule. Persisted because the `film.finish` chain ADOPTS an artifact already in R2 (#600) with NO container call, so a live-result-only read loses the length on exactly the films long enough to span ticks, as a NULL on a COMPLETED row that bills nothing. `markFinishDone` gains optional `outputMs`; `COALESCE(?, output_ms)` is last-writer-wins, not a first-writer guard. **BEHAVIOUR CHANGE: `film.finish` conformance now REJECTS `duration_seconds <= 0`** -- a module that cannot measure must OMIT the field. Caught a real regression in vivijure-cf#359 (subtitle's sidecar-only run puts a `0.0` initialiser on the wire). REQUIRES vivijure-cf migration `0016` applied before the dep bump. |
 | `vivijure-core-v1.6.0` | 1.6.0 | 0e8342a | 2026-08-02 | **`dialogue_lines` on `startFilmFromKeyframes` (vivijure-cf#334) + the core#122 scatter comment.** The finalize family (render-from-keyframes, finalize, animate-cloud, animate-hybrid, on BOTH hosts) could not produce a voiced film at all: the parameter did not exist and the job literal never set the field, while `enterFinishPhase` reads `job.dialogue_lines` for the #584 dialogue-aware finish order and then calls `enterDialogueOrFinish`. A from-keyframes job enters at phase `clips` and the clips advance is `derive_mode` agnostic, so both were reached on every such render: the field was read and never written. Additive, so a caller that passes nothing gets a byte-identical job doc to 1.5.0; ids are joined with the same `coerceDialogueLineIds` as `startFilmJob` (#563). Also corrects the `startScatterRender` comment claiming the bundle is lossy for dialogue, false since #307/#313 and measured false against 16 of 62 production bundles. UNBLOCKS the vivijure-cf#334 single-render-door extraction, which cannot be honest for those doors until this ships. |
 | `vivijure-core-v1.5.0` | 1.5.0 | 921d667 | 2026-08-01 | **Per-job tenant R2 credential on the invoke envelope (cp#270).** PR #117 (feature) + #118 (release). Pooling the hosted shared tier means one RunPod endpoint serves many tenants, so the tenant R2 destination can no longer live in the endpoint template env; it arrives per job on `InvokeRequest.r2`, for a module whose manifest declares `needs_tenant_r2`. BOUNDED residency chosen over STANDING: binding the credential onto every tenant module script would put each copy on the credential-roll list forever with a silent staleness mode (vivijure-cf#83 is that bug having already happened). `withTenantR2` OMITS the key rather than nulling it (the backend REFUSES an explicit null); `takeTenantR2` strips it on receipt, mirroring the backend `strip_from_payload`. `InvokeContext` stays literally "never secrets" because `r2` is a SIBLING of it. Additive: a module that does not declare the field gets a byte-identical envelope to 1.4.0. STANDING CONDITION: enabling Logpush Custom Fields on tenant module workers requires revisiting the design. |
 | `vivijure-core-v1.4.0` | 1.4.0 | a346403 | 2026-07-28 | **`R2_STORAGE_QUOTA_MODE` (cp#195).** PR #106. The bytes ceiling can be an INCLUDED quota (`meter`) instead of a hard cap; `deny` is the default and byte-identical to core#52, pinned by a six-input control over exact message strings. Carries the completeness contract (`complete` / `reason`, the LLM meter vocabulary) and the ledger-truth marker: a readable total is not a TRUE total, so `meter` reports unbillable until a reconcile runs or a host stamps at studio creation. The LLM allowance knob was built for this release and PULLED before tagging (no core consumer); parked whole on core#107. |
