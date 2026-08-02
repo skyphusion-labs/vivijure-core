@@ -43,10 +43,32 @@ first has ever been reliable:
    date **the registry reports**.
 
 ```bash
-git rev-list -n 1 vivijure-core-v<semver> | cut -c1-7          # source commit
-npm view @skyphusion-labs/vivijure-core time --json            # published date, from the REGISTRY
+# The tag was cut and pushed elsewhere -- you very likely do NOT have it locally. This step was
+# missing from the first version of this procedure and the command below failed because of it.
+git fetch --tags origin
+
+TAG="vivijure-core-v<semver>"
+# NOT `git rev-list ... | cut`: a pipeline returns the LAST command's status, so `cut` reports 0
+# even when rev-list died on a missing tag -- the fix printed nothing and claimed success. Capture
+# first, refuse loudly, then slice.
+SHA="$(git rev-list -n 1 "$TAG")" || { echo "REFUSE: $TAG not found locally -- did the fetch run?"; exit 1; }
+echo "source commit: ${SHA:0:7}"
+
+# Published date, from the REGISTRY. Emits a full ISO timestamp; the ledger column takes the DATE.
+npm view @skyphusion-labs/vivijure-core time --json | python3 -c \
+  "import json,sys; print('published:', (json.load(sys.stdin).get('<semver>') or 'NOT PUBLISHED')[:10])"
+
+npm view @skyphusion-labs/vivijure-core dist-tags.latest       # sanity: should be <semver>
 npm view @skyphusion-labs/vivijure-core@9.9.9 version          # negative control: must be E404
 ```
+
+**Both fixes above came from RUNNING this procedure rather than reading it**, on its second use and
+the first where someone else supplied the confirmation. The original `git rev-list ... | cut -c1-7`
+**failed and reported success**: the tag was not in the local clone, `rev-list` died, and `cut`
+returned 0 for the pipeline. Anyone following it literally would have seen empty output, a zero exit
+status, and had nothing to tell them the value they were about to paste into the ledger was missing.
+A procedure whose failure mode is a silent empty string is the same defect the `published` column
+had, one layer up.
 
 **Settle it at the registry, never at the publish run.** A green workflow is not a published
 package, and `npm view` has served a cached answer immediately after a publish before -- so the read
@@ -66,7 +88,7 @@ publish is confirmed at the registry.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
-| `vivijure-core-v1.7.1` | 1.7.1 |  |  | **`renders.output_ms` was WRITE-ONLY (vivijure-cf#268).** 1.7.0 shipped the capture and added the column to NO read path -- not `RENDER_ROW_COLUMNS`, not `RawRenderRow`, not `normalizeRow` -- so the metering basis was written and then unobservable by the panel, by the meter that will bill on it, and by the smoke meant to prove it landed; only an account-credentialled D1 query could see it. Added at every missing hop (`PublicRenderRow` needed none: it spreads). It survived a full suite because every 1.7.0 test asserted the WRITE through a stubbed D1 binding -- a capture path with no reader passes every test that only exercises capture. The new suite drives the real read functions, asserts the SQL column list, and fails on 1.7.0 in all six cases. NULL stays NOT MEASURED, never coalesced to 0. |
+| `vivijure-core-v1.7.1` | 1.7.1 | c07b53e | 2026-08-02 | **`renders.output_ms` was WRITE-ONLY (vivijure-cf#268).** 1.7.0 shipped the capture and added the column to NO read path -- not `RENDER_ROW_COLUMNS`, not `RawRenderRow`, not `normalizeRow` -- so the metering basis was written and then unobservable by the panel, by the meter that will bill on it, and by the smoke meant to prove it landed; only an account-credentialled D1 query could see it. Added at every missing hop (`PublicRenderRow` needed none: it spreads). It survived a full suite because every 1.7.0 test asserted the WRITE through a stubbed D1 binding -- a capture path with no reader passes every test that only exercises capture. The new suite drives the real read functions, asserts the SQL column list, and fails on 1.7.0 in all six cases. NULL stays NOT MEASURED, never coalesced to 0. |
 | `vivijure-core-v1.7.0` | 1.7.0 | 705a628 | 2026-08-02 | **The DELIVERED film length -> `renders.output_ms` (vivijure-cf#268, vivijure#805).** PR #124. Conrad's metering basis is "we bill on the last writer": a carded film is longer than its assemble output, so billing assemble under-bills by every title card. `film_output_seconds` maps FILM ARTIFACT KEY -> measured seconds and every stage that writes a film records into it, so the delivered length is a LOOKUP OF THE FINAL KEY -- last-writer-wins as a property of the data, not an ordering rule. Persisted because the `film.finish` chain ADOPTS an artifact already in R2 (#600) with NO container call, so a live-result-only read loses the length on exactly the films long enough to span ticks, as a NULL on a COMPLETED row that bills nothing. `markFinishDone` gains optional `outputMs`; `COALESCE(?, output_ms)` is last-writer-wins, not a first-writer guard. **BEHAVIOUR CHANGE: `film.finish` conformance now REJECTS `duration_seconds <= 0`** -- a module that cannot measure must OMIT the field. Caught a real regression in vivijure-cf#359 (subtitle's sidecar-only run puts a `0.0` initialiser on the wire). REQUIRES vivijure-cf migration `0016` applied before the dep bump. |
 | `vivijure-core-v1.6.0` | 1.6.0 | 0e8342a | 2026-08-02 | **`dialogue_lines` on `startFilmFromKeyframes` (vivijure-cf#334) + the core#122 scatter comment.** The finalize family (render-from-keyframes, finalize, animate-cloud, animate-hybrid, on BOTH hosts) could not produce a voiced film at all: the parameter did not exist and the job literal never set the field, while `enterFinishPhase` reads `job.dialogue_lines` for the #584 dialogue-aware finish order and then calls `enterDialogueOrFinish`. A from-keyframes job enters at phase `clips` and the clips advance is `derive_mode` agnostic, so both were reached on every such render: the field was read and never written. Additive, so a caller that passes nothing gets a byte-identical job doc to 1.5.0; ids are joined with the same `coerceDialogueLineIds` as `startFilmJob` (#563). Also corrects the `startScatterRender` comment claiming the bundle is lossy for dialogue, false since #307/#313 and measured false against 16 of 62 production bundles. UNBLOCKS the vivijure-cf#334 single-render-door extraction, which cannot be honest for those doors until this ships. |
 | `vivijure-core-v1.5.0` | 1.5.0 | 921d667 | 2026-08-01 | **Per-job tenant R2 credential on the invoke envelope (cp#270).** PR #117 (feature) + #118 (release). Pooling the hosted shared tier means one RunPod endpoint serves many tenants, so the tenant R2 destination can no longer live in the endpoint template env; it arrives per job on `InvokeRequest.r2`, for a module whose manifest declares `needs_tenant_r2`. BOUNDED residency chosen over STANDING: binding the credential onto every tenant module script would put each copy on the credential-roll list forever with a silent staleness mode (vivijure-cf#83 is that bug having already happened). `withTenantR2` OMITS the key rather than nulling it (the backend REFUSES an explicit null); `takeTenantR2` strips it on receipt, mirroring the backend `strip_from_payload`. `InvokeContext` stays literally "never secrets" because `r2` is a SIBLING of it. Additive: a module that does not declare the field gets a byte-identical envelope to 1.4.0. STANDING CONDITION: enabling Logpush Custom Fields on tenant module workers requires revisiting the design. |
