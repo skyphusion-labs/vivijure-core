@@ -3,6 +3,70 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.7.0] -- 2026-08-02
+
+### Added: the DELIVERED film length, captured and written to `renders.output_ms` (vivijure-cf#268, skyphusion-labs/vivijure#805)
+
+MINOR (additive). Requires the host to have applied `vivijure-cf` migration `0016`
+(`renders.output_ms`); a host without that column will error on finalize, so bump the dep only
+after migrating.
+
+**BEHAVIOUR CHANGE FOR MODULE AUTHORS, and it is the one thing to read here.** The `film.finish`
+conformance check now REJECTS `duration_seconds` when it is present and `<= 0`. A module that
+returns `duration_seconds: 0` was previously accepted and is now a conformance failure, which the
+core treats as a soft-degrade of that step. This is deliberate: the value feeds a BILLING column,
+and a stored 0 is indistinguishable from "not measured" at exactly the point the deduction reads
+it. If your module cannot measure its output, OMIT the field -- absent means unknown and is stored
+as NULL. It is not a hypothetical: `subtitle` returns the container's `durationSeconds`
+unconditionally, and a sidecar-only run leaves it at a `0.0` initialiser, so forwarding it blindly
+would have degraded a working path. That is what this rejection caught (vivijure-cf#359).
+
+WHY. Conrad's ruled metering basis is a deduction on the final length of a successfully completed
+video -- "we bill on the last writer" (2026-08-02). Nothing captured that number. The core read the
+video-finish container's ffprobe `durationSeconds` at assemble, used it for the partial-film guard,
+and discarded it; `duration_seconds` in plan JSON is the REQUESTED duration, which is a different
+quantity (every non-final tier delivers clips shorter than their planned target).
+
+**Last writer is structural, not an ordering rule.** `FilmJob.film_output_seconds` /
+`ScatterJob.film_output_seconds` map FILM ARTIFACT KEY -> measured seconds, and every stage that
+writes a film records into it (assemble, mux, each `film.finish` step). The delivered length is then
+a LOOKUP OF THE FINAL FILM KEY, so a noop/passthrough final step correctly reports the artifact it
+passed through, and nobody has to iterate in the right order for the answer to be right. Three
+container routes each emit a `durationSeconds`; billing the assemble one under-bills by the length
+of every title card, on every film that gets one.
+
+**Persisted, because the chain ADOPTS.** A `film.finish` step whose artifact is already in R2 is
+adopted (#600 survivability) and the adoption branch makes NO container call, so nothing folds and
+no duration arrives that tick. A length read only from a live dispatch result is lost on precisely
+the films long enough to span ticks -- the expensive ones -- and lost as a NULL on a COMPLETED row,
+which bills nothing. Same mechanism and same reason as `film_finish_prepend`.
+
+`markFinishDone` gains an optional trailing `outputMs`. `output_ms = COALESCE(?, output_ms)` is
+LAST-WRITER-WINS, not a first-writer guard: a supplied value ALWAYS overwrites, and only an absent
+one leaves an existing measurement alone, so passing null means "I did not measure it" and never
+"erase it". `outputMsFromSeconds` is exported and converts at the DB boundary only -- seconds on the
+module contract (the container's unit), integer milliseconds in the column, because a float has no
+business in a billing input.
+
+`FilmFinishOutput.duration_seconds?: number` is additive and optional, mirroring `prepend_seconds`
+exactly; no `MODULE_API` bump, and a module that omits it is unchanged.
+
+**NOT COVERED, deliberately:** a step adopted having NEVER been folded (the container PUT the
+artifact between polls, so its output never reached the core) yields no length and the row carries
+NULL. That is the honest answer rather than a fabricated one, and it is the same coverage
+`prepend_seconds` has. NULL means NOT MEASURED and must never be coalesced to 0.
+
+**Epoch note for whoever does the `vivijure-cf` dep bump.** Until this release is on the registry
+and cf bumps to it, cf installs 1.6.0, which has no `<= 0` rejection. The companion assertion in
+`vivijure-cf` `tests/film-finish-duration-805.test.ts` ("a sidecar-only run still passes
+conformance") therefore proves WELL-FORMEDNESS, not rejection, in that window -- it was verified to
+stay green under a blind-forward reconstruction for exactly this reason. The assertion that holds
+regardless of core version is the one above it (no `duration_seconds` key at all). After the bump,
+both mean what they say.
+
+Ships vivijure-core#124. Consumers: vivijure-cf#357 (the migration) and vivijure-cf#359 (the
+modules that report the length).
+
 ## [1.6.0] -- 2026-08-02
 
 ### Added: `dialogue_lines` on `startFilmFromKeyframes` (vivijure-cf#334)
