@@ -78,6 +78,12 @@ export interface RenderRow {
   error: string | null;
   execution_time_ms: number | null;
   delay_time_ms: number | null;
+  // The DELIVERED film length in integer milliseconds (migration 0016), written by the terminal
+  // writer of the film artifact. NULL means NOT MEASURED, which is NOT zero: a render whose length
+  // we failed to capture must never read as a film of no length, because the meter bills on this.
+  // Exposed on the read path deliberately -- 1.7.0 shipped the WRITE with no reader at all, so the
+  // value could only be seen by whoever held account credentials and could query D1 directly.
+  output_ms: number | null;
   submitted_at: number;
   updated_at: number;
   completed_at: number | null;
@@ -156,6 +162,7 @@ interface RawRenderRow {
   error: string | null;
   execution_time_ms: number | null;
   delay_time_ms: number | null;
+  output_ms: number | null;
   submitted_at: number;
   updated_at: number;
   completed_at: number | null;
@@ -176,7 +183,7 @@ interface RawRenderRow {
 const RENDER_ROW_COLUMNS = `
       r.id, r.public_id, r.job_id, r.project, r.bundle_key, r.quality_tier,
       r.render_overrides, r.status, r.output_key, r.output_json AS output,
-      r.error, r.execution_time_ms, r.delay_time_ms,
+      r.error, r.execution_time_ms, r.delay_time_ms, r.output_ms,
       r.submitted_at, r.updated_at, r.completed_at, r.label, r.keyframes_json, r.mode,
       r.locked_shots_json, r.project_id, r.folder_path, r.tags_json, r.parent_id,
       p.public_id AS project_public_id, pr.public_id AS parent_public_id`;
@@ -1024,6 +1031,8 @@ function normalizeRow(r: RawRenderRow): RenderRow {
       r.execution_time_ms == null ? null : Number(r.execution_time_ms),
     delay_time_ms:
       r.delay_time_ms == null ? null : Number(r.delay_time_ms),
+    output_ms:
+      r.output_ms == null ? null : Number(r.output_ms),
     submitted_at: Number(r.submitted_at),
     updated_at: Number(r.updated_at),
     completed_at:
