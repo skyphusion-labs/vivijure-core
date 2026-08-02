@@ -94,7 +94,16 @@ export interface StartScatterArgs {
 
 /** Read the stored storyboard (D1 last_storyboard) and build the per-shot dialogue batch (authored
  *  line + cast-resolved voice). Returns [] when there's no project_id, no stored storyboard, or no
- *  dialogue -- a silent film. The bundle can't carry this (lossy), so D1 is the source of truth. */
+ *  dialogue -- a silent film.
+ *
+ *  WHY D1 AND NOT THE BUNDLE (corrected, vivijure-core#122): D1 is the FRESHER source, not the only
+ *  one. This comment used to say the bundle "can't carry this (lossy)", which has been untrue since
+ *  #307 taught the storyboard.yaml serializer to emit the per-shot dialogue block and #313 taught the
+ *  parser to read it back; 16 of 62 production bundles carry one today. The stale claim is worth
+ *  correcting rather than deleting because acting on it would mean "repairing" a bundle format that
+ *  is not broken. The real cost of the D1-only rule is the gate below: with no project_id there is no
+ *  fallback, so a bundle-only scatter renders SILENT while holding a bundle that carries every line
+ *  it needed. Adding that fallback changes an existing caller's behaviour and is tracked separately. */
 async function resolveDialogueLines(
   env: Env,
   args: StartScatterArgs,
@@ -135,9 +144,10 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
   const expected = args.shot_ids.filter((s) => typeof s === "string" && s.length > 0);
   if (expected.length < 2) throw new Error("scatter requires >= 2 shots");
 
-  // Talking characters: the dialogue is dropped by the lossy bundle, so read the AUTHORITATIVE
-  // storyboard from D1 (last_storyboard) and resolve each speaking shot's voice from the cast (voices,
-  // off the same rows resolveCastLoras already read). Absent project_id / no dialogue -> a silent film.
+  // Talking characters: read the storyboard from D1 (last_storyboard), which is FRESHER than the
+  // bundle snapshot, and resolve each speaking shot's voice from the cast (voices, off the same rows
+  // resolveCastLoras already read). Absent project_id / no dialogue -> a silent film; see the note on
+  // resolveDialogueLines for why absent project_id is a real gap rather than an impossibility.
   const dialogueLines = await resolveDialogueLines(env, args, voices, expected);
 
   const shards = scatterShards({
