@@ -685,6 +685,29 @@ export interface FilmFinishInput {
   captions: FilmFinishCaption[];                // time-synced dialogue cues; empty => subtitle no-op
   sidecar_url: string; // presigned PUT for an optional .srt subtitle sidecar (ignored by non-subtitle modules)
   sidecar_key: string; // the R2 key behind sidecar_url
+  // A presigned PUT for a SMALL JSON sidecar carrying this step's measurements, written NEXT TO the
+  // artifact at `<output_key minus .mp4>.meta.json`. Shape: `{ duration_seconds?, prepend_seconds? }`,
+  // the same two numbers the module already returns on FilmFinishOutput and in the same unit.
+  //
+  // WHY IT EXISTS, and it is not redundancy with the return value (vivijure-core#130, #663). A
+  // film.finish step whose artifact lands in R2 between polls is ADOPTED on the next tick, never
+  // folded, so its OUTPUT IS NEVER READ. Adoption is the normal completion route on the async drive
+  // path, not an edge case -- R2 presence reliably beats an 8-second client-driven poll -- and the
+  // core's adoption branch therefore had no measurement at all for the step that wrote the final film.
+  // The consequence was a NULL `output_ms` on a COMPLETED row, i.e. a film we rendered and billed
+  // nothing for, on the common path.
+  //
+  // The return value stays the primary source and is unchanged. This is the copy that survives the
+  // output never being read, and it works because THE SAME HANDLER WRITES BOTH: a sidecar exists if
+  // and only if the step really wrote its artifact, which makes the two states unable to diverge by
+  // construction rather than by assertion.
+  //
+  // OPTIONAL + additive (no api bump), exactly like `prepend_seconds`: a module that does not write it
+  // simply omits it, and the core falls back to NULL -- which means NOT MEASURED and must never be
+  // coalesced to zero. An older module against a newer core, or a newer module against an older core,
+  // both behave exactly as they do today.
+  meta_url?: string;
+  meta_key?: string;
 }
 
 /** What a `film.finish` module returns: the (maybe new) film key plus what it did. The chain is

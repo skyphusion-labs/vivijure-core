@@ -1070,10 +1070,14 @@ async function filmFinishSeed(
   ttl = 1800,
 ): Promise<FilmFinishInput> {
   const sidecarKey = outKey.replace(/\.mp4$/i, "") + ".srt";
-  const [videoUrl, outputUrl, sidecarUrl] = await Promise.all([
+  // #130/#663: the measurement sidecar, presigned alongside the .srt one and for the same reason --
+  // data that has to survive the step's OUTPUT never being read (see FilmFinishInput.meta_url).
+  const metaKey = metaKeyFor(outKey);
+  const [videoUrl, outputUrl, sidecarUrl, metaUrl] = await Promise.all([
     presignR2Get(env, inKey, ttl),
     presignR2Put(env, outKey, ttl),
     presignR2Put(env, sidecarKey, ttl),
+    presignR2Put(env, metaKey, ttl),
   ]);
   return {
     film_key: inKey,
@@ -1085,7 +1089,49 @@ async function filmFinishSeed(
     captions,
     sidecar_url: sidecarUrl,
     sidecar_key: sidecarKey,
+    meta_url: metaUrl,
+    meta_key: metaKey,
   };
+}
+
+/** The measurement sidecar's deterministic key for a step artifact: `<outKey minus .mp4>.meta.json`.
+ *  Derived, never stored, so the adoption path can find it from the artifact key alone -- which is the
+ *  whole point, since on the adoption path there is no module output to tell us where it went. */
+export function metaKeyFor(outKey: string): string {
+  return outKey.replace(/\.mp4$/i, "") + ".meta.json";
+}
+
+/** Read a step's measurement sidecar. Returns undefined when it is absent, unreadable or malformed --
+ *  NEVER a synthesized number.
+ *
+ *  ABSENT IS THE EXPECTED CASE, not a fault: any film whose steps ran before this shipped has no
+ *  sidecar, and a module that does not write one is explicitly allowed by the contract. Those land on
+ *  NULL, which means NOT MEASURED and is exactly the behaviour before this change. The failure this
+ *  fixes is a NULL that nobody could ever fill; it is not a licence to invent a length. */
+export async function readStepMeta(
+  env: Env,
+  outKey: string,
+): Promise<{ duration_seconds?: number; prepend_seconds?: number } | undefined> {
+  try {
+    const obj = await env.R2_RENDERS.get(metaKeyFor(outKey));
+    if (!obj) return undefined;
+    const raw: unknown = JSON.parse(await obj.text());
+    if (!raw || typeof raw !== "object") return undefined;
+    const r = raw as Record<string, unknown>;
+    // Same gate as the fold path and for the same reason: finite AND positive. A 0, a NaN or a
+    // negative is not a measurement of a film, and coalescing any of them into the billing column
+    // would read as a real length.
+    const pos = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+    const duration_seconds = pos(r.duration_seconds);
+    const prepend_seconds = pos(r.prepend_seconds);
+    if (duration_seconds === undefined && prepend_seconds === undefined) return undefined;
+    return { duration_seconds, prepend_seconds };
+  } catch {
+    // A malformed sidecar is indistinguishable from an absent one AS FAR AS THE NUMBER GOES, and both
+    // must land on NULL. Swallowing is correct here precisely because the fallback is honest.
+    return undefined;
+  }
 }
 
 /** Dispatch ONE film.finish module against DETERMINISTIC keys: read inKey, write outKey (plus its .srt).
@@ -1309,6 +1355,23 @@ export async function runFilmFinish(
     if (await r2ObjectExists(env, outKey)) {
       adopted.push(module.name);
       curKey = outKey;
+      // #130/#663: an adopted step's OUTPUT IS NEVER READ, so before this the branch recorded nothing
+      // and the delivered length was lost on precisely the completion route that is NORMAL on the
+      // async drive path. Recover the two measurements from the sidecar the step wrote next to its
+      // artifact. Absent => stays unrecorded => NULL, which is what this branch already did and is the
+      // honest answer; NEVER synthesize a length.
+      //
+      // Recorded only when this step has no measurement yet, so a value FOLDED on an earlier tick (the
+      // authoritative one, straight from the module output) always wins over the sidecar copy.
+      if (outputSeconds[curKey] === undefined || prepends[outKey] === undefined) {
+        const meta = await readStepMeta(env, outKey);
+        if (meta?.duration_seconds !== undefined && outputSeconds[curKey] === undefined) {
+          await recordDuration(curKey, meta.duration_seconds);
+        }
+        if (meta?.prepend_seconds !== undefined && prepends[outKey] === undefined) {
+          await recordPrepend(outKey, meta.prepend_seconds);
+        }
+      }
       if (opts?.polls) delete opts.polls[outKey];
       if (opts?.dispatched) delete opts.dispatched[outKey];
       if (opts?.attempts) delete opts.attempts[outKey];
