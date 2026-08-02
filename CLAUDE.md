@@ -38,8 +38,13 @@ npm test
 
 ## Release
 
-SemVer pre-1.0 (`0.MINOR.PATCH`). Hosts pin `^0.8.0` until v2.0 coordinated release. Publish target:
-GitHub npm registry (`@skyphusion-labs/vivijure-core`).
+SemVer. This package is on the **1.x** line (see `RELEASES.md` for the ledger), so a release is
+`1.MINOR.PATCH`; the old "pre-1.0, hosts pin `^0.8.0` until v2.0" wording described a state this
+package left long ago and is corrected here rather than left to mislead. Hosts pin a caret range on
+the current major (`vivijure-cf` `^1.5.0`, `vivijure-local` `^1.3.0` as of 2026-08-02), so a MINOR
+reaches both on their next install without a coordinated release. What DOES require a coordinated
+release across every consumer is a `vivijure-module/N` epoch bump, per the module-contract rule
+above. Publish target: GitHub npm registry (`@skyphusion-labs/vivijure-core`).
 
 ## Crew identity
 

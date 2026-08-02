@@ -3,6 +3,46 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.6.0] -- 2026-08-02
+
+### Added: `dialogue_lines` on `startFilmFromKeyframes` (vivijure-cf#334)
+
+MINOR (additive; one optional parameter). **No existing caller changes behaviour**: a caller that
+does not pass the field builds a byte-identical job doc to 1.5.0, because the field is persisted
+only when the resolved batch is non-empty.
+
+WHY. `startFilmFromKeyframes` had no `dialogue_lines` parameter and never set the field on the job
+it builds. Its callers are the finalize family: render-from-keyframes, finalize, animate-cloud and
+animate-hybrid, on both hosts. So that entire family was **structurally incapable of a voiced film**
+regardless of what its door resolved, and no amount of work in a host could fix it.
+
+This is not a latent field nobody reads. `enterFinishPhase` derives its dialogue-aware finish order
+from `job.dialogue_lines` (the #584 rule that puts an audio-consuming lip-sync module FIRST on a
+shot that has a line) and then calls `enterDialogueOrFinish`, which is what submits the speech
+batch. A from-keyframes job enters at phase `clips` with a `clip_job_id`, and the clips-phase
+advance is `derive_mode` agnostic, so both are reached on every one of these renders. The field was
+read on this path and never written.
+
+The lines are joined onto the coerced scene ids with the same `coerceDialogueLineIds` that
+`startFilmJob` uses (#563). Without that a caller supplying its own id scheme (`s1`/`s2`) strands
+the TTS audio under keys no consumer reads, and the film ships silent and uncaptioned even though
+the speech synthesis ran and was paid for.
+
+### Fixed: the scatter dialogue comment claimed the bundle is lossy (vivijure-core#122)
+
+Comment-only. `startScatterRender` reads dialogue from D1 `last_storyboard` and justified it with
+"the bundle can't carry this (lossy)". That has been untrue since #307 taught the storyboard.yaml
+serializer to emit the per-shot dialogue block and #313 taught the parser to read it back; measured
+against production, 16 of 62 bundles carry one today, and running this package's own
+`parseStoryboardScenes` over a real bundle recovers both lines with slot and text intact.
+
+D1 being FRESHER than a snapshot bundle is a real and sufficient reason to prefer it, so the
+behaviour is unchanged and correct. The stale wording is worth correcting rather than deleting
+because acting on it means "repairing" a bundle format that is not broken. The comment now also
+names the cost the D1-only rule carries: with no `project_id` there is no fallback, so a
+bundle-only scatter renders silent while holding a bundle that carries every line it needed. Adding
+that fallback changes an existing caller's behaviour and is tracked separately on core#122.
+
 ## [1.5.0] -- 2026-08-01
 
 ### Added: the per-job tenant R2 credential on the invoke envelope (cp#270)
