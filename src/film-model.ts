@@ -181,6 +181,14 @@ export interface FilmJob {
   // the post-chain .srt sidecar re-time recovers the offset even when the prepending step is adopted (not
   // re-folded) on a later poll tick.
   film_finish_prepend?: Record<string, number>;
+  // Film ARTIFACT KEY -> the ffprobe-measured seconds of that artifact. Written by every stage that
+  // produces a film (assemble, mux, each film.finish step), so the length of the DELIVERED film is
+  // simply the entry for the final film_key -- "we bill on the last writer" (Conrad, 2026-08-02)
+  // expressed structurally instead of as an ordering rule someone has to remember. Persisted for the
+  // same reason film_finish_prepend is: a step that is ADOPTED on a later tick (its artifact already
+  // in R2, #600) is never re-folded, so a value read only from a live dispatch result is lost exactly
+  // on the films that took long enough to span ticks -- i.e. the expensive ones.
+  film_output_seconds?: Record<string, number>;
   // Loud, structured degrade when the video-finish tier (VIDEO_FINISH_VPC) is UNAVAILABLE at
   // assemble/mux -- the binding is unbound, or the container/tunnel was unreachable after the bounded
   // retry. The film COMPLETES (never hard-fails after the GPU spend, #519) delivering what was rendered:

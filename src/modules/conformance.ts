@@ -214,6 +214,11 @@ const HOOK_OUTPUT_CHECKS: Record<HookName, (o: Record<string, unknown>) => strin
     if (o.applied !== undefined && !isStrArr(o.applied)) return "film.finish applied, when present, must be a string[]";
     if (o.degraded !== undefined && !isStr(o.degraded)) return "film.finish degraded, when present, must be a string (the uncarded reason)";
     if (o.prepend_seconds !== undefined && (typeof o.prepend_seconds !== "number" || !Number.isFinite(o.prepend_seconds) || o.prepend_seconds < 0)) return "film.finish prepend_seconds, when present, must be a non-negative finite number";
+    // duration_seconds feeds a BILLING column, so a malformed value is worse here than elsewhere: it
+    // would flow into job state and out to the meter. Rejected unless strictly positive -- zero is not
+    // a legitimate film length, and admitting it would make "no length" and "a length of nothing"
+    // indistinguishable at exactly the point the deduction reads them.
+    if (o.duration_seconds !== undefined && (typeof o.duration_seconds !== "number" || !Number.isFinite(o.duration_seconds) || o.duration_seconds <= 0)) return "film.finish duration_seconds, when present, must be a positive finite number";
     return null;
   },
 };

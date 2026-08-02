@@ -990,7 +990,9 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
       };
     }
     try {
-      await markFinishDone(env, job.film_id, filmKey, JSON.stringify(out));
+      // The length of the artifact actually delivered: a lookup of the FINAL film key, so whichever
+      // stage wrote last supplies the number (Conrad, 2026-08-02: "we bill on the last writer").
+      await markFinishDone(env, job.film_id, filmKey, JSON.stringify(out), outputMsFromSeconds(job.film_output_seconds?.[filmKey]));
     } catch (e) {
       // Bookkeeping must not fail a delivered film; poll/sweep updateRenderFromView backfills.
       console.warn(
@@ -1031,6 +1033,12 @@ export interface RunFilmFinishResult {
   errors: string[];
   steps?: string[];
   degraded?: string;
+  // The ffprobe length of the film at `film_key`, i.e. the artifact actually delivered, in seconds.
+  // Resolved by LOOKING UP `film_key` in the per-artifact map rather than by taking the last step that
+  // ran, so a noop/passthrough final step correctly reports the length of the artifact it passed
+  // through and an ADOPTED final step reports the length recorded when it was folded. undefined =>
+  // NOT MEASURED (no stage reported one, or the step was adopted having never been folded at all).
+  duration_seconds?: number;
   complete: boolean; // #600: false when the chain STOPPED at an in-flight step (still encoding) -- the
                      // caller must NOT finalize (keep phase re-enterable + keep the assembled film_key)
   // #663: R2 key of the FINAL .srt subtitle sidecar (re-timed for any title-card prepend, named next to
@@ -1092,7 +1100,7 @@ async function runFilmFinishStep(
   inKey: string,
   outKey: string,
   captions: FilmFinishInput["captions"],
-): Promise<{ film_key: string; applied: string[]; errors: string[]; steps?: string[]; degraded?: string; prepend_seconds?: number }> {
+): Promise<{ film_key: string; applied: string[]; errors: string[]; steps?: string[]; degraded?: string; prepend_seconds?: number; duration_seconds?: number }> {
   const envRec = env as unknown as Record<string, unknown>;
   const seed = await filmFinishSeed(env, input, inKey, outKey, captions);
   // Single-element chain: dispatchChain gives the config-clamp + degrade/error handling for free;
@@ -1122,7 +1130,15 @@ async function runFilmFinishStep(
   // write leaves an artifact at the deterministic outKey, so only real steps are ever adopted.
   const film_key = typeof out?.film_key === "string" && out.film_key.length > 0 ? out.film_key : inKey;
   const prepend_seconds = typeof out?.prepend_seconds === "number" && Number.isFinite(out.prepend_seconds) && out.prepend_seconds > 0 ? out.prepend_seconds : undefined;
-  return { film_key, applied: result.applied, errors: result.errors, steps: out?.applied, degraded, prepend_seconds };
+  const duration_seconds = typeof out?.duration_seconds === "number" && Number.isFinite(out.duration_seconds) && out.duration_seconds > 0 ? out.duration_seconds : undefined;
+  return { film_key, applied: result.applied, errors: result.errors, steps: out?.applied, degraded, prepend_seconds, duration_seconds };
+}
+
+/** Seconds -> integer milliseconds for renders.output_ms, or null when there is no honest number to
+ *  store. NULL means NOT MEASURED and is not the same as zero: a 0 in a billing column is a film of no
+ *  length, and coalescing the two is how a real render silently bills nothing. */
+export function outputMsFromSeconds(seconds: number | undefined): number | null {
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null;
 }
 
 /** #663: after the film.finish chain, produce the FINAL .srt subtitle sidecar. The subtitle module
@@ -1204,6 +1220,12 @@ export async function runFilmFinish(
     // prepending step is ADOPTED (not re-folded) on a later tick. Absent => in-memory only (single-tick).
     prepends?: Record<string, number>;
     persistPrepend?: (key: string, seconds: number) => Promise<void>;
+    // The job`s persisted film-artifact-key -> measured-seconds map + a persist callback. Same shape and
+    // same reason as prepends: a step ADOPTED on a later tick is never re-folded, so a length read only
+    // from a live dispatch result is lost on precisely the films long enough to span ticks. Absent =>
+    // in-memory only (single tick / non-persisting callers).
+    durations?: Record<string, number>;
+    persistDuration?: (key: string, seconds: number) => Promise<void>;
     now?: number;
   },
 ): Promise<RunFilmFinishResult> {
@@ -1236,6 +1258,14 @@ export async function runFilmFinish(
   // #663: title-card prepend offsets keyed by the prepending step`s deterministic outKey. Bound to the
   // persisted job map when the caller persists (survives cross-tick adoption), else in-memory (single tick).
   const prepends: Record<string, number> = opts?.prepends ?? {};
+  // Keyed by the FILM ARTIFACT KEY a stage wrote, never by step index: the delivered length is then a
+  // lookup of the final key, so "the last writer wins" holds by construction instead of depending on
+  // anyone iterating in the right order.
+  const outputSeconds: Record<string, number> = opts?.durations ?? {};
+  const recordDuration = async (key: string, seconds: number): Promise<void> => {
+    outputSeconds[key] = seconds;
+    await opts?.persistDuration?.(key, seconds);
+  };
   const recordPrepend = async (key: string, seconds: number): Promise<void> => {
     prepends[key] = seconds;
     await opts?.persistPrepend?.(key, seconds);
@@ -1262,6 +1292,10 @@ export async function runFilmFinish(
     // re-time (and a later-tick resume that only ADOPTS this step) can offset any earlier sidecar.
     const pp = typeof out.prepend_seconds === "number" && Number.isFinite(out.prepend_seconds) && out.prepend_seconds > 0 ? out.prepend_seconds : 0;
     if (pp > 0) await recordPrepend(outKey, pp);
+    // Record against curKey (what this step says it WROTE), not outKey: on a noop/passthrough the two
+    // differ and the length belongs to the artifact that exists.
+    const ds = typeof out.duration_seconds === "number" && Number.isFinite(out.duration_seconds) && out.duration_seconds > 0 ? out.duration_seconds : 0;
+    if (ds > 0) await recordDuration(curKey, ds);
     return true;
   };
 
@@ -1294,6 +1328,7 @@ export async function runFilmFinish(
       if (r.degraded) degradeParts.push(r.degraded);
       curKey = r.film_key;
       if (r.prepend_seconds && r.prepend_seconds > 0) await recordPrepend(outKey, r.prepend_seconds);
+      if (r.duration_seconds && r.duration_seconds > 0) await recordDuration(r.film_key, r.duration_seconds);
       continue;
     }
 
@@ -1357,7 +1392,7 @@ export async function runFilmFinish(
   // #663: once the chain COMPLETES, materialize the final subtitle sidecar next to the final film,
   // re-timed for any title-card prepend. Skipped on an in-flight stop (produced next tick when complete).
   const sidecar_key = complete ? await finalizeSidecar(env, base, curKey, steps.length, prepends, captions) : undefined;
-  return { ran: true, film_key: curKey, applied, adopted, errors, steps: lastSteps, degraded, complete, sidecar_key };
+  return { ran: true, film_key: curKey, applied, adopted, errors, steps: lastSteps, degraded, complete, sidecar_key, duration_seconds: outputSeconds[curKey] };
 }
 
 /** Single-film film.finish: thin wrapper over runFilmFinish that folds the outcome back onto the job
@@ -1368,6 +1403,7 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
   job.film_finish_polls ??= {};
   job.film_finish_attempts ??= {};
   job.film_finish_prepend ??= {};
+  job.film_output_seconds ??= {};
   const r = await runFilmFinish(env, {
     film_key: job.film_key,
     scenes: job.scenes,
@@ -1394,6 +1430,9 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
     // prepending step is adopted (not re-folded) on a later poll tick.
     prepends: job.film_finish_prepend,
     persistPrepend: async (key, seconds) => { job.film_finish_prepend![key] = seconds; await putFilm(env, job); },
+    // Persisted per FILM ARTIFACT KEY so an adopted step still yields a length on a later tick.
+    durations: job.film_output_seconds,
+    persistDuration: async (key, seconds) => { job.film_output_seconds![key] = seconds; await putFilm(env, job); },
   });
   if (!r.ran) return true; // no film.finish module installed -> leave job untouched (identical to pre-refactor)
   if (r.errors.length > 0) {
@@ -1564,6 +1603,12 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
       preModules,
     );
     return;
+  }
+  // The mux writes a NEW artifact at outKey (video + bed), so it is a later writer than assemble and
+  // its length is the one that counts unless a film.finish step runs after it.
+  if (typeof body.durationSeconds === "number" && body.durationSeconds > 0) {
+    job.film_output_seconds ??= {};
+    job.film_output_seconds[outKey] = body.durationSeconds;
   }
   job.film_key = outKey;
   await transitionToDone(env, job, preModules);
@@ -1763,6 +1808,13 @@ async function enterAssemblePhase(
     job.phase = "failed"; job.error = "video-finish returned a non-JSON response"; return;
   }
   if (!body.ok) { job.phase = "failed"; job.error = `video-finish failed: ${body.error || "unknown error"}`; return; }
+  // Record the assembled artifact`s measured length against ITS key. A film with no film.finish step
+  // installed never reaches the chain, so without this the delivered length would be unknown for the
+  // ordinary uncarded film -- the common case, not an edge one.
+  if (typeof body.durationSeconds === "number" && body.durationSeconds > 0) {
+    job.film_output_seconds ??= {};
+    job.film_output_seconds[outputKey] = body.durationSeconds;
+  }
   // #697/#698: capture the ACTUAL per-clip assembled seconds the container probed (submit order ==
   // finalClips order). Persisted so the later film.finish chain times captions to the real cut (#698).
   const actual = mapClipDurationsToShots(finalClips, body.clipDurations);

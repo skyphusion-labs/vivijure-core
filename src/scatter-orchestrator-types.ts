@@ -1,6 +1,9 @@
 // Scatter job doc shape (dependency-free so notify + orchestrator can share it).
 
 export interface ScatterJob {
+  // Film ARTIFACT KEY -> ffprobe-measured seconds, mirroring FilmJob. See film-model.ts for why it is
+  // keyed by artifact key and why it has to be persisted rather than read from a live dispatch result.
+  film_output_seconds?: Record<string, number>;
   scatter_id: string;
   project: string;
   bundle_key: string;

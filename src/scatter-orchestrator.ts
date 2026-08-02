@@ -17,6 +17,7 @@ import {
   mapClipDurationsToShots,
   resolvePlannedSeconds,
   findClipDurationShortfalls,
+  outputMsFromSeconds,
   type FilmJob,
   type FilmScene,
 } from "./film-orchestrator.js";
@@ -351,6 +352,7 @@ async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<boolean>
   job.film_finish_polls ??= {};
   job.film_finish_attempts ??= {};
   job.film_finish_prepend ??= {};
+  job.film_output_seconds ??= {};
   const r = await runFilmFinish(env, {
     film_key: job.film_key,
     // Caption scenes in the SAME order the gather assembles the clips (expected_shot_ids), NOT bundle
@@ -381,6 +383,9 @@ async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<boolean>
     // them even when the prepending step is adopted (not re-folded) on a later tick.
     prepends: job.film_finish_prepend,
     persistPrepend: async (key, seconds) => { job.film_finish_prepend![key] = seconds; await saveScatterJob(env, job); },
+    // Persisted per FILM ARTIFACT KEY across gather ticks, for the same adoption reason as prepends.
+    durations: job.film_output_seconds,
+    persistDuration: async (key, seconds) => { job.film_output_seconds![key] = seconds; await saveScatterJob(env, job); },
   });
   if (!r.ran) { job.film_finish = { applied: [], errors: [] }; return true; } // no film.finish module -> mark + skip -> complete
   if (r.errors.length > 0) console.warn(`scatter film.finish errors for ${job.scatter_id}: ${r.errors.join("; ")}`);
@@ -492,6 +497,12 @@ async function assembleScatterClips(
     job.error = `assemble dropped clips: ${assembledSeconds.toFixed(1)}s assembled vs ~${expectedSeconds.toFixed(1)}s expected across ${job.expected_shot_ids.length} shots`;
     return;
   }
+  // Record the assembled artifact`s measured length against ITS key (see the film path). `assembledSeconds`
+  // is the same number the partial-film guard above just used -- it was already being computed and thrown away.
+  if (assembledSeconds > 0) {
+    job.film_output_seconds ??= {};
+    job.film_output_seconds[outputKey] = assembledSeconds;
+  }
   job.silent_film_key = outputKey;
   if (job.audio_key) {
     job.phase = "mux";
@@ -508,7 +519,7 @@ async function finalizeScatterDone(env: Env, job: ScatterJob): Promise<void> {
     output_key: job.film_key,
     project: job.project,
     mode: "full",
-  }));
+  }), outputMsFromSeconds(job.film_output_seconds?.[job.film_key]));
   await fireNotifyForScatter(env, job);
 }
 

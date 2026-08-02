@@ -715,6 +715,18 @@ export interface FilmFinishOutput {
   // never shift cues, and a passthrough / noop applied no card. OPTIONAL + additive (no api bump): a
   // module that does not prepend simply omits it, and conformance enforces the type only when present.
   prepend_seconds?: number;
+  // The ffprobe-measured length OF THE ARTIFACT THIS STEP WROTE, in seconds. The billing basis is the
+  // FINAL length of a successfully completed video (Conrad, 2026-08-02: "we bill on the last writer"),
+  // and a film that gets title cards is LONGER than the assemble output -- so the number has to come
+  // from whichever step wrote the film last, not from assemble. Every shipping film.finish module
+  // already receives it from the video-finish container (`durationSeconds` on /film-titles and
+  // /subtitle); this field is how it reaches the core. Seconds, matching prepend_seconds and the
+  // container's own unit; the core converts to integer milliseconds at the DB boundary, once, because
+  // a float has no business in a billing column. Absent => the length is UNKNOWN for this step, which
+  // is NOT the same as zero and must never be coalesced to it. OPTIONAL + additive (no api bump): a
+  // module that does not know its output length simply omits it, and conformance enforces the type
+  // only when present.
+  duration_seconds?: number;
 }
 
 // --------------------------------------------------------------------------- registry view
