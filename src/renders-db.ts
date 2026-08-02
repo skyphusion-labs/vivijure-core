@@ -571,20 +571,32 @@ export async function claimFinish(env: Env, jobId: string): Promise<boolean> {
   return (res.meta?.changes ?? 0) === 1;
 }
 
+/** `outputMs`: the DELIVERED film length in integer milliseconds (migration 0016, renders.output_ms),
+ *  the metering basis. `COALESCE(?, output_ms)` is deliberate and is NOT the first-writer-wins guard
+ *  that would reintroduce the under-billing defect: a SUPPLIED value always overwrites whatever is
+ *  there (last writer wins, per the ruling), and only an ABSENT value leaves an existing measurement
+ *  alone. Passing null/undefined therefore means "I did not measure it", never "erase it". NULL in the
+ *  column means NOT MEASURED and must never be read as zero -- a coalesce-to-0 in a billing query
+ *  bills nothing for a real render. */
 export async function markFinishDone(
   env: Env,
   jobId: string,
   outputKey: string,
   outputJson: string,
+  outputMs?: number | null,
 ): Promise<void> {
   const now = nowSeconds();
+  // Reject a non-positive or non-finite length rather than storing it: a 0 here is indistinguishable
+  // from "no film" to the meter, and the contract already refuses <= 0 at the module boundary.
+  const ms = typeof outputMs === "number" && Number.isFinite(outputMs) && outputMs > 0 ? Math.round(outputMs) : null;
   await withD1Retry(() =>
     env.DB.prepare(
       `UPDATE renders SET output_key = ?, output_json = ?, status = 'COMPLETED',
-       finish_state = 'done', completed_at = COALESCE(completed_at, ?), updated_at = ?
+       finish_state = 'done', completed_at = COALESCE(completed_at, ?), updated_at = ?,
+       output_ms = COALESCE(?, output_ms)
      WHERE job_id = ?`,
     )
-      .bind(outputKey, outputJson, now, now, jobId)
+      .bind(outputKey, outputJson, now, now, ms, jobId)
       .run(),
   );
 }

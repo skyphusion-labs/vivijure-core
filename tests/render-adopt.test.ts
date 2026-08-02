@@ -15,6 +15,7 @@ interface Row {
   status: string;
   output_key: string | null;
   output_json: string | null;
+  output_ms?: number | null;
 }
 
 function adoptRequest(body: Record<string, unknown>): Request {
@@ -30,7 +31,7 @@ function makeEnv(
 ) {
   const rows = new Map(seed.map((r) => [r.job_id, { ...r }]));
   const inserts: Row[] = [];
-  const finishUpdates: Array<{ jobId: string; outputKey: string; outputJson: string }> = [];
+  const finishUpdates: Array<{ jobId: string; outputKey: string; outputJson: string; outputMs: number | null }> = [];
   let selectMissesLeft = opts.selectMissOnce ? 1 : 0;
   const env = {
     DB: {
@@ -77,14 +78,21 @@ function makeEnv(
             if (/UPDATE renders SET output_key = \?/i.test(sql)) {
               const outputKey = String(binds[0]);
               const outputJson = String(binds[1]);
-              const jobId = String(binds[4]);
+              // jobId is read as the LAST bind, not a fixed index. It used to be binds[4]; adding
+              // renders.output_ms to the statement shifted it to binds[5] and this stub kept asserting
+              // the old shape, so the suite failed on a correct change. A fixture is a claim about the
+              // shape of real data and it rots exactly like any other record -- anchoring to the end
+              // makes it survive the next column instead of rotting again.
+              const jobId = String(binds[binds.length - 1]);
+              const outputMs = binds[binds.length - 2] as number | null;
               const row = rows.get(jobId);
               if (row) {
                 row.output_key = outputKey;
                 row.output_json = outputJson;
                 row.status = "COMPLETED";
+                row.output_ms = outputMs;
               }
-              finishUpdates.push({ jobId, outputKey, outputJson });
+              finishUpdates.push({ jobId, outputKey, outputJson, outputMs });
               return { success: true, meta: { changes: row ? 1 : 0 } };
             }
             return { success: true, meta: { changes: 0 } };
