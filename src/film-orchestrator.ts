@@ -1813,10 +1813,20 @@ export async function startFilmFromKeyframes(
     derive_mode: "finalized" | "cloud-finalized";
     parent_render_id?: number;
     audio_key?: string;
+    // vivijure-cf#334: the per-shot dialogue batch, exactly as startFilmJob takes it. Before this the
+    // parameter did not exist and the job literal never set the field, so EVERY caller of this function
+    // (render-from-keyframes, finalize, animate-cloud, animate-hybrid) was structurally incapable of a
+    // voiced film no matter what its door resolved. That is not a door bug a host can fix: the finish
+    // chain reads job.dialogue_lines (enterFinishPhase -> enterDialogueOrFinish), and a from-keyframes
+    // job enters at phase "clips" and reaches both, so the field was read and never written.
+    dialogue_lines?: DialogueLine[];
   },
   preModules?: RegisteredModule[],
 ): Promise<FilmJob> {
   const scenes = coerceSceneIds(args.scenes ?? []);
+  // Join the lines onto the SAME coerced ids as the scenes, exactly as startFilmJob does (#563): a
+  // caller supplying its own scene ids otherwise strands the TTS audio under keys no consumer reads.
+  const dialogueLines = coerceDialogueLineIds(args.scenes ?? [], args.dialogue_lines);
   const stagedAudio = await resolveStagedAudioKey(env, args.audio_key);
   const { matched, missing } = joinKeyframesToScenes(scenes, args.keyframes || []);
   const job: FilmJob = {
@@ -1837,6 +1847,9 @@ export async function startFilmFromKeyframes(
     derive_mode: args.derive_mode,
     parent_render_id: args.parent_render_id,
     audio_key: stagedAudio,
+    // Same undefined-when-empty shape startFilmJob persists, so a silent film has no key rather than
+    // an empty array, and the two start paths produce byte-comparable job docs.
+    dialogue_lines: dialogueLines && dialogueLines.length ? dialogueLines : undefined,
   };
   if (!matched.length) {
     job.error = `no keyframes matched requested shots (missing: ${missing.join(", ")})`;
