@@ -1121,6 +1121,15 @@ export async function readStepMeta(
     // Same gate as the fold path and for the same reason: finite AND positive. A 0, a NaN or a
     // negative is not a measurement of a film, and coalescing any of them into the billing column
     // would read as a real length.
+    //
+    // WHY THIS REJECTS A GENUINE 0 WHILE THE PLANE'S RunPod METER PRESERVES ONE. The control plane's
+    // terminalFactsFromStatus gates on Number.isFinite ALONE, so a real `executionTime: 0` is kept and
+    // only NaN / Infinity / absent become NULL. Both are correct, and the difference is semantic
+    // rather than an inconsistency: 0ms of EXECUTION is a real measurement of a very fast job, and a
+    // 0-second VIDEO is not a video. The two gates measure different quantities, so they draw the line
+    // in different places. Written down because the next person to notice will reasonably assume one
+    // of them is a bug -- and local coherence with this file's own fold-path gate beats cross-repo
+    // uniformity here.
     const pos = (v: unknown): number | undefined =>
       typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
     const duration_seconds = pos(r.duration_seconds);
