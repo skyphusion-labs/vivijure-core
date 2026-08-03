@@ -3,6 +3,57 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.7.2] -- 2026-08-03
+
+### Fixed: `film.finish` lost the delivered length and prepend on the ADOPTED completion path (#131, #132; core#130, #663; vivijure-cf#268)
+
+PATCH. Behaviour fix on an existing capture path; no module contract bump. `readStepMeta` and
+`metaKeyFor` are new exported functions in `src/film-orchestrator.ts`, and because `src/index.ts`
+re-exports that module with `export *`, they are technically reachable through this package's public
+surface -- but neither is a deliberate new API for module authors to call. They exist to serve
+`runFilmFinish` internally, no consumer needs to import them directly, and that is why this ships as
+a PATCH rather than a MINOR.
+
+`runFilmFinish` walks each `film.finish` step and checks R2 for the step's deterministic artifact
+BEFORE it checks the poll token. When the container PUTs between polls, the next tick ADOPTS: it
+advances `curKey`, discards the token, and continues. The step's output is therefore never read, and
+the two numbers that travel only on that output -- the delivered length and any title-card prepend --
+were lost. Both writers of those maps (`foldOutput` and the legacy synchronous branch) require a
+module output body, so an adopted step recorded no measurement at all.
+
+**Why it survived review.** Adoption is the NORMAL completion route on the async drive path, not an
+edge case -- R2 presence reliably beats an 8-second client-driven poll. #124 filed this as the rare
+residual; it fired on the first real render instead, as a NULL `output_ms` on a COMPLETED, billed
+film. The error runs in the flattering direction -- a NULL on a COMPLETED row bills nothing, silently
+-- so nothing failed loudly enough to be caught by a suite that only exercised the non-adopted path.
+
+**The fix** is a measurement sidecar written next to the artifact at `<outKey minus .mp4>.meta.json`
+(`metaKeyFor`), presigned in `filmFinishSeed` alongside the `.srt` sidecar that already exists for
+the same reason (#663). The adoption branch reads it back (`readStepMeta`) and feeds the existing
+`recordDuration` / `recordPrepend`, so there is no new persistence and no orchestrator state-machine
+change. The same handler writes both the artifact and the sidecar, so the two states cannot diverge
+by construction. Absent, unreadable, or malformed lands on `undefined` -> NULL, identical to the
+pre-change behaviour: this recovers a measurement that was actually written, it does not license
+inventing one. A value folded from a live module output always wins over the sidecar copy.
+
+`readStepMeta` gates on finite AND positive, the same gate as the fold path: a 0, a NaN, or a
+negative is not a measurement of a film. A companion doc-only change explains why this deliberately
+diverges from the control plane's RunPod-meter gate (`Number.isFinite` alone, so a genuine
+`executionTime: 0` survives there) -- 0ms of execution is a real measurement, a 0-second video is
+not, and the two gates measure different quantities.
+
+Contract change is additive and optional (`meta_url` / `meta_key` on `FilmFinishInput`), the same
+shape and reasoning as `prepend_seconds`: no module-contract epoch bump, and an older module against
+a newer core (or the reverse) behaves exactly as it does today. **Reading half only** -- the
+video-finish container does not write the sidecar yet (tracked at vivijure-cf#369 entry 2); until it
+does, every film keeps adopting to NULL exactly as before, so this is safe to release alone and in
+either order.
+
+**Left open here:** core#119, the missing changelog/version guard that let these two
+commits sit on `main` past the published 1.7.1 with no `[Unreleased]` section to catch it -- this
+patch exists as a standalone prep PR rather than having shipped inside a guarded window. Left open,
+tracked separately.
+
 ## [1.7.1] -- 2026-08-02
 
 ### Fixed: `renders.output_ms` was WRITE-ONLY -- nothing could read it back (vivijure-cf#268)
