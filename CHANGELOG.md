@@ -44,10 +44,12 @@ not, and the two gates measure different quantities.
 
 Contract change is additive and optional (`meta_url` / `meta_key` on `FilmFinishInput`), the same
 shape and reasoning as `prepend_seconds`: no module-contract epoch bump, and an older module against
-a newer core (or the reverse) behaves exactly as it does today. **Reading half only** -- the
-video-finish container does not write the sidecar yet (tracked at vivijure-cf#369 entry 2); until it
-does, every film keeps adopting to NULL exactly as before, so this is safe to release alone and in
-either order.
+a newer core (or the reverse) behaves exactly as it does today. **Reading half only.** The
+video-finish container's write half is merged (vivijure-cf#370, `_put_meta_sidecar`) and built
+(image `d26db499`, 2026-08-02T23:47Z), but not yet running in production: the swarm stack
+(`vivijure-media.stack.yml`) still pins the prior digest (`0434011`), which predates the sidecar,
+pending a repin. Until that repin lands, every film keeps adopting to NULL exactly as before, so
+this is safe to release alone and in either order.
 
 **Left open here:** core#119, the missing changelog/version guard that let these two
 commits sit on `main` past the published 1.7.1 with no `[Unreleased]` section to catch it -- this
