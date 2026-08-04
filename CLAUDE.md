@@ -36,17 +36,46 @@ npm run typecheck
 npm test
 ```
 
-## Release
+## Release / tagging
 
-SemVer. This package is on the **1.x** line (see `RELEASES.md` for the ledger), so a release is
-`1.MINOR.PATCH`; the old "pre-1.0, hosts pin `^0.8.0` until v2.0" wording described a state this
-package left long ago and is corrected here rather than left to mislead. Hosts pin a caret range on
-the current major (`vivijure-cf` `^1.5.0`, `vivijure-local` `^1.3.0` as of 2026-08-02), so a MINOR
-reaches both on their next install without a coordinated release. What DOES require a coordinated
-release across every consumer is a `vivijure-module/N` epoch bump, per the module-contract rule
-above. Publish target: GitHub npm registry (`@skyphusion-labs/vivijure-core`).
+SemVer on the **1.x** line (`1.MINOR.PATCH`). Full ledger + checklist: **`RELEASES.md`**.
 
-## Crew identity
+Publish target: npm `@skyphusion-labs/vivijure-core` via `.github/workflows/publish-npm.yml`.
 
-Cursor/rancid work: commits as `Conrad Rockenhaus <conrad@skyphusion.org>`. Branch + PR; never push
-to `main` unless Conrad says so.
+### Order (hosts depend on this package)
+
+1. **Release `vivijure-core` first** (this repo).
+2. Then bump the pin in **`vivijure-cf`** and **`vivijure-local`** and tag those hosts.
+3. A caret pin (`^1.x`) can pick up a MINOR on next install, but a deliberate host release is still
+   required to deploy the studio / publish GHCR images. A `vivijure-module/N` epoch bump requires a
+   coordinated release across every consumer.
+
+### Cut a release
+
+1. **Release PR on `main`:** bump `package.json` `version`, update `RELEASES.md` ledger row (seed
+   tag + notes; leave source commit / published empty until after publish), land the PR.
+2. **Tag** (must match `package.json` exactly; workflow refuses a mismatch):
+
+```bash
+git fetch origin main && git checkout main && git pull --ff-only
+git tag vivijure-core-vX.Y.Z
+git push origin vivijure-core-vX.Y.Z
+```
+
+3. **GitHub Release** (npm CI does **not** create this):
+
+```bash
+gh release create vivijure-core-vX.Y.Z --title "vivijure-core vX.Y.Z" --notes-file notes.md
+```
+
+4. Confirm `publish-npm.yml` green and `npm view @skyphusion-labs/vivijure-core@X.Y.Z version`.
+5. Close the `RELEASES.md` ledger row (`source commit` + registry published date). See `RELEASES.md`
+   "Closing the row".
+
+Tag pattern is **`vivijure-core-v*`** only (not bare `v*`). Merge to `main` alone does **not** publish.
+
+## Crew + identity
+
+Crew members work as their own Unix + gh identity (`sudo -u <member> bash -lc '...'`). Crew commits
+use `skyphusion-<member>` identity, never Conrad's. Conrad devs only on his laptop
+(`Conrad Rockenhaus <conrad@skyphusion.org>`).
