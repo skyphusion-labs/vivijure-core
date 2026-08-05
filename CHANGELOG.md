@@ -3,6 +3,23 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased
+
+### feat(renders): persist resolved motion_backend + keyframe_backend on the render row (vivijure-cf#393)
+
+A completed render row carried `quality_tier` and `clip_deliveries` but not which motion (or
+keyframe) backend produced the film. Searching the library for `own-gpu` or `seedance` returned
+zero even when those backends had demonstrably rendered -- the column did not exist. Clip keys are
+GPU-assigned and are not a substitute.
+
+- `NewRenderRow.motionBackend` / `keyframeBackend` written at insert (`buildInsertRenderStmt`).
+- `RenderRow.motion_backend` / `keyframe_backend` on the full read path and public shape.
+- `FilmJob.keyframe_backend` (module name) set by `startFilmJob`; `filmRenderRowSeedFromJob` seeds both.
+- Scatter parent/shard inserts (and self-heal) carry the scatter job's resolved motion backend.
+
+Host half: vivijure-cf migration adds the D1 columns and submit/finalize call sites pass the
+resolved names. Dual-panel: vivijure-local needs the same SQLite columns later.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.

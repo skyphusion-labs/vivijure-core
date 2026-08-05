@@ -2056,6 +2056,8 @@ export async function startFilmJob(
     film_id: "film-" + crypto.randomUUID(),
     project: args.project, bundle_key: args.bundle_key, scenes,
     motion_backend: motionBackend ?? null, motion_config: args.motion_config ?? {},
+    // cf#393: module NAME (not binding) so the renders-row seed can audit which keyframe backend ran.
+    keyframe_backend: kf ? kf.name : null,
     keyframe_config: args.keyframe_config ?? {},
     finish_config: args.finish_config ?? {},
     speech_config: args.speech_config ?? {},

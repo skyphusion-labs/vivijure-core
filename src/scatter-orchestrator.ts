@@ -249,6 +249,8 @@ export async function finalizeScatterSubmit(
           status: "IN_QUEUE",
           mode: "full",
           projectId: scatterJob.project_id ?? null,
+          // cf#393: scatter parent + shards share the resolved motion backend.
+          motionBackend: scatterJob.motion_backend ?? null,
         }),
       { label: "scatter.submit.parent" },
     );
@@ -265,6 +267,7 @@ export async function finalizeScatterSubmit(
           mode: "full",
           projectId: scatterJob.project_id ?? null,
           parentId: parentId ?? undefined,
+          motionBackend: scatterJob.motion_backend ?? null,
         }),
       );
       await withD1Retry(() => env.DB.batch!(stmts), { label: "scatter.submit.shards" });
@@ -602,6 +605,7 @@ export async function ensureScatterRenderRow(
         status: view.status,
         mode: "full",
         projectId: job.project_id ?? null,
+        motionBackend: job.motion_backend ?? null,
       });
       if (view.status !== "IN_PROGRESS") await updateRenderFromView(env, view, ctx);
       console.log(JSON.stringify({ ev: "scatter.selfheal.row", scatter_id: job.scatter_id, status: view.status }));
@@ -627,6 +631,7 @@ export async function ensureScatterRenderRow(
           mode: "full",
           projectId: job.project_id ?? null,
           parentId,
+          motionBackend: job.motion_backend ?? null,
         });
         console.log(JSON.stringify({ ev: "scatter.selfheal.shard", scatter_id: job.scatter_id, shard: shardFilmId }));
       }
