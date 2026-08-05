@@ -3,6 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [Unreleased]
+
+### Chore: drop dead `sync:module-types` script (cf#315)
+
+The script copied from `../vivijure/src/modules/types.ts`, a path that no longer exists (hub is docs
+only). `src/modules/types.ts` is the in-tree canonical source; the script only failed and misled
+editors into treating the file as a copy that could be clobbered.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
