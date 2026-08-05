@@ -253,7 +253,7 @@ describe("render adoption hardening (#76)", () => {
 
   it("does not finish-update when INSERT loses a concurrent race for the same jobId", async () => {
     // SELECT misses (as if racing), INSERT hits ON CONFLICT DO NOTHING against a
-    // winner that already completed — loser must not call markFinishDone.
+    // winner that already completed -- loser must not call markFinishDone.
     const { env, rows, inserts, finishUpdates } = makeEnv(
       [{
         id: 1,
