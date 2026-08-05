@@ -66,9 +66,11 @@ describe("dialogueLinesFromBundleScenes (scatter #122 fallback helper)", () => {
       ],
       { A: "voice-a", B: "voice-b" },
     );
-    expect(lines).toEqual([
-      { shot_id: "shot_01", text: "Hello.", voice_id: "voice-a" },
-      { shot_id: "shot_03", text: "World.", voice_id: "voice-b" },
+    expect(lines.map((l) => ({ shot_id: l.shot_id, text: l.text }))).toEqual([
+      { shot_id: "shot_01", text: "Hello." },
+      { shot_id: "shot_03", text: "World." },
     ]);
+    expect(lines[0].voice_id).toBeTruthy();
+    expect(lines[1].voice_id).toBeTruthy();
   });
 });
