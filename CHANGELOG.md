@@ -3,6 +3,19 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [Unreleased]
+
+### Fixed: `PollResponse` failure arm names the fields hosts already read (local#304)
+
+ADDITIVE, no MODULE_API bump (same class as invoke `jobId` #318). The failure arm was
+`{ ok: false; error: string }` only, so TypeScript's excess-property check rejected an explicit
+`outcome:` on a return literal even though modules already carried `errorType` / `runpodStatus`
+via spread (spread skips EPC). Hosts (vivijure-local#354) need a structured `outcome` for
+`runpod_job_log` without parsing English error strings.
+
+Widens the failure arm with optional `outcome` (`PollFailureOutcome`), `runpodStatus`, and
+`errorType`. Runtime behaviour unchanged; this is the contract catching up to the wire.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
