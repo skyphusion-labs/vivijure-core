@@ -538,6 +538,8 @@ async function advanceSpeechPhase(env: Env, job: FilmJob): Promise<void> {
       context: { project: job.project, job_id: job.film_id },
     };
     if (!ss.poll) {
+      // cf#312: credentialless audio-upscale path when PRESIGNER is bound.
+      await attachSpeechPresigns(env, req.input as SpeechInput);
       const r = await invokeModule<SpeechInput, SpeechOutput>(fetcher, req);
       if (!r.ok) { blipOrDegrade(ss, r.error, false); }
       else if ((r as { pending?: boolean }).pending) { ss.poll = (r as { poll: string }).poll; }
@@ -614,6 +616,72 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: FinishShot, pre
   return true;
 }
 
+// cf#312: satellite finish/speech jobs queue + cold-start + GPU work. Same 30min envelope as
+// keyframe_url / film.finish / master (cast REF_TTL is also 1800).
+const FINISH_PRESIGN_TTL_SECONDS = 1800;
+
+/** Mirror of modules/speech-upscale enhancedAudioKey so the core can presign the speech step's PUT
+ *  without importing a module. Keep in lockstep with that helper (tests pin both sides). */
+export function speechEnhancedAudioKey(audioKey: string): string {
+  const slash = audioKey.lastIndexOf("/");
+  const dot = audioKey.lastIndexOf(".");
+  return dot > slash ? `${audioKey.slice(0, dot)}_enh.wav` : `${audioKey}_enh.wav`;
+}
+
+/** cf#312: attach presigned GET/PUT URLs onto a FinishInput so credentialless satellites (upscale,
+ *  lipsync) can run without shared-bucket R2 env. Best-effort: a missing presigner or unsafe key
+ *  leaves the input key-only and the module falls back to R2 mode. Never throws into the chain. */
+async function attachFinishPresigns(
+  env: Env,
+  job: FilmJob,
+  fs: FinishShot,
+  input: FinishInput,
+  modules: RegisteredModule[],
+): Promise<void> {
+  const outKey = finishStepOutputKey(job.project, fs, modules);
+  if (!outKey) return;
+  try {
+    const hashKey = outKey.endsWith(".mp4") ? `${outKey.slice(0, -4)}.hash` : `${outKey}.hash`;
+    const videoUrl = await presignR2Get(env, fs.clip_key, FINISH_PRESIGN_TTL_SECONDS);
+    const outputUrl = await presignR2Put(env, outKey, FINISH_PRESIGN_TTL_SECONDS);
+    input.video_url = videoUrl;
+    input.output_url = outputUrl;
+    input.output_key = outKey;
+    if (input.audio_key) {
+      input.audio_url = await presignR2Get(env, input.audio_key, FINISH_PRESIGN_TTL_SECONDS);
+    }
+    if (input.output_hash) {
+      input.hash_url = await presignR2Put(env, hashKey, FINISH_PRESIGN_TTL_SECONDS);
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({
+      ev: "finish.presign_skip",
+      shot: fs.shot_id,
+      reason: e instanceof Error ? e.message : String(e),
+    }));
+  }
+}
+
+/** cf#312: attach presigned URLs for a speech step. Same best-effort posture as attachFinishPresigns. */
+async function attachSpeechPresigns(env: Env, input: SpeechInput): Promise<void> {
+  try {
+    const outKey = speechEnhancedAudioKey(input.audio_key);
+    const [audioUrl, outputUrl] = await Promise.all([
+      presignR2Get(env, input.audio_key, FINISH_PRESIGN_TTL_SECONDS),
+      presignR2Put(env, outKey, FINISH_PRESIGN_TTL_SECONDS),
+    ]);
+    input.audio_url = audioUrl;
+    input.output_url = outputUrl;
+    input.output_key = outKey;
+  } catch (e) {
+    console.warn(JSON.stringify({
+      ev: "speech.presign_skip",
+      shot: input.shot_id,
+      reason: e instanceof Error ? e.message : String(e),
+    }));
+  }
+}
+
 /** Advance the finish chain: per shot, submit its current finish module or poll the in-flight one,
  *  chaining to the next module on completion. Phase -> assemble when every shot is terminal. */
 async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
@@ -670,6 +738,9 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       ]);
       (req.input as FinishInput).output_hash = await finishStepInputHash(
         clipEtag, audioEtag, fs.configs?.[fs.idx] as Record<string, unknown> | undefined);
+      // cf#312: presign after output_hash so hash_url can ride with it. Modules that understand
+      // video_url/output_url use the credentialless satellite branch; others ignore the fields.
+      await attachFinishPresigns(env, job, fs, req.input as FinishInput, modules);
       const r = await invokeModule<FinishInput, FinishOutput>(fetcher, req);
       if (!r.ok) { failOrRetry(fs, r.error, false); }
       else if ((r as { pending?: boolean }).pending) { fs.poll = (r as { poll: string }).poll; }
