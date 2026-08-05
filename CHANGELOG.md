@@ -3,6 +3,10 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## v1.7.3
+
+PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
+
 ## [1.7.2] -- 2026-08-03
 
 ### Fixed: `film.finish` lost the delivered length and prepend on the ADOPTED completion path (#131, #132; core#130, #663; vivijure-cf#268)
