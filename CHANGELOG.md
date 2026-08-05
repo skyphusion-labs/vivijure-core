@@ -3,6 +3,21 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased
+
+### Added: `FilmSummary.assemble_ms` + `output_ms` (vivijure-cf#365)
+
+Additive poll-surface fields. `film_output_seconds` already stored per-artifact content length
+(assemble writes the deterministic `renders/<id>/film.mp4` entry; film.finish writes each step key;
+markFinishDone bills the final film_key as `renders.output_ms`). None of that reached `summarizeFilm`
+/ poll_film, so a delivered-vs-predicted delta could not be decomposed without D1 or R2.
+
+- `assemble_ms` -- pre-film.finish concat content length (ms) at the deterministic assemble key
+- `output_ms` -- last-writer DELIVERED content length (ms) for `job.film_key` (same basis as the D1 column)
+
+Absent = NOT MEASURED (never coalesced to zero). Distinct from `finish_elapsed_ms` (CPU wall-clock,
+cf#268). No new capture path; pure projection of an already-persisted map.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
