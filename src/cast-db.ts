@@ -36,8 +36,15 @@ export interface CastMember {
   updated_at: string;
   // v0.57.0: standalone LoRA training fields.
   lora_key: string | null;
+  // Shared last training-job state across BOTH adapter families (SDXL + Wan). "ready" means a train
+  // (or reconcile) marked this row ready for AT LEAST one family; it does NOT mean both families
+  // have adapters. For selection / preflight prefer the derived PublicCastMember fields
+  // `sdxl_lora_ready` and `wan_lora_ready` (key-presence, cannot disagree with the keys).
+  // See vivijure-cf#383.
   lora_status: LoraStatus;
   lora_job_id: string | null;
+  // Last training failure message when lora_status is "failed". Ops have also written harvest
+  // provenance into this column on ready rows (cf#295); do not treat non-null alone as failure.
   lora_error: string | null;
   lora_trained_at: string | null;
   // Dialogue: Aura-1 speaker name (see src/voices.ts); the voice this character speaks in across
@@ -120,14 +127,47 @@ function rowToCast(row: CastRow): CastMember {
   };
 }
 
+// Trained adapters live under the `loras/` R2 prefix (same gate as resolveCastLoras).
+function isLorasKey(key: string | null | undefined): key is string {
+  return typeof key === "string" && key.startsWith("loras/");
+}
+
+/** True when the cast has a usable SDXL identity adapter (keyframe path). Key-presence only. */
+export function isSdxlLoraReady(cast: { lora_key?: string | null }): boolean {
+  return isLorasKey(cast.lora_key);
+}
+
+/** True when the cast has a complete Wan two-expert pair (i2v path). Key-presence only. */
+export function isWanLoraReady(cast: {
+  wan_lora_key_high?: string | null;
+  wan_lora_key_low?: string | null;
+}): boolean {
+  return isLorasKey(cast.wan_lora_key_high) && isLorasKey(cast.wan_lora_key_low);
+}
+
 // The client-facing cast shape: `id` is the opaque public id; the internal integer PK is dropped
 // so a sequential id never leaves the core (S9 F13). Every API site that returns a cast member maps
 // through toPublicCast, so the frontend addresses cast members only by their unguessable public id.
-export type PublicCastMember = Omit<CastMember, "id" | "public_id"> & { id: string };
+//
+// Additive readiness booleans (cf#383): derived at read time from the adapter keys so the public
+// row cannot claim "ready" for a family that has no key. Legacy `lora_status` is retained unchanged
+// for existing clients; it remains the shared training-job state (see CastMember.lora_status).
+export type PublicCastMember = Omit<CastMember, "id" | "public_id"> & {
+  id: string;
+  /** SDXL identity adapter present under loras/. Prefer over lora_status for keyframe binding. */
+  sdxl_lora_ready: boolean;
+  /** Wan high+low expert pair present under loras/. Prefer over lora_status for Wan motion. */
+  wan_lora_ready: boolean;
+};
 
 export function toPublicCast(row: CastMember): PublicCastMember {
   const { id: _internalId, public_id, ...rest } = row;
-  return { ...rest, id: public_id };
+  return {
+    ...rest,
+    id: public_id,
+    sdxl_lora_ready: isSdxlLoraReady(row),
+    wan_lora_ready: isWanLoraReady(row),
+  };
 }
 
 // URL-safe slug from a display name. Mirrors the projects-side slugify

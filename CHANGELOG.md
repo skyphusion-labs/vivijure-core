@@ -3,6 +3,20 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased
+
+### feat(cast): per-family adapter readiness on public cast rows (vivijure-cf#383)
+
+`lora_status: "ready"` is shared across SDXL and Wan adapter families, so a Wan-trained cast with
+`lora_key` null still read ready and could be bound for keyframes with no identity LoRA (silent wrong
+output). Public cast rows now carry additive booleans derived from key presence:
+
+- `sdxl_lora_ready` -- `lora_key` under `loras/`
+- `wan_lora_ready` -- both `wan_lora_key_high` and `wan_lora_key_low` under `loras/`
+
+Legacy `lora_status` is unchanged (shared last training-job state). Prefer the new fields for
+selection / preflight. Helpers: `isSdxlLoraReady`, `isWanLoraReady`.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
