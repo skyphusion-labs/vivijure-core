@@ -184,8 +184,15 @@ export function filmJobToPollView(job: FilmJob, clipJob: ClipJob | null, keyfram
   } else if (job.phase === "failed") {
     status = "FAILED";
   } else {
-    status = "IN_PROGRESS";
+    // cf#307: when the keyframe module reports wait=accepted (queue / cold start), surface IN_QUEUE
+    // so the panel can distinguish spinning-up from sampling. Only when the module actually sent
+    // wait -- inventing IN_QUEUE without a signal reopens the "check that cannot distinguish" hole.
+    status =
+      job.phase === "keyframe" && job.keyframe_wait === "accepted" ? "IN_QUEUE" : "IN_PROGRESS";
     output = phaseProgress(job, clipJob, keyframeDone);
+    if (job.phase === "keyframe" && job.keyframe_wait && output) {
+      output.backend_wait = job.keyframe_wait;
+    }
   }
 
   if (job.keyframes_incomplete && output) output.keyframes_incomplete = job.keyframes_incomplete;
