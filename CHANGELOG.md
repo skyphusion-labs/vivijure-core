@@ -3,6 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [Unreleased]
+
+### Fixed: untrained `cast_loras` refusal names the voice-only path (mcp#29)
+
+`untrainedCastMessage` still tells the operator to train on the Cast page, and now also names
+`dialogue_lines[].voice_id` as the path for voice without an identity adapter. Agents that followed
+"pass cast_loras for voice" hit a hard 400 and were pointed at an expensive train they did not need.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.

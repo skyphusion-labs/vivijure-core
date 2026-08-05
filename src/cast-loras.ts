@@ -109,11 +109,16 @@ export async function resolveCastLoras(
 }
 
 /** Build an actionable, per-character rejection message from the skipped slots: name who needs
- *  training (falling back to the slot id when the cast row did not resolve) and where to do it. */
+ *  training (falling back to the slot id when the cast row did not resolve) and where to do it.
+ *  Also names the voice-only escape hatch (dialogue_lines[].voice_id) so agents following cast_loras
+ *  for voice alone are not pointed at an expensive, unnecessary train (mcp#29). */
 export function untrainedCastMessage(skippedDetail: SkippedCast[]): string {
   const names = skippedDetail.map((d) => {
     const who = d.name ?? `slot ${d.slot}`;
     return d.reason === "LoRA still training" ? `${who} (still training)` : who;
   });
-  return `These characters have no trained LoRA -- train them on the Cast page first: ${names.join(", ")}.`;
+  return (
+    `These characters have no trained LoRA -- train them on the Cast page first: ${names.join(", ")}. ` +
+    `For voice only (no identity adapter), set dialogue_lines[].voice_id instead of cast_loras.`
+  );
 }
