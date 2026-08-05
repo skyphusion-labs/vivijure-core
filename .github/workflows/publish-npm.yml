@@ -73,6 +73,24 @@ jobs:
             exit 1
           fi
 
+      # An UNRELEASED version must never reach npm. Until 1.8.0 was opened, a stray
+      # workflow_dispatch was harmless only by accident: package.json named an ALREADY-PUBLISHED
+      # version, so the idempotency check below printed "Skip: already published" and exited 0.
+      # Opening an unpublished version removes that accident -- a dispatch would sail past the skip
+      # and publish untagged main. The tag-vs-package check above cannot catch it; it is gated to
+      # tag pushes. So refuse explicitly on the changelog's own claim. (core#159, core#119)
+      - name: Refuse to publish an Unreleased version
+        run: |
+          set -euo pipefail
+          top="$(grep -m1 '^## ' CHANGELOG.md || true)"
+          if printf '%s' "$top" | grep -qi 'unreleased'; then
+            echo "REFUSED: top CHANGELOG heading is still Unreleased:" >&2
+            echo "  $top" >&2
+            echo "package.json $(node -p "require('./package.json').version") is OPEN, not released." >&2
+            echo "Cut the release (retitle the heading, tag, GitHub Release) before publishing." >&2
+            exit 1
+          fi
+
       - name: Publish to npm
         run: |
           set -euo pipefail
