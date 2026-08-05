@@ -6,6 +6,9 @@
 // globals, different moduleResolution settings). These declarations give the test file the same
 // contract the alias promises at runtime -- a MANIFEST conforming to ModuleManifest -- without
 // pulling a foreign codebase into this program (core#101).
+//
+// Preferred resolution (cf#285): modules/{keyframe,own-gpu}/src/manifest.ts (data-only leaf).
+// Fallback: modules/*/src/index.ts for checkouts that predate the leaf extract.
 declare module "vivijure-modules/keyframe" {
   import type { ModuleManifest } from "../src/modules/types.js";
   export const MANIFEST: ModuleManifest;
