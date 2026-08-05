@@ -65,8 +65,8 @@ npm install @skyphusion-labs/vivijure-core
 ```
 ~/dev/
   vivijure-core/
-  vivijure-local/    # package.json: "^0.9.0" -- override with file:../vivijure-core locally
-  vivijure-cf/
+  vivijure-local/    # package.json pins a ^1.x range; override with file:../vivijure-core locally
+  vivijure-cf/       # likewise; pin floors can lag between hosts -- check each package.json
 ```
 
 ```bash
@@ -77,12 +77,12 @@ npm run typecheck && npm test
 ```
 
 **Publish** (maintainers): merge to `main`, bump `package.json`, update `RELEASES.md` + `CHANGELOG.md`,
-ensure repo secret `NPM_TOKEN` is set, then:
+ensure repo secret `NPM_TOKEN` is set, then (example for the current line; use the version you ship):
 
 ```bash
-git tag vivijure-core-v1.2.2
-git push origin vivijure-core-v1.2.2
-gh release create vivijure-core-v1.2.2 --title "vivijure-core v1.2.2" --notes-file notes.md
+git tag vivijure-core-v1.7.2
+git push origin vivijure-core-v1.7.2
+gh release create vivijure-core-v1.7.2 --title "vivijure-core v1.7.2" --notes-file notes.md
 ```
 
 Tag push triggers **Publish npm package** (`.github/workflows/publish-npm.yml`). GitHub Releases are

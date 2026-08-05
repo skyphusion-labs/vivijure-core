@@ -7,11 +7,11 @@
 Checklist for wiring **vivijure-cf** (Cloudflare) and **vivijure-local** (Node) onto
 `@skyphusion-labs/vivijure-core` with minimal churn.
 
-## vivijure-local (Node) -- done / in progress
+## vivijure-local (Node) -- done
 
 | Step | Status |
 |------|--------|
-| Depend on `@skyphusion-labs/vivijure-core` (`file:../vivijure-core`) | done |
+| Depend on `@skyphusion-labs/vivijure-core` (published semver; optional `file:` for local dev) | done |
 | Implement `Platform` in `src/platform/*` | done |
 | Routes call `orchestratorContextFromPlatform(platform)` | done |
 | Host `src/*` files are thin re-exports into core | done (M18-M21) |
@@ -35,12 +35,14 @@ Docker / CI: build context includes both repos (see `vivijure-local/Dockerfile` 
 
 ---
 
-## vivijure (Cloudflare) -- planned
+## vivijure-cf (Cloudflare) -- done (phases below are the historical plan)
 
-The CF host still carries duplicate orchestration under `src/`. Adoption is **incremental**: add the
-dependency, introduce a Platform adapter, swap imports file-by-file, delete duplicates in the same PR.
+**Complete.** `vivijure-cf` depends on published `@skyphusion-labs/vivijure-core`, implements
+`src/platform/` (`cfPlatformFromEnv`), and imports orchestration from the package (no duplicate
+module registry / film-orchestrator / types under host `src/modules/`). Phases A--D below are the
+migration record, not a backlog.
 
-### Phase A -- dependency + adapter (no behavior change)
+### Phase A -- dependency + adapter (no behavior change) -- done
 
 1. Add to `package.json`:
    ```json
@@ -74,7 +76,7 @@ dependency, introduce a Platform adapter, swap imports file-by-file, delete dupl
 
 5. Add a contract test: `cfPlatformFromEnv(mockEnv)` satisfies `Platform` shape.
 
-### Phase B -- swap imports (wave order matches extraction)
+### Phase B -- swap imports (wave order matches extraction) -- done
 
 For each file group, change host `src/foo.ts` from implementation to:
 
@@ -95,9 +97,9 @@ Recommended order (matches extraction waves in `EXTRACTION-STATUS.md`):
 
 After each wave: `npm run typecheck`, worker tests, no duplicate file left in host `src/`.
 
-### Phase C -- route handlers use Platform
+### Phase C -- route handlers use Platform -- done
 
-Today CF routes pass `env: Env` directly into orchestrators. Target:
+Historical target (now landed):
 
 ```typescript
 import { orchestratorContextFromPlatform } from "@skyphusion-labs/vivijure-core/platform";
@@ -111,24 +113,22 @@ await advanceFilm(orchEnv, ...);
 `env.ts` stays for Worker entry, wrangler types, and bindings the ICD does not model (AI, ASSETS,
 ACCESS). Only orchestration paths go through `Platform`.
 
-### Phase D -- release
+### Phase D -- release -- done
 
-1. Delete all duplicated orchestration files from `vivijure/src/`.
-2. Bump `vivijure` to `2.0.0` with `vivijure-core@^1.0.0`.
-3. `modules/types.ts` lives canonically in `vivijure-core`; module workers vendor it from here
-   (no inbound sync -- core is the source of truth for the module contract).
+1. Duplicated orchestration removed from the CF host `src/` (imports from package).
+2. Module contract lives canonically in `vivijure-core`; module workers vendor shapes they need
+   (no inbound sync -- core is the source of truth for `vivijure-module/2`).
+3. Published on npm as `@skyphusion-labs/vivijure-core` (current line: see package.json /
+   `RELEASES.md`; hosts pin semver ranges, not a single frozen major).
 
-### What never moves to core (CF host keeps)
+### What stays in the CF host
 
 - `index.ts` (fetch router, `scheduled()`, Assets)
 - `env.ts`, `access-auth.ts`, `auth-gate.ts`
 - `ai-binding.ts`, `planner.ts`, `providers/*`, `parsers/*`
-- `runpod-submit.ts` (HTTP to RunPod)
-- `scatter-orchestrator.ts` (candidate for core Phase 4; not yet extracted)
-- `demo-render.ts`, `demo-chat.ts`
-- Studio MCP: [`@skyphusion-labs/vivijure-mcp`](https://github.com/skyphusion-labs/vivijure-mcp) (separate npm package; not in core)
-- `r2-presign.ts` (implementation; core only calls `PRESIGNER` interface)
-- `installed-modules.ts` (CF dispatch discovery wrapper)
+- Host transport / wrangler wiring (presign, installed-modules discovery, CF bindings)
+- Studio MCP: [`@skyphusion-labs/vivijure-mcp`](https://github.com/skyphusion-labs/vivijure-mcp)
+  (separate npm package; not in core)
 
 ---
 
@@ -136,17 +136,19 @@ ACCESS). Only orchestration paths go through `Platform`.
 
 | Check | Command / location |
 |-------|-------------------|
-| Module contract byte match | `diff vivijure/src/modules/types.ts vivijure-core/src/modules/types.ts` |
+| Module contract | `@skyphusion-labs/vivijure-core` `modules/types` (hosts import; no host copy) |
 | Platform ICD version | `PLATFORM_ICD_VERSION` in core + contract tests |
 | HTTP CONTRACT | `vivijure-cf` canon `docs/CONTRACT.md`; local `docs/PARITY.md` |
 | Conformance harness | `npm test` in `vivijure-core`; live sidecars in `vivijure-local` |
 
 ---
 
-## Publishing (when ready)
+## Publishing (live)
 
-1. Publish `@skyphusion-labs/vivijure-core` to GitHub npm registry.
-2. Replace `file:../vivijure-core` with `"^0.8.0"` (then `^1.0.0` at v2.0).
+1. Publish `@skyphusion-labs/vivijure-core` to npm on `vivijure-core-v*` tags (see README /
+   `RELEASES.md`).
+2. Hosts depend on published semver (`^1.x`); optional `file:../vivijure-core` for local monorepo
+   work only.
 3. CI checks out published tarball or uses `npm ci` with lockfile pin; Docker uses multi-stage
    `npm ci` without sibling clone.
 
