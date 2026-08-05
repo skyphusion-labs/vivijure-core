@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildDialogueLines } from "../src/dialogue-lines.js";
+import { buildDialogueLines, dialogueLinesFromBundleScenes } from "../src/dialogue-lines.js";
 
 const voices = { A: "orion", B: "hera" };
 
@@ -52,5 +52,23 @@ describe("buildDialogueLines", () => {
     ] };
     const lines = buildDialogueLines(sb, voices, ["shot_01", "shot_02"]);
     expect(lines.map((l) => l.shot_id)).toEqual(["shot_01", "shot_02"]);
+  });
+});
+
+
+describe("dialogueLinesFromBundleScenes (scatter #122 fallback helper)", () => {
+  it("builds lines from bundle scenes and skips silent shots", () => {
+    const lines = dialogueLinesFromBundleScenes(
+      [
+        { shot_id: "shot_01", prompt: "a", seconds: 4, dialogue: { slot: "A", text: "  Hello.  " } },
+        { shot_id: "shot_02", prompt: "b", seconds: 4 },
+        { shot_id: "shot_03", prompt: "c", seconds: 4, dialogue: { slot: "B", text: "World." } },
+      ],
+      { A: "voice-a", B: "voice-b" },
+    );
+    expect(lines).toEqual([
+      { shot_id: "shot_01", text: "Hello.", voice_id: "voice-a" },
+      { shot_id: "shot_03", text: "World.", voice_id: "voice-b" },
+    ]);
   });
 });

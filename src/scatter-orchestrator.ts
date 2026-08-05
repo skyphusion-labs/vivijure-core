@@ -27,8 +27,9 @@ import { presignR2Get, presignR2Put } from "./presign.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
 import { defaultGpuDoorModule, discoverModules, servingForHook } from "./modules/registry.js";
 import { readBundleScenes } from "./bundle-storyboard.js";
+import type { ParsedBundleScene } from "./planner-yaml.js";
 import { getProjectById } from "./storyboard-projects-db.js";
-import { buildDialogueLines } from "./dialogue-lines.js";
+import { buildDialogueLines, dialogueLinesFromBundleScenes } from "./dialogue-lines.js";
 import type { DialogueLine } from "./modules/types.js";
 import {
   gatherDecision,
@@ -93,28 +94,34 @@ export interface StartScatterArgs {
   project_id?: number | null;
 }
 
-/** Read the stored storyboard (D1 last_storyboard) and build the per-shot dialogue batch (authored
- *  line + cast-resolved voice). Returns [] when there's no project_id, no stored storyboard, or no
- *  dialogue -- a silent film.
+/** Resolve per-shot dialogue for scatter (vivijure-core#122).
  *
- *  WHY D1 AND NOT THE BUNDLE (corrected, vivijure-core#122): D1 is the FRESHER source, not the only
- *  one. This comment used to say the bundle "can't carry this (lossy)", which has been untrue since
- *  #307 taught the storyboard.yaml serializer to emit the per-shot dialogue block and #313 taught the
- *  parser to read it back; 16 of 62 production bundles carry one today. The stale claim is worth
- *  correcting rather than deleting because acting on it would mean "repairing" a bundle format that
- *  is not broken. The real cost of the D1-only rule is the gate below: with no project_id there is no
- *  fallback, so a bundle-only scatter renders SILENT while holding a bundle that carries every line
- *  it needed. Adding that fallback changes an existing caller's behaviour and is tracked separately. */
+ *  Order: D1 last_storyboard when project_id is present (fresher than the bundle
+ *  snapshot). If that yields no lines -- no project_id, no storyboard, or empty
+ *  dialogue -- fall back to dialogue carried in the bundle's storyboard.yaml via
+ *  dialogueLinesFromBundleScenes (same helper as /api/render/film bundle-only voicing).
+ *
+ *  Bundle scenes must already be loaded by the caller (readBundleScenes); we do not
+ *  re-fetch. Filter to shotIds so a shard only keeps its own lines.
+ */
 async function resolveDialogueLines(
   env: Env,
   args: StartScatterArgs,
   voices: Record<string, string>,
   shotIds: string[],
+  bundleScenes: ParsedBundleScene[],
 ): Promise<DialogueLine[]> {
-  if (args.project_id == null) return [];
-  const project = await getProjectById(env, args.project_id);
-  if (!project?.last_storyboard) return [];
-  return buildDialogueLines(project.last_storyboard, voices, shotIds);
+  if (args.project_id != null) {
+    const project = await getProjectById(env, args.project_id);
+    if (project?.last_storyboard) {
+      const fromD1 = buildDialogueLines(project.last_storyboard, voices, shotIds);
+      if (fromD1.length > 0) return fromD1;
+    }
+  }
+  const fromBundle = dialogueLinesFromBundleScenes(bundleScenes, voices);
+  if (shotIds.length === 0) return fromBundle;
+  const want = new Set(shotIds);
+  return fromBundle.filter((l) => want.has(l.shot_id));
 }
 
 export async function startScatterRender(env: Env, args: StartScatterArgs): Promise<ScatterJob> {
@@ -145,11 +152,9 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
   const expected = args.shot_ids.filter((s) => typeof s === "string" && s.length > 0);
   if (expected.length < 2) throw new Error("scatter requires >= 2 shots");
 
-  // Talking characters: read the storyboard from D1 (last_storyboard), which is FRESHER than the
-  // bundle snapshot, and resolve each speaking shot's voice from the cast (voices, off the same rows
-  // resolveCastLoras already read). Absent project_id / no dialogue -> a silent film; see the note on
-  // resolveDialogueLines for why absent project_id is a real gap rather than an impossibility.
-  const dialogueLines = await resolveDialogueLines(env, args, voices, expected);
+  // Talking characters: D1 last_storyboard when present (fresher), else bundle dialogue
+  // (core#122). Voices from resolveCastLoras. Empty both ways -> silent film.
+  const dialogueLines = await resolveDialogueLines(env, args, voices, expected, parsed);
 
   const shards = scatterShards({
     shotIds: expected,
