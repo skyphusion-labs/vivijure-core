@@ -324,10 +324,24 @@ export interface PollRequest {
   poll: string;
 }
 
+/**
+ * Backend-neutral wait phase while a job is still pending (cf#307 / vivijure-cf#307).
+ *
+ * RunPod's `IN_QUEUE` vs `IN_PROGRESS` is the measured case (cold start vs sampling), but modules
+ * are not all RunPod: this vocabulary must not leak vendor names into the contract.
+ *
+ * - `accepted` -- backend has the work but has not started compute (queue / cold start)
+ * - `running`  -- compute is underway
+ *
+ * OPTIONAL and additive on `pending: true` only. Modules that omit it leave the host unable to
+ * distinguish the two, which is the pre-cf#307 behaviour (both look like bare pending).
+ */
+export type PollWaitPhase = "accepted" | "running";
+
 /** A module's `/poll` response: still running, finished, or failed. The caller polls until it is no
  *  longer pending, so a Worker never holds one long-running `/invoke` request open. */
 export type PollResponse<O = unknown> =
-  | { ok: true; pending: true }                   // still running, poll again
+  | { ok: true; pending: true; wait?: PollWaitPhase } // still running; wait is optional (cf#307)
   | { ok: true; output: O }                       // finished
   | { ok: false; error: string };
 

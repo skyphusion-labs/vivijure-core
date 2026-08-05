@@ -3,6 +3,17 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.8.0
+
+### feat(modules): PollResponse can say accepted vs running (cf#307)
+
+Optional additive `wait?: "accepted" | "running"` on `{ ok: true, pending: true }`. Backend-neutral
+(not RunPod vocabulary): cold start / queue vs compute underway. Keyframe film path stores
+`keyframe_wait` and maps `accepted` -> poll view `IN_QUEUE` so the panel can distinguish spinning-up
+from sampling without inventing a state when the module omits `wait`.
+
+MINOR: new optional contract field. Hosts pin after npm publish.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
