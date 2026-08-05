@@ -3,6 +3,10 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.8.0
+
+(Nothing released under this version yet. Entries land here until it is tagged.)
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
