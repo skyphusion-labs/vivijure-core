@@ -370,6 +370,17 @@ export interface FinishInput {
   // to the module -- forward it into the RunPod job unchanged; never parse/recompute it. Optional +
   // additive (no api bump); absent on a legacy core, in which case the producer writes NO sidecar.
   output_hash?: string;
+  // cf#312 credentialless satellite transport (additive, no MODULE_API bump). When the core can
+  // derive this step's output key (finish_artifacts / legacy suffix) it presigns GET/PUT and hands
+  // them here so finish-upscale / finish-lipsync can call the satellite's presigned branch instead
+  // of the shared-bucket credentialed one (pooling without endpoint R2 env). Modules that still use
+  // the backend finish_clip path (finish-rife) ignore these and keep sending clip_key. Absent on a
+  // legacy core or when presign is unbound => module falls back to R2 mode.
+  video_url?: string;   // presigned GET of clip_key
+  output_url?: string;  // presigned PUT for the step's expected output key
+  output_key?: string;  // R2 key behind output_url (echoed by the satellite)
+  audio_url?: string;   // presigned GET of audio_key (lipsync); absent when no dialogue
+  hash_url?: string;    // optional presigned PUT for `<output_key>.hash` (#583 sidecar in presigned mode)
 }
 
 /** What a `finish` module returns: the processed clip plus what it did. Duration is invariant
@@ -425,6 +436,12 @@ export interface DialogueOutput {
 export interface SpeechInput {
   shot_id: string;
   audio_key: string; // R2 key of the shot's dialogue audio (TTS), from job.dialogue_audio[shot_id]
+  // cf#312: same credentialless shape as FinishInput. When set, speech-upscale calls the
+  // vivijure-audio-upscale presigned branch (audio_url + output_url) instead of R2 mode.
+  // output_key uses the module's `_enh.wav` convention (mirrored by the core when presigning).
+  audio_url?: string;
+  output_url?: string;
+  output_key?: string;
 }
 
 /** What a `speech` module returns: the (maybe enhanced) dialogue audio plus what it did. On a real
