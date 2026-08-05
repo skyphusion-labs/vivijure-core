@@ -3,37 +3,45 @@
 ## What this is
 
 **Shared orchestration** for Vivijure Studio: module registry, film/clip pipeline, planner helpers,
-platform ICD. Two thin hosts consume this package:
+platform ICD. Published as **`@skyphusion-labs/vivijure-core`**.
+
+**HOST-ADOPTION is COMPLETE.** Both thin hosts consume the published package:
 
 | Host | Repo | Runtime |
 |------|------|---------|
 | CF-native | `skyphusion-labs/vivijure-cf` | Workers, D1, R2, service bindings |
 | Local | `skyphusion-labs/vivijure-local` | Node, SQLite, S3/MinIO, HTTP sidecars |
 
-Wire contract for HTTP routes stays in `vivijure-cf/docs/CONTRACT.md`. Module wire contract
-is `src/modules/types.ts` (`vivijure-module/2`). **Planner vs module boundary:**
-[docs/CORE-VS-MODULES.md](docs/CORE-VS-MODULES.md) (control plane = thin planner scaffold + module host).
+Wire contract for HTTP routes stays in host `docs/CONTRACT.md`. **Module wire contract SoT is this
+package** (`src/modules/types.ts` here = `vivijure-module/2` on npm). **Planner vs module boundary:**
+[docs/CORE-VS-MODULES.md](docs/CORE-VS-MODULES.md). Adoption history: [docs/HOST-ADOPTION.md](docs/HOST-ADOPTION.md).
+
+Version: see root `package.json` / latest `vivijure-core-v*` tag / `RELEASES.md` / `CHANGELOG.md`.
 
 ## Rules
 
 - **Core never imports host env.** No `./env`, no `@cloudflare/workers-types`, no `process.env` reads.
-  Orchestration uses `Platform`, `DbEnv`, or `OrchestratorEnv` from `@skyphusion-labs/vivijure-core/platform`.
-- **Module contract is sacred.** `src/modules/types.ts` is the **canonical** `vivijure-module/2`
-  contract; module workers and hosts vendor it *from* here. Bump the epoch only with a coordinated
-  release across every consumer. (Extraction is complete: `vivijure-cf` adopted the published package,
-  so there is no inbound sync -- core is the source of truth.)
+  Orchestration uses `Platform`, `DbEnv`, or `OrchestratorEnv` from
+  `@skyphusion-labs/vivijure-core/platform`.
+- **Module contract is sacred.** This repo is the **canonical** `vivijure-module/2` contract; hosts
+  and module workers take types **from here** (published package). No inbound sync from host
+  `src/modules/*` after extraction. Bump the epoch only with a coordinated release across every
+  consumer.
 - **Platform ICD:** `src/platform/types.ts` is the frozen adapter contract (`PLATFORM_ICD_VERSION`).
   Bump version + `docs/PLATFORM.md` + contract tests before either host ships a release that depends
   on the new shape.
 - **Subpath imports for hosts.** Prefer `@skyphusion-labs/vivijure-core/film-orchestrator` over deep
-  relative paths into `node_modules`. Keeps CF and local hosts aligned.
+  relative paths into `node_modules`.
 - **No HTTP routers here.** Routes, auth, AI providers, RunPod submit, scatter, demo mode stay in hosts.
+- **Ignore Cursor `AGENTS.md`** if present.
 
 ## Commands
 
 ```bash
-npm run typecheck
+npm run typecheck   # tsc --noEmit (+ tests tsconfig) -- CI gate; run before push
 npm test
+npm run test:coverage
+npm run build
 ```
 
 ## Release / tagging
@@ -45,7 +53,8 @@ Publish target: npm `@skyphusion-labs/vivijure-core` via `.github/workflows/publ
 ### Order (hosts depend on this package)
 
 1. **Release `vivijure-core` first** (this repo).
-2. Then bump the pin in **`vivijure-cf`** and **`vivijure-local`** and tag those hosts.
+2. Then bump the pin in **`vivijure-cf`** and **`vivijure-local`** and tag those hosts (pins may lag
+   each other between waves; product dual-panel still required for user-facing work).
 3. A caret pin (`^1.x`) can pick up a MINOR on next install, but a deliberate host release is still
    required to deploy the studio / publish GHCR images. A `vivijure-module/N` epoch bump requires a
    coordinated release across every consumer.
@@ -69,10 +78,18 @@ gh release create vivijure-core-vX.Y.Z --title "vivijure-core vX.Y.Z" --notes-fi
 ```
 
 4. Confirm `publish-npm.yml` green and `npm view @skyphusion-labs/vivijure-core@X.Y.Z version`.
-5. Close the `RELEASES.md` ledger row (`source commit` + registry published date). See `RELEASES.md`
-   "Closing the row".
+5. Close the `RELEASES.md` ledger row (`source commit` + registry published date).
 
 Tag pattern is **`vivijure-core-v*`** only (not bare `v*`). Merge to `main` alone does **not** publish.
+Verify the **npm artifact**, not only the pipeline.
+
+## Hard rules
+
+- **CSAM bright-line (NON-NEGOTIABLE):** zero tolerance including synthetic (hosts enforce; core must
+  not weaken).
+- **Typecheck is the CI gate.**
+- **No em-dashes / en-dashes.** Use `--` or commas.
+- **Never freeze open sprint boards or specific RunPod endpoint IDs.**
 
 ## Crew + identity
 
