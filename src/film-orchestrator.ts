@@ -222,7 +222,10 @@ async function recordTrainedLorasToCast(env: Env, job: FilmJob, kfOut: KeyframeO
 async function stampKeyframeProvenance(env: Env, job: FilmJob, kfOut: KeyframeOutput): Promise<void> {
   const kfs = kfOut.keyframes || [];
   if (!kfs.length) return;
-  const hash = await keyframeProvenanceHash({ keyframe_config: job.keyframe_config });
+  const hash = await keyframeProvenanceHash({
+    keyframe_config: job.keyframe_config,
+    bundle_key: job.bundle_key,
+  });
   for (const k of kfs) {
     if (k.keyframe_key) await writeProv(env, k.keyframe_key, hash);
   }
@@ -2137,13 +2140,24 @@ export async function cancelFilmJob(env: Env, filmId: string): Promise<FilmJob |
  *  tick one -- cancelling the live producer and shipping wrong content silently (#661, the #245/#249 class).
  *  This run own orphans (the #129/#619/#143 recovery) always upload AFTER created_at, so legit recovery
  *  survives; a leftover from an older render becomes invisible. */
-export async function listProjectKeyframes(env: Env, project: string, scenes: FilmScene[], createdAtMs: number, keyframeConfig?: Record<string, unknown>): Promise<FilmKeyframeRef[]> {
+export async function listProjectKeyframes(
+  env: Env,
+  project: string,
+  scenes: FilmScene[],
+  createdAtMs: number,
+  keyframeConfig?: Record<string, unknown>,
+  /** cf#388: bundle identity in the expected provenance hash (not caller-supplied project alone). */
+  bundleKey?: string | null,
+): Promise<FilmKeyframeRef[]> {
   const prefix = `renders/${project}/keyframes/`;
   const wanted = new Set(scenes.map((s) => s.shot_id));
-  // #767: when the caller passes this run keyframe config, gate adoption on the keyframe provenance sidecar
-  // (<key>.prov). A keyframe whose sidecar proves a DIFFERENT keyframe config is skipped -> regenerate,
-  // never adopt another config keyframe. Absent sidecar (legacy / lost-poll) keeps the #661 freshness path.
-  const expected = keyframeConfig !== undefined ? await keyframeProvenanceHash({ keyframe_config: keyframeConfig }) : null;
+  // #767 / cf#388: gate adoption on the keyframe provenance sidecar. Expected hash includes
+  // keyframe_config AND bundle_key so two bundles cannot share adoption under one project name.
+  // Absent sidecar (legacy / lost-poll) keeps the #661 freshness path.
+  const expected =
+    keyframeConfig !== undefined
+      ? await keyframeProvenanceHash({ keyframe_config: keyframeConfig, bundle_key: bundleKey })
+      : null;
   const out: FilmKeyframeRef[] = [];
   let cursor: string | undefined;
   do {
@@ -2178,7 +2192,14 @@ export async function listProjectKeyframes(env: Env, project: string, scenes: Fi
  *  lenient on partials, treating absent shots as genuine non-renders at the ceiling.) */
 export async function keyframeSetCompleteInR2(env: Env, job: FilmJob): Promise<boolean> {
   if (!job.scenes.length) return false;
-  const present = await listProjectKeyframes(env, job.project, job.scenes, job.created_at, job.keyframe_config);
+  const present = await listProjectKeyframes(
+    env,
+    job.project,
+    job.scenes,
+    job.created_at,
+    job.keyframe_config,
+    job.bundle_key,
+  );
   const have = new Set(present.map((k) => k.shot_id));
   return job.scenes.every((s) => have.has(s.shot_id));
 }
@@ -2229,7 +2250,14 @@ export async function cancelInFlightKeyframe(env: Env, job: FilmJob): Promise<vo
  *  has passed PHASE_HARD_DEADLINE_SECONDS. Returns true iff it advanced the phase; a partial hold (or
  *  nothing in R2) returns false and leaves the phase in "keyframe". */
 async function recoverStalledKeyframePhase(env: Env, job: FilmJob, preModules: RegisteredModule[] | undefined, atCeiling: boolean): Promise<boolean> {
-  const adopted = await listProjectKeyframes(env, job.project, job.scenes, job.created_at, job.keyframe_config);
+  const adopted = await listProjectKeyframes(
+    env,
+    job.project,
+    job.scenes,
+    job.created_at,
+    job.keyframe_config,
+    job.bundle_key,
+  );
   if (!adopted.length) return false; // nothing in R2 to adopt -- not actually complete; let the ceiling hard-fail
   const covered = new Set(adopted.map((k) => k.shot_id));
   const dropped = job.scenes.filter((s) => !covered.has(s.shot_id)).map((s) => s.shot_id);

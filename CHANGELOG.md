@@ -3,6 +3,15 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased
+
+### fix(provenance): keyframe hash includes bundle_key (cf#388)
+
+`keyframeProvenanceHash` used only `keyframe_config` on the premise that project is the
+content-addressed bundle stem. Project is caller-supplied on host doors, so two bundles could
+share a project namespace and cross-adopt keyframes. Hash now includes `bundle_key`. Call sites
+pass `job.bundle_key`.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
