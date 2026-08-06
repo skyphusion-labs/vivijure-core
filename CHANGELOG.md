@@ -3,9 +3,12 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.8.0
+## [1.8.0] -- 2026-08-06
 
-(Nothing released under this version yet. Entries land here until it is tagged.)
+MINOR. Opens the 1.8.0 line so Unreleased work is legal against an untagged version
+(core#159; 1.7.3 was already tagged). Ships everything that landed on main under the open
+version before the tag.
+
 ### feat(finish): persist CPU finish wall-clock as finish_elapsed_ms (cf#268)
 
 Containers emit `elapsedMs` (vivijure-cf PR #427). Core now:
@@ -16,19 +19,18 @@ Containers emit `elapsedMs` (vivijure-cf PR #427). Core now:
 
 Capacity planning only -- not billing, not GPU time (`execution_time_ms`). Requires cf migration
 0017 on the host D1. Version note: if core#144 (poll wait) also claims 1.8.0, stack and reversion.
-## [Unreleased]
 
 ### Chore: drop dead `sync:module-types` script (cf#315)
 
 The script copied from `../vivijure/src/modules/types.ts`, a path that no longer exists (hub is docs
 only). `src/modules/types.ts` is the in-tree canonical source; the script only failed and misled
 editors into treating the file as a copy that could be clobbered.
+
 ### Fixed: untrained `cast_loras` refusal names the voice-only path (mcp#29)
 
 `untrainedCastMessage` still tells the operator to train on the Cast page, and now also names
 `dialogue_lines[].voice_id` as the path for voice without an identity adapter. Agents that followed
 "pass cast_loras for voice" hit a hard 400 and were pointed at an expensive train they did not need.
-## Unreleased
 
 ### feat(cast): per-family adapter readiness on public cast rows (vivijure-cf#383)
 
@@ -41,6 +43,7 @@ output). Public cast rows now carry additive booleans derived from key presence:
 
 Legacy `lora_status` is unchanged (shared last training-job state). Prefer the new fields for
 selection / preflight. Helpers: `isSdxlLoraReady`, `isWanLoraReady`.
+
 ### Added: `FilmSummary.assemble_ms` + `output_ms` (vivijure-cf#365)
 
 Additive poll-surface fields. `film_output_seconds` already stored per-artifact content length
@@ -53,6 +56,7 @@ markFinishDone bills the final film_key as `renders.output_ms`). None of that re
 
 Absent = NOT MEASURED (never coalesced to zero). Distinct from `finish_elapsed_ms` (CPU wall-clock,
 cf#268). No new capture path; pure projection of an already-persisted map.
+
 ### Fixed: operator install-config patch can report discarded keys (vivijure-cf#387)
 
 `clampInstallPatch` still drops unknown / render-scope keys (invoke path stays forgiving). New pure
