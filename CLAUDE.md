@@ -32,7 +32,7 @@ Version: see root `package.json` / latest `vivijure-core-v*` tag / `RELEASES.md`
   on the new shape.
 - **Subpath imports for hosts.** Prefer `@skyphusion-labs/vivijure-core/film-orchestrator` over deep
   relative paths into `node_modules`.
-- **No HTTP routers here.** Routes, auth, AI providers, RunPod submit, scatter, demo mode stay in hosts.
+- **No HTTP routers here.** This package is not a Worker: no request routing or auth gates. Orchestration (scatter, film, RunPod submit helpers, module contracts) lives here; hosts wire platform + routes and adopt via npm. Demo mode is a host concern.
 - **Ignore Cursor `AGENTS.md`** if present.
 
 ## Commands

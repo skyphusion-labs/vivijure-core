@@ -324,12 +324,33 @@ export interface PollRequest {
   poll: string;
 }
 
+/**
+ * Closed terminal classifications a module poll may declare on `ok: false` (local#304 / cf#298
+ * parity). Additive -- hosts write `runpod_job_log.outcome` from this field without parsing
+ * English `error` strings. Anything outside the set is ignored by hosts (legacy path still
+ * derives cancelled from `runpodStatus === "CANCELLED"`).
+ */
+export type PollFailureOutcome = "backend-error" | "failed" | "gone" | "cancelled";
+
 /** A module's `/poll` response: still running, finished, or failed. The caller polls until it is no
  *  longer pending, so a Worker never holds one long-running `/invoke` request open. */
 export type PollResponse<O = unknown> =
   | { ok: true; pending: true }                   // still running, poll again
   | { ok: true; output: O }                       // finished
-  | { ok: false; error: string };
+  // Failure arm is ADDITIVE (no MODULE_API bump), same class as jobId on invoke (#318).
+  // Local/cf modules already carried `errorType` / `runpodStatus` via spread; naming them here
+  // documents the wire and unlocks an explicit `outcome` field (local#304) that TypeScript's
+  // excess-property check otherwise rejects on a bare `{ ok: false; error: string }`.
+  | {
+      ok: false;
+      error: string;
+      /** Structured closed outcome. Prefer over parsing `error` prose. */
+      outcome?: PollFailureOutcome;
+      /** RunPod envelope status string when known (cf#298). */
+      runpodStatus?: string;
+      /** Exception class from structured `error_type` when known (cf#298). */
+      errorType?: string;
+    };
 
 /** Body POSTed to a long-running module's `/cancel` to STOP an in-flight async job. The token is the
  *  same one `/invoke` returned (and `/poll` consumes); the module decodes it to ITS backend job id and
@@ -750,6 +771,10 @@ export interface FilmFinishOutput {
   // module that does not know its output length simply omits it, and conformance enforces the type
   // only when present.
   duration_seconds?: number;
+  // cf#268: wall-clock ms the finish container spent on this step (from container `elapsedMs`).
+  // OPTIONAL + additive: modules that do not forward it omit it; the core sums what it sees onto
+  // the job and writes renders.finish_elapsed_ms at finalize. Capacity planning only.
+  elapsed_ms?: number;
 }
 
 // --------------------------------------------------------------------------- registry view

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildDialogueLines } from "../src/dialogue-lines.js";
+import { buildDialogueLines, dialogueLinesFromBundleScenes } from "../src/dialogue-lines.js";
 
 const voices = { A: "orion", B: "hera" };
 
@@ -52,5 +52,142 @@ describe("buildDialogueLines", () => {
     ] };
     const lines = buildDialogueLines(sb, voices, ["shot_01", "shot_02"]);
     expect(lines.map((l) => l.shot_id)).toEqual(["shot_01", "shot_02"]);
+  });
+});
+
+
+describe("dialogueLinesFromBundleScenes (scatter #122 fallback helper)", () => {
+  it("builds lines from bundle scenes and skips silent shots", () => {
+    const lines = dialogueLinesFromBundleScenes(
+      [
+        { shot_id: "shot_01", prompt: "a", seconds: 4, dialogue: { slot: "A", text: "  Hello.  " } },
+        { shot_id: "shot_02", prompt: "b", seconds: 4 },
+        { shot_id: "shot_03", prompt: "c", seconds: 4, dialogue: { slot: "B", text: "World." } },
+      ],
+      { A: "voice-a", B: "voice-b" },
+    );
+    expect(lines.map((l) => ({ shot_id: l.shot_id, text: l.text }))).toEqual([
+      { shot_id: "shot_01", text: "Hello." },
+      { shot_id: "shot_03", text: "World." },
+    ]);
+    expect(lines[0].voice_id).toBeTruthy();
+    expect(lines[1].voice_id).toBeTruthy();
+  });
+});
+
+// --------------------------------------------------------------------------- resolveDialogueLines (scatter #122)
+// Mackaye CR: the pure helper dialogueLinesFromBundleScenes already existed on main; coverage must
+// hit resolveDialogueLines itself so removing the D1-empty fallback goes red.
+import { resolveDialogueLines } from "../src/scatter-orchestrator.js";
+import type { Env } from "../src/platform/index.js";
+
+/** D1 row shape that getProjectById / rowToProject expect (last_storyboard_json string). */
+function envWithProjectRow(row: Record<string, unknown> | null): Env {
+  return {
+    DB: {
+      prepare(_sql: string) {
+        return {
+          bind(..._args: unknown[]) {
+            return this;
+          },
+          async first() {
+            return row;
+          },
+          async all() {
+            return { results: row ? [row] : [] };
+          },
+          async run() {
+            return { success: true, meta: { changes: 0 } };
+          },
+        };
+      },
+    },
+  } as unknown as Env;
+}
+
+const bundleScenesForFallback = [
+  { shot_id: "shot_01", prompt: "a", seconds: 4, dialogue: { slot: "A", text: "From bundle." } },
+  { shot_id: "shot_02", prompt: "b", seconds: 4 },
+];
+const fallbackVoices = { A: "voice-a" };
+const scatterArgsBase = {
+  project: "p",
+  bundleKey: "bundles/p.tar.gz",
+  shotIds: ["shot_01", "shot_02"],
+  qualityTier: "standard" as const,
+};
+
+describe("resolveDialogueLines (scatter #122 D1-then-bundle fallback)", () => {
+  it("falls back to bundle dialogue when project_id is absent", async () => {
+    const lines = await resolveDialogueLines(
+      envWithProjectRow(null),
+      scatterArgsBase as never,
+      fallbackVoices,
+      ["shot_01", "shot_02"],
+      bundleScenesForFallback,
+    );
+    expect(lines.map((l) => l.text)).toEqual(["From bundle."]);
+  });
+
+  it("falls back to bundle when D1 project has no last_storyboard", async () => {
+    const lines = await resolveDialogueLines(
+      envWithProjectRow({
+        id: 1,
+        public_id: "p1",
+        slug: "p",
+        name: "p",
+        prefs_json: "{}",
+        last_storyboard_json: null,
+        created_at: "0",
+        updated_at: "0",
+      }),
+      { ...scatterArgsBase, project_id: 1 } as never,
+      fallbackVoices,
+      ["shot_01"],
+      bundleScenesForFallback,
+    );
+    expect(lines.map((l) => l.text)).toEqual(["From bundle."]);
+  });
+
+  it("falls back to bundle when D1 storyboard has no dialogue", async () => {
+    const silent = { scenes: [{ id: "shot_01", prompt: "silent" }] };
+    const lines = await resolveDialogueLines(
+      envWithProjectRow({
+        id: 1,
+        public_id: "p1",
+        slug: "p",
+        name: "p",
+        prefs_json: "{}",
+        last_storyboard_json: JSON.stringify(silent),
+        created_at: "0",
+        updated_at: "0",
+      }),
+      { ...scatterArgsBase, project_id: 1 } as never,
+      fallbackVoices,
+      ["shot_01"],
+      bundleScenesForFallback,
+    );
+    expect(lines.map((l) => l.text)).toEqual(["From bundle."]);
+  });
+
+  it("prefers D1 dialogue when present (bundle ignored)", async () => {
+    const d1 = { scenes: [{ id: "shot_01", dialogue: { slot: "A", text: "From D1." } }] };
+    const lines = await resolveDialogueLines(
+      envWithProjectRow({
+        id: 1,
+        public_id: "p1",
+        slug: "p",
+        name: "p",
+        prefs_json: "{}",
+        last_storyboard_json: JSON.stringify(d1),
+        created_at: "0",
+        updated_at: "0",
+      }),
+      { ...scatterArgsBase, project_id: 1 } as never,
+      fallbackVoices,
+      ["shot_01"],
+      bundleScenesForFallback,
+    );
+    expect(lines.map((l) => l.text)).toEqual(["From D1."]);
   });
 });
