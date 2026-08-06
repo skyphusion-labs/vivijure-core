@@ -771,6 +771,10 @@ export interface FilmFinishOutput {
   // module that does not know its output length simply omits it, and conformance enforces the type
   // only when present.
   duration_seconds?: number;
+  // cf#268: wall-clock ms the finish container spent on this step (from container `elapsedMs`).
+  // OPTIONAL + additive: modules that do not forward it omit it; the core sums what it sees onto
+  // the job and writes renders.finish_elapsed_ms at finalize. Capacity planning only.
+  elapsed_ms?: number;
 }
 
 // --------------------------------------------------------------------------- registry view

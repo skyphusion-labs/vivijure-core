@@ -84,6 +84,10 @@ export interface RenderRow {
   // Exposed on the read path deliberately -- 1.7.0 shipped the WRITE with no reader at all, so the
   // value could only be seen by whoever held account credentials and could query D1 directly.
   output_ms: number | null;
+  // CPU finish wall-clock sum in integer milliseconds (vivijure-cf migration 0017, cf#268). Capacity
+  // planning for owned-swarm finish iron -- NOT billing, and NOT GPU job time (that is
+  // execution_time_ms). NULL means NOT MEASURED. Never coalesce to zero.
+  finish_elapsed_ms: number | null;
   submitted_at: number;
   updated_at: number;
   completed_at: number | null;
@@ -163,6 +167,7 @@ interface RawRenderRow {
   execution_time_ms: number | null;
   delay_time_ms: number | null;
   output_ms: number | null;
+  finish_elapsed_ms: number | null;
   submitted_at: number;
   updated_at: number;
   completed_at: number | null;
@@ -183,7 +188,7 @@ interface RawRenderRow {
 const RENDER_ROW_COLUMNS = `
       r.id, r.public_id, r.job_id, r.project, r.bundle_key, r.quality_tier,
       r.render_overrides, r.status, r.output_key, r.output_json AS output,
-      r.error, r.execution_time_ms, r.delay_time_ms, r.output_ms,
+      r.error, r.execution_time_ms, r.delay_time_ms, r.output_ms, r.finish_elapsed_ms,
       r.submitted_at, r.updated_at, r.completed_at, r.label, r.keyframes_json, r.mode,
       r.locked_shots_json, r.project_id, r.folder_path, r.tags_json, r.parent_id,
       p.public_id AS project_public_id, pr.public_id AS parent_public_id`;
@@ -584,26 +589,37 @@ export async function claimFinish(env: Env, jobId: string): Promise<boolean> {
  *  there (last writer wins, per the ruling), and only an ABSENT value leaves an existing measurement
  *  alone. Passing null/undefined therefore means "I did not measure it", never "erase it". NULL in the
  *  column means NOT MEASURED and must never be read as zero -- a coalesce-to-0 in a billing query
- *  bills nothing for a real render. */
+ *  bills nothing for a real render.
+ *
+ * `finishElapsedMs`: CPU finish wall-clock sum in integer milliseconds (cf migration 0017, cf#268).
+ *  Capacity planning only -- not billing, not GPU time. Same COALESCE semantics: a supplied value
+ *  overwrites; null/undefined leaves an existing measurement alone. Zero is a valid measured
+ *  duration (a sub-millisecond job rounded down is still measured); reject only non-finite / negative. */
 export async function markFinishDone(
   env: Env,
   jobId: string,
   outputKey: string,
   outputJson: string,
   outputMs?: number | null,
+  finishElapsedMs?: number | null,
 ): Promise<void> {
   const now = nowSeconds();
   // Reject a non-positive or non-finite length rather than storing it: a 0 here is indistinguishable
   // from "no film" to the meter, and the contract already refuses <= 0 at the module boundary.
   const ms = typeof outputMs === "number" && Number.isFinite(outputMs) && outputMs > 0 ? Math.round(outputMs) : null;
+  const fem =
+    typeof finishElapsedMs === "number" && Number.isFinite(finishElapsedMs) && finishElapsedMs >= 0
+      ? Math.round(finishElapsedMs)
+      : null;
   await withD1Retry(() =>
     env.DB.prepare(
       `UPDATE renders SET output_key = ?, output_json = ?, status = 'COMPLETED',
        finish_state = 'done', completed_at = COALESCE(completed_at, ?), updated_at = ?,
-       output_ms = COALESCE(?, output_ms)
+       output_ms = COALESCE(?, output_ms),
+       finish_elapsed_ms = COALESCE(?, finish_elapsed_ms)
      WHERE job_id = ?`,
     )
-      .bind(outputKey, outputJson, now, now, ms, jobId)
+      .bind(outputKey, outputJson, now, now, ms, fem, jobId)
       .run(),
   );
 }
@@ -1033,6 +1049,8 @@ function normalizeRow(r: RawRenderRow): RenderRow {
       r.delay_time_ms == null ? null : Number(r.delay_time_ms),
     output_ms:
       r.output_ms == null ? null : Number(r.output_ms),
+    finish_elapsed_ms:
+      r.finish_elapsed_ms == null ? null : Number(r.finish_elapsed_ms),
     submitted_at: Number(r.submitted_at),
     updated_at: Number(r.updated_at),
     completed_at:
