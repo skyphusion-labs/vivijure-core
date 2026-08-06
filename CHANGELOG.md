@@ -3,6 +3,13 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [Unreleased]
+
+### Fixed: `PollResponse` failure arm names the fields hosts already read (local#304)
+
+ADDITIVE, no MODULE_API bump (same class as invoke `jobId` #318). Widens the failure arm with optional
+`outcome` (`PollFailureOutcome`), `runpodStatus`, and `errorType`. Runtime unchanged; contract catches up to the wire.
+
 ## [1.8.0] -- 2026-08-06
 
 MINOR. Opens the 1.8.0 line so Unreleased work is legal against an untagged version
