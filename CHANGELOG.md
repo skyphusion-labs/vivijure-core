@@ -3,6 +3,18 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.8.0
+
+### feat(finish): persist CPU finish wall-clock as finish_elapsed_ms (cf#268)
+
+Containers emit `elapsedMs` (vivijure-cf PR #427). Core now:
+
+- sums observed `elapsedMs` on assemble / mux / audio-mix (and optional `FilmFinishOutput.elapsed_ms`)
+- writes `renders.finish_elapsed_ms` in `markFinishDone` (COALESCE; null means not measured)
+- exposes the column on the full render read path
+
+Capacity planning only -- not billing, not GPU time (`execution_time_ms`). Requires cf migration
+0017 on the host D1. Version note: if core#144 (poll wait) also claims 1.8.0, stack and reversion.
 ## [Unreleased]
 
 ### Chore: drop dead `sync:module-types` script (cf#315)

@@ -190,6 +190,10 @@ export interface FilmJob {
   // in R2, #600) is never re-folded, so a value read only from a live dispatch result is lost exactly
   // on the films that took long enough to span ticks -- i.e. the expensive ones.
   film_output_seconds?: Record<string, number>;
+  // cf#268: running sum of CPU finish container wall-clock ms (assemble, mux, mix, film.finish, ...)
+  // observed on this job. Written once to renders.finish_elapsed_ms at markFinishDone. Capacity
+  // planning only -- not billing, not GPU time. Absent => not measured on any step.
+  finish_elapsed_ms?: number;
   // Loud, structured degrade when the video-finish tier (VIDEO_FINISH_VPC) is UNAVAILABLE at
   // assemble/mux -- the binding is unbound, or the container/tunnel was unreachable after the bounded
   // retry. The film COMPLETES (never hard-fails after the GPU spend, #519) delivering what was rendered:
