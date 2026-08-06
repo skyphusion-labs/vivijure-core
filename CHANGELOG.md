@@ -3,6 +3,16 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased
+
+### Fixed: tar mtime defaults to epoch so content-addressed bundle keys are stable (cf#460)
+
+`emitTar` used `Date.now()/1000` as the default ustar mtime. Tar header bytes are part of the
+hash that becomes the bundle key, so two byte-identical assemblies that straddled a wall-clock
+second produced different keys (measured flake on vivijure-cf upload-namespace interchange row B).
+Default is now Unix epoch `0`. Pass an explicit `mtime` only when a consumer needs wall-clock
+semantics. Control test forces a second-boundary with fake timers.
+
 ## [1.8.1] -- 2026-08-06
 
 PATCH. Everything on main after the 1.8.0 tag: PollResponse failure fields, keyframe provenance
