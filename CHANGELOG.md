@@ -3,12 +3,55 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## [Unreleased]
+## [1.8.1] -- 2026-08-06
 
-### Fixed: `PollResponse` failure arm names the fields hosts already read (local#304)
+PATCH. Everything on main after the 1.8.0 tag: PollResponse failure fields, keyframe provenance
+`bundle_key`, render `motion_backend` / `keyframe_backend`, scatter dialogue D1-empty fallback,
+and the docs audit.
+
+### Fixed: `PollResponse` failure arm names the fields hosts already read (local#304 / #160)
 
 ADDITIVE, no MODULE_API bump (same class as invoke `jobId` #318). Widens the failure arm with optional
 `outcome` (`PollFailureOutcome`), `runpodStatus`, and `errorType`. Runtime unchanged; contract catches up to the wire.
+
+### Fixed: keyframe provenance hash includes `bundle_key` (cf#388 / #151)
+
+**Cost:** including `bundle_key` invalidates every existing `.prov` sidecar (one-time GPU respend when keyframes re-render). Fails safe.
+
+`keyframeProvenanceHash` used only `keyframe_config` on the premise that project is the
+content-addressed bundle stem. Project is caller-supplied on host doors, so two bundles could
+share a project namespace and cross-adopt keyframes. Hash now includes `bundle_key`. Call sites
+pass `job.bundle_key`.
+
+### feat(renders): persist resolved motion_backend + keyframe_backend on the render row (cf#393 / #147)
+
+**REQUIRES** vivijure-cf migration `0018_render_motion_backend.sql` applied before any host dep bump that includes this SELECT/INSERT. Merging core alone is fine; pin without 0018 = `no such column` on every render read and insert.
+
+A completed render row carried `quality_tier` and `clip_deliveries` but not which motion (or
+keyframe) backend produced the film. Searching the library for `own-gpu` or `seedance` returned
+zero even when those backends had demonstrably rendered -- the column did not exist. Clip keys are
+GPU-assigned and are not a substitute.
+
+- `NewRenderRow.motionBackend` / `keyframeBackend` written at insert (`buildInsertRenderStmt`).
+- `RenderRow.motion_backend` / `keyframe_backend` on the full read path and public shape.
+- `FilmJob.keyframe_backend` (module name) set by `startFilmJob`; `filmRenderRowSeedFromJob` seeds both.
+- Scatter parent/shard inserts (and self-heal) carry the scatter job's resolved motion backend.
+
+Host half: vivijure-cf migration adds the D1 columns and submit/finalize call sites pass the
+resolved names. Dual-panel: vivijure-local needs the same SQLite columns later.
+
+### Fixed: scatter falls back to bundle dialogue when D1 has none (core#122 / #142)
+
+`resolveDialogueLines` preferred D1 only and returned `[]` without a project or with a silent
+storyboard, so a bundle-only scatter rendered silent while `storyboard.yaml` held voiced lines.
+Prefer D1 when it yields lines; otherwise use `dialogueLinesFromBundleScenes` (same helper as film
+bundle-only voicing), filtered to the scatter shot set. Tests exercise the D1-empty path so removing
+the fallback goes red.
+
+### Docs (#158)
+
+Package-scope sentence under "No HTTP routers" no longer claims routes/auth live here. README
+release example title matches the tag. Host naming + dash strip in docs/comments.
 
 ## [1.8.0] -- 2026-08-06
 
@@ -74,37 +117,6 @@ helpers for host routes that must refuse a silent no-op:
 
 Hosts (cf PATCH `/api/modules/:name/config`) should 400 when `dropped` is non-empty. No
 `setInstallConfig` return-shape change; gate before write.
-## Unreleased
-
-### fix(provenance): keyframe hash includes bundle_key (cf#388)
-
-**Cost:** including `bundle_key` invalidates every existing `.prov` sidecar (one-time GPU respend when keyframes re-render). Fails safe.
-
-
-`keyframeProvenanceHash` used only `keyframe_config` on the premise that project is the
-content-addressed bundle stem. Project is caller-supplied on host doors, so two bundles could
-share a project namespace and cross-adopt keyframes. Hash now includes `bundle_key`. Call sites
-pass `job.bundle_key`.
-### feat(renders): persist resolved motion_backend + keyframe_backend on the render row (vivijure-cf#393)
-
-**REQUIRES** vivijure-cf migration `0018_render_motion_backend.sql` applied before any host dep bump that includes this SELECT/INSERT. Merging core alone is fine; pin without 0018 = `no such column` on every render read and insert.
-
-
-A completed render row carried `quality_tier` and `clip_deliveries` but not which motion (or
-keyframe) backend produced the film. Searching the library for `own-gpu` or `seedance` returned
-zero even when those backends had demonstrably rendered -- the column did not exist. Clip keys are
-GPU-assigned and are not a substitute.
-
-- `NewRenderRow.motionBackend` / `keyframeBackend` written at insert (`buildInsertRenderStmt`).
-- `RenderRow.motion_backend` / `keyframe_backend` on the full read path and public shape.
-- `FilmJob.keyframe_backend` (module name) set by `startFilmJob`; `filmRenderRowSeedFromJob` seeds both.
-- Scatter parent/shard inserts (and self-heal) carry the scatter job's resolved motion backend.
-
-Host half: vivijure-cf migration adds the D1 columns and submit/finalize call sites pass the
-resolved names. Dual-panel: vivijure-local needs the same SQLite columns later.
-
-### Docs
-- **Docs audit 2026-08-05:** CLAUDE/ARCHITECTURE host naming; scatter/runpod in-core; dash strip.
 
 ## v1.7.3
 
