@@ -29,30 +29,38 @@ function memR2() {
   return { store, env, seed };
 }
 
-async function stamp(seed: ReturnType<typeof memR2>["seed"], key: string, keyframe_config: Record<string, unknown>) {
+const BUNDLE_A = "bundles/aaa111bbbb2222.tar.gz";
+const BUNDLE_B = "bundles/cccc3333dddd4444.tar.gz";
+
+async function stamp(
+  seed: ReturnType<typeof memR2>["seed"],
+  key: string,
+  keyframe_config: Record<string, unknown>,
+  bundle_key: string = BUNDLE_A,
+) {
   seed(key);
-  seed(provKey(key), { body: await keyframeProvenanceHash({ keyframe_config }) });
+  seed(provKey(key), { body: await keyframeProvenanceHash({ keyframe_config, bundle_key }) });
 }
 
 describe("#767 keyframe-adoption provenance", () => {
   it("does NOT adopt a keyframe a different-keyframe-config render wrote", async () => {
     const { env, seed } = memR2();
     await stamp(seed, KF, { quality_tier: "draft" });
-    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" });
+    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" }, BUNDLE_A);
     expect(kfs.length).toBe(0); // mismatch -> regenerate, never adopt the draft keyframe for a final render
   });
 
   it("adopts a keyframe stamped with the SAME keyframe config (legit cross-backend share preserved)", async () => {
     const { env, seed } = memR2();
     await stamp(seed, KF, { quality_tier: "final" });
-    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" });
+    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" }, BUNDLE_A);
     expect(kfs).toEqual([{ shot_id: "shot_01", keyframe_key: KF }]);
   });
 
   it("adopts an UNSTAMPED legacy keyframe (absent sidecar -> #661 freshness path, back-compat)", async () => {
     const { env, seed } = memR2();
     seed(KF); // no .prov sidecar
-    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" });
+    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" }, BUNDLE_A);
     expect(kfs).toEqual([{ shot_id: "shot_01", keyframe_key: KF }]);
   });
 
@@ -61,5 +69,23 @@ describe("#767 keyframe-adoption provenance", () => {
     await stamp(seed, KF, { quality_tier: "draft" });
     const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW); // no config arg
     expect(kfs).toEqual([{ shot_id: "shot_01", keyframe_key: KF }]);
+  });
+});
+
+describe("cf#388 keyframe provenance includes bundle identity", () => {
+  it("same keyframe_config under two different bundles does NOT cross-adopt", async () => {
+    // Caller-supplied project "proj" for both; only bundle_key differs. Pre-fix hash matched.
+    const { env, seed } = memR2();
+    await stamp(seed, KF, { quality_tier: "final" }, BUNDLE_A);
+    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" }, BUNDLE_B);
+    expect(kfs.length).toBe(0);
+  });
+
+  it("hashes differ when only bundle_key differs", async () => {
+    const cfg = { quality_tier: "final" };
+    const a = await keyframeProvenanceHash({ keyframe_config: cfg, bundle_key: BUNDLE_A });
+    const b = await keyframeProvenanceHash({ keyframe_config: cfg, bundle_key: BUNDLE_B });
+    expect(a).not.toBe(b);
+    expect(a).toHaveLength(64);
   });
 });

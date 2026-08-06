@@ -48,6 +48,13 @@ export interface NewRenderRow {
   // v0.145.2: FK to the keyframes-only preview render this row was derived
   // from (finalize / animate-cloud children). NULL on a top-level render.
   parentId?: number | null;
+  // cf#393: RESOLVED motion.backend module name known at submit (seedance, own-gpu, ...).
+  // NULL when the submit has no motion leg (keyframes-only) or the backend was never resolved.
+  // Do not backfill from clip-key parsing -- GPU-assigned tokens are not module names.
+  motionBackend?: string | null;
+  // cf#393 / #380: RESOLVED keyframe module name known at submit. NULL when none was selected
+  // (from-keyframes path, keyframe-less adopt, or legacy).
+  keyframeBackend?: string | null;
 }
 
 // One uploaded SDXL keyframe (v0.39.0). The GPU side writes these to R2
@@ -71,6 +78,13 @@ export interface RenderRow {
   project: string;
   bundle_key: string;
   quality_tier: string;
+  // cf#393: resolved motion.backend module name at submit. NULL = not recorded (legacy rows,
+  // keyframes-only without a motion leg, or a path that never resolved a backend). Exposed on the
+  // public read path so cost attribution / audit ("which backend rendered this film?") is answerable
+  // from the library without re-deriving from clip keys (which are GPU-assigned and not module names).
+  motion_backend: string | null;
+  // cf#393 / #380: resolved keyframe module name at submit. NULL = not recorded.
+  keyframe_backend: string | null;
   render_overrides: Record<string, unknown> | null;
   status: string;
   output_key: string | null;
@@ -84,6 +98,10 @@ export interface RenderRow {
   // Exposed on the read path deliberately -- 1.7.0 shipped the WRITE with no reader at all, so the
   // value could only be seen by whoever held account credentials and could query D1 directly.
   output_ms: number | null;
+  // CPU finish wall-clock sum in integer milliseconds (vivijure-cf migration 0017, cf#268). Capacity
+  // planning for owned-swarm finish iron -- NOT billing, and NOT GPU job time (that is
+  // execution_time_ms). NULL means NOT MEASURED. Never coalesce to zero.
+  finish_elapsed_ms: number | null;
   submitted_at: number;
   updated_at: number;
   completed_at: number | null;
@@ -155,6 +173,8 @@ interface RawRenderRow {
   project: string | null;
   bundle_key: string | null;
   quality_tier: string | null;
+  motion_backend: string | null;
+  keyframe_backend: string | null;
   render_overrides: string | null;
   status: string;
   output_key: string | null;
@@ -163,6 +183,7 @@ interface RawRenderRow {
   execution_time_ms: number | null;
   delay_time_ms: number | null;
   output_ms: number | null;
+  finish_elapsed_ms: number | null;
   submitted_at: number;
   updated_at: number;
   completed_at: number | null;
@@ -182,8 +203,9 @@ interface RawRenderRow {
 // cannot drift apart independently in two call sites.
 const RENDER_ROW_COLUMNS = `
       r.id, r.public_id, r.job_id, r.project, r.bundle_key, r.quality_tier,
+      r.motion_backend, r.keyframe_backend,
       r.render_overrides, r.status, r.output_key, r.output_json AS output,
-      r.error, r.execution_time_ms, r.delay_time_ms, r.output_ms,
+      r.error, r.execution_time_ms, r.delay_time_ms, r.output_ms, r.finish_elapsed_ms,
       r.submitted_at, r.updated_at, r.completed_at, r.label, r.keyframes_json, r.mode,
       r.locked_shots_json, r.project_id, r.folder_path, r.tags_json, r.parent_id,
       p.public_id AS project_public_id, pr.public_id AS parent_public_id`;
@@ -258,6 +280,13 @@ export function classifyMissingJob(
 /** Build the bound INSERT for a render row, idempotent on job_id (ON CONFLICT DO NOTHING).
  *  Returned UNEXECUTED so a caller can `.run()` it directly (insertRender) or compose several
  *  into one all-or-nothing `env.DB.batch([...])` -- the atomic scatter submit (#289). */
+/** Normalize an optional backend module name for storage: trim, empty -> null. */
+function normalizeBackendName(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const t = raw.trim();
+  return t.length > 0 ? t : null;
+}
+
 export function buildInsertRenderStmt(env: Env, row: NewRenderRow) {
   const now = nowSeconds();
   const overrides = row.renderOverrides ? JSON.stringify(row.renderOverrides) : null;
@@ -268,12 +297,15 @@ export function buildInsertRenderStmt(env: Env, row: NewRenderRow) {
   const parentId = typeof row.parentId === "number" && row.parentId > 0
     ? row.parentId
     : null;
+  const motionBackend = normalizeBackendName(row.motionBackend);
+  const keyframeBackend = normalizeBackendName(row.keyframeBackend);
   return env.DB.prepare(
     `INSERT INTO renders (
       public_id, job_id, project, bundle_key, quality_tier,
+      motion_backend, keyframe_backend,
       render_overrides, status, submitted_at, updated_at, mode,
       project_id, parent_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(job_id) DO NOTHING`,
   ).bind(
     newPublicId(),
@@ -281,6 +313,8 @@ export function buildInsertRenderStmt(env: Env, row: NewRenderRow) {
     row.project,
     row.bundleKey,
     row.qualityTier,
+    motionBackend,
+    keyframeBackend,
     overrides,
     row.status,
     now,
@@ -584,26 +618,37 @@ export async function claimFinish(env: Env, jobId: string): Promise<boolean> {
  *  there (last writer wins, per the ruling), and only an ABSENT value leaves an existing measurement
  *  alone. Passing null/undefined therefore means "I did not measure it", never "erase it". NULL in the
  *  column means NOT MEASURED and must never be read as zero -- a coalesce-to-0 in a billing query
- *  bills nothing for a real render. */
+ *  bills nothing for a real render.
+ *
+ * `finishElapsedMs`: CPU finish wall-clock sum in integer milliseconds (cf migration 0017, cf#268).
+ *  Capacity planning only -- not billing, not GPU time. Same COALESCE semantics: a supplied value
+ *  overwrites; null/undefined leaves an existing measurement alone. Zero is a valid measured
+ *  duration (a sub-millisecond job rounded down is still measured); reject only non-finite / negative. */
 export async function markFinishDone(
   env: Env,
   jobId: string,
   outputKey: string,
   outputJson: string,
   outputMs?: number | null,
+  finishElapsedMs?: number | null,
 ): Promise<void> {
   const now = nowSeconds();
   // Reject a non-positive or non-finite length rather than storing it: a 0 here is indistinguishable
   // from "no film" to the meter, and the contract already refuses <= 0 at the module boundary.
   const ms = typeof outputMs === "number" && Number.isFinite(outputMs) && outputMs > 0 ? Math.round(outputMs) : null;
+  const fem =
+    typeof finishElapsedMs === "number" && Number.isFinite(finishElapsedMs) && finishElapsedMs >= 0
+      ? Math.round(finishElapsedMs)
+      : null;
   await withD1Retry(() =>
     env.DB.prepare(
       `UPDATE renders SET output_key = ?, output_json = ?, status = 'COMPLETED',
        finish_state = 'done', completed_at = COALESCE(completed_at, ?), updated_at = ?,
-       output_ms = COALESCE(?, output_ms)
+       output_ms = COALESCE(?, output_ms),
+       finish_elapsed_ms = COALESCE(?, finish_elapsed_ms)
      WHERE job_id = ?`,
     )
-      .bind(outputKey, outputJson, now, now, ms, jobId)
+      .bind(outputKey, outputJson, now, now, ms, fem, jobId)
       .run(),
   );
 }
@@ -1022,6 +1067,17 @@ function normalizeRow(r: RawRenderRow): RenderRow {
     project: r.project == null ? "" : String(r.project),
     bundle_key: r.bundle_key == null ? "" : String(r.bundle_key),
     quality_tier: r.quality_tier == null ? "" : String(r.quality_tier),
+    // cf#393: SQL NULL value -> null. (A missing COLUMN makes the SELECT throw before normalizeRow;
+    // pre-migration hosts must apply cf migration 0018 first -- that case never reaches here.) Empty string also null so a
+    // hand-edited blank is not a truthy module name.
+    motion_backend:
+      typeof r.motion_backend === "string" && r.motion_backend.trim().length > 0
+        ? r.motion_backend.trim()
+        : null,
+    keyframe_backend:
+      typeof r.keyframe_backend === "string" && r.keyframe_backend.trim().length > 0
+        ? r.keyframe_backend.trim()
+        : null,
     render_overrides: overrides,
     status: String(r.status),
     output_key: r.output_key ? String(r.output_key) : null,
@@ -1033,6 +1089,8 @@ function normalizeRow(r: RawRenderRow): RenderRow {
       r.delay_time_ms == null ? null : Number(r.delay_time_ms),
     output_ms:
       r.output_ms == null ? null : Number(r.output_ms),
+    finish_elapsed_ms:
+      r.finish_elapsed_ms == null ? null : Number(r.finish_elapsed_ms),
     submitted_at: Number(r.submitted_at),
     updated_at: Number(r.updated_at),
     completed_at:

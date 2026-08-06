@@ -6,6 +6,11 @@
 // globals, different moduleResolution settings). These declarations give the test file the same
 // contract the alias promises at runtime -- a MANIFEST conforming to ModuleManifest -- without
 // pulling a foreign codebase into this program (core#101).
+//
+// HAND-WRITTEN, so it can drift. The structural guard is tests/vivijure-modules-dts-drift.test.ts
+// (core#105): alias set == declare-module set, each body is only `export const MANIFEST:
+// ModuleManifest`, and the real MANIFEST from each module validates as ModuleManifest at runtime.
+// Prefer updating that test's REAL_MANIFESTS map when adding a module, not inventing fields here.
 declare module "vivijure-modules/keyframe" {
   import type { ModuleManifest } from "../src/modules/types.js";
   export const MANIFEST: ModuleManifest;

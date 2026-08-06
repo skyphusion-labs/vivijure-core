@@ -18,6 +18,7 @@ import {
   resolvePlannedSeconds,
   findClipDurationShortfalls,
   outputMsFromSeconds,
+  accumulateFinishElapsed,
   type FilmJob,
   type FilmScene,
 } from "./film-orchestrator.js";
@@ -254,6 +255,8 @@ export async function finalizeScatterSubmit(
           status: "IN_QUEUE",
           mode: "full",
           projectId: scatterJob.project_id ?? null,
+          // cf#393: scatter parent + shards share the resolved motion backend.
+          motionBackend: scatterJob.motion_backend ?? null,
         }),
       { label: "scatter.submit.parent" },
     );
@@ -270,6 +273,7 @@ export async function finalizeScatterSubmit(
           mode: "full",
           projectId: scatterJob.project_id ?? null,
           parentId: parentId ?? undefined,
+          motionBackend: scatterJob.motion_backend ?? null,
         }),
       );
       await withD1Retry(() => env.DB.batch!(stmts), { label: "scatter.submit.shards" });
@@ -309,7 +313,7 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
     job.error = `scatter audio mux failed: HTTP ${resp?.status ?? "?"}`;
     return;
   }
-  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number };
+  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number; elapsedMs?: number };
   try {
     body = (await resp.json()) as typeof body;
   } catch {
@@ -322,6 +326,11 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
     job.error = `scatter mux failed: ${body.error || "unknown"}`;
     return;
   }
+  if (typeof body.durationSeconds === "number" && body.durationSeconds > 0) {
+    job.film_output_seconds ??= {};
+    job.film_output_seconds[outKey] = body.durationSeconds;
+  }
+  accumulateFinishElapsed(job, body.elapsedMs);
   job.film_key = outKey;
   job.phase = "done";
 }
@@ -391,6 +400,8 @@ async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<boolean>
     // Persisted per FILM ARTIFACT KEY across gather ticks, for the same adoption reason as prepends.
     durations: job.film_output_seconds,
     persistDuration: async (key, seconds) => { job.film_output_seconds![key] = seconds; await saveScatterJob(env, job); },
+    // cf#268: sum module-forwarded container elapsed onto the scatter job for finalize.
+    persistElapsed: async (ms) => { accumulateFinishElapsed(job, ms); await saveScatterJob(env, job); },
   });
   if (!r.ran) { job.film_finish = { applied: [], errors: [] }; return true; } // no film.finish module -> mark + skip -> complete
   if (r.errors.length > 0) console.warn(`scatter film.finish errors for ${job.scatter_id}: ${r.errors.join("; ")}`);
@@ -445,7 +456,7 @@ async function assembleScatterClips(
     job.error = `video-finish gather returned ${resp?.status ?? "?"}`;
     return;
   }
-  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number; clipDurations?: number[] };
+  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number; clipDurations?: number[]; elapsedMs?: number };
   try {
     body = (await resp.json()) as typeof body;
   } catch {
@@ -458,6 +469,7 @@ async function assembleScatterClips(
     job.error = `video-finish gather failed: ${body.error || "unknown"}`;
     return;
   }
+  accumulateFinishElapsed(job, body.elapsedMs);
   // #697/#698: capture the ACTUAL per-clip assembled seconds (submit order == gather clips order) and
   // gate each shot against its plan, the same per-shot honesty gate as the single-film assemble. The
   // film-level ratio check below still catches a gross whole-film drop; this catches ONE truncated shot
@@ -520,11 +532,18 @@ async function assembleScatterClips(
 
 async function finalizeScatterDone(env: Env, job: ScatterJob): Promise<void> {
   if (!job.film_key) return;
-  await markFinishDone(env, job.scatter_id, job.film_key, JSON.stringify({
-    output_key: job.film_key,
-    project: job.project,
-    mode: "full",
-  }), outputMsFromSeconds(job.film_output_seconds?.[job.film_key]));
+  await markFinishDone(
+    env,
+    job.scatter_id,
+    job.film_key,
+    JSON.stringify({
+      output_key: job.film_key,
+      project: job.project,
+      mode: "full",
+    }),
+    outputMsFromSeconds(job.film_output_seconds?.[job.film_key]),
+    job.finish_elapsed_ms,
+  );
   await fireNotifyForScatter(env, job);
 }
 
@@ -607,6 +626,7 @@ export async function ensureScatterRenderRow(
         status: view.status,
         mode: "full",
         projectId: job.project_id ?? null,
+        motionBackend: job.motion_backend ?? null,
       });
       if (view.status !== "IN_PROGRESS") await updateRenderFromView(env, view, ctx);
       console.log(JSON.stringify({ ev: "scatter.selfheal.row", scatter_id: job.scatter_id, status: view.status }));
@@ -632,6 +652,7 @@ export async function ensureScatterRenderRow(
           mode: "full",
           projectId: job.project_id ?? null,
           parentId,
+          motionBackend: job.motion_backend ?? null,
         });
         console.log(JSON.stringify({ ev: "scatter.selfheal.shard", scatter_id: job.scatter_id, shard: shardFilmId }));
       }

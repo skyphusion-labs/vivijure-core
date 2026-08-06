@@ -36,17 +36,45 @@ export function installFieldKeys(schema: ConfigSchema | undefined): string[] {
   return Object.keys(installSubschema(schema));
 }
 
+/** Keys present in `patch` that are not install-scope for this schema (unknown names or render-scope
+ *  fields). Order follows `Object.keys(patch)`. Empty when patch is undefined/empty or every key is
+ *  writable. Hosts that want a strict operator PATCH should 400 when this is non-empty rather than
+ *  silently accepting a no-op (vivijure-cf#387). */
+export function droppedInstallKeys(
+  schema: ConfigSchema | undefined,
+  patch: Record<string, unknown> | undefined,
+): string[] {
+  if (!patch) return [];
+  const allowed = new Set(installFieldKeys(schema));
+  return Object.keys(patch).filter((k) => !allowed.has(k));
+}
+
 /** Clamp an incoming patch to the module's install subschema, dropping unknown / render-scope keys.
  *  Reuses the SAME validateConfig clamp the invoke path uses, so a stored value can never violate the
- *  contract. Returns the full install-config (every install field, missing ones at their default). */
+ *  contract. Returns the full install-config (every install field, missing ones at their default).
+ *  For operator-facing writes that must refuse silent discards, use `clampInstallPatchDetailed`. */
 export function clampInstallPatch(
   schema: ConfigSchema | undefined,
   current: Record<string, unknown>,
   patch: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
+  return clampInstallPatchDetailed(schema, current, patch).next;
+}
+
+/** Like `clampInstallPatch`, but also returns the keys that were present in the patch and discarded
+ *  (unknown or render-scope). Invoke-time clamping stays forgiving via `clampInstallPatch`; operator
+ *  PATCH handlers should inspect `dropped` and refuse the write when non-empty. */
+export function clampInstallPatchDetailed(
+  schema: ConfigSchema | undefined,
+  current: Record<string, unknown>,
+  patch: Record<string, unknown> | undefined,
+): { next: Record<string, unknown>; dropped: string[] } {
   const sub = installSubschema(schema);
   const merged = { ...current, ...(patch ?? {}) };
-  return validateConfig(sub, merged);
+  return {
+    next: validateConfig(sub, merged),
+    dropped: droppedInstallKeys(schema, patch),
+  };
 }
 
 // --------------------------------------------------------------------------- D1 (verified live)
@@ -84,7 +112,11 @@ export async function loadInstallConfig(
 }
 
 /** Persist an operator PATCH: clamp to the install subschema (unknown / render keys dropped), then
- *  upsert each field. Returns the resulting full install-config view. */
+ *  upsert each field. Returns the resulting full install-config view.
+ *
+ *  Does NOT refuse unknown keys -- that is the host route's job (call `droppedInstallKeys` or
+ *  `clampInstallPatchDetailed` first and 400). Keeping this function forgiving means invoke-time
+ *  reloads and empty patches stay no-ops without inventing a second write path. */
 export async function setInstallConfig(
   env: Env,
   moduleName: string,
@@ -93,7 +125,7 @@ export async function setInstallConfig(
 ): Promise<Record<string, unknown>> {
   const sub = installSubschema(schema);
   const current = await readStored(env, moduleName);
-  const next = clampInstallPatch(schema, current, patch);
+  const { next } = clampInstallPatchDetailed(schema, current, patch);
   const now = Math.floor(Date.now() / 1000);
   const stmt = env.DB.prepare(
     `INSERT INTO operator_module_config (module_name, field_key, value_json, updated_at)
