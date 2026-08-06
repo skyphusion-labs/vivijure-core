@@ -758,6 +758,8 @@ interface FinishContainerResult {
   hasAudio?: boolean;
   // #697/#698: ACTUAL per-clip assembled seconds in submit order; absent on an older container build.
   clipDurations?: number[];
+  // cf#268: wall-clock ms for this container request. Absent on older container builds.
+  elapsedMs?: number;
 }
 
 /** Call the video-finish container's POST /finish, retrying on a transient gateway status -- 503 (a
@@ -813,6 +815,8 @@ interface AudioMixResult {
   lufs?: number;
   ducked?: boolean;
   error?: string;
+  // cf#268: wall-clock ms for this container request. Absent on older container builds.
+  elapsedMs?: number;
 }
 
 /** POST to the always-on fleet audio-mix container (/mix), mirroring callVideoFinish: a private
@@ -894,6 +898,7 @@ async function mixFilmAudio(env: Env, job: FilmJob, videoKey: string, bedKey: st
     console.warn(`film ${job.film_id}: audio-mix not ok (${body.error ?? "no key"}); degrading to single-track mux`);
     return null;
   }
+  accumulateFinishElapsed(job, body.elapsedMs);
   return mixKey; // mixed dialogue + ducked music + loudnorm; remux this in place of the bare bed
 }
 
@@ -995,7 +1000,15 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
     try {
       // The length of the artifact actually delivered: a lookup of the FINAL film key, so whichever
       // stage wrote last supplies the number (Conrad, 2026-08-02: "we bill on the last writer").
-      await markFinishDone(env, job.film_id, filmKey, JSON.stringify(out), outputMsFromSeconds(job.film_output_seconds?.[filmKey]));
+      // finish_elapsed_ms is the SUM of CPU finish container wall-clocks observed on this job (cf#268).
+      await markFinishDone(
+        env,
+        job.film_id,
+        filmKey,
+        JSON.stringify(out),
+        outputMsFromSeconds(job.film_output_seconds?.[filmKey]),
+        job.finish_elapsed_ms,
+      );
     } catch (e) {
       // Bookkeeping must not fail a delivered film; poll/sweep updateRenderFromView backfills.
       console.warn(
@@ -1199,6 +1212,25 @@ export function outputMsFromSeconds(seconds: number | undefined): number | null 
   return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null;
 }
 
+/**
+ * Normalize a container `elapsedMs` (cf#268) to a non-negative integer, or null when unusable.
+ * Zero is allowed (sub-ms job still measured). Negative / non-finite rejected.
+ */
+export function normalizeFinishElapsedMs(elapsedMs: unknown): number | null {
+  if (typeof elapsedMs !== "number" || !Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
+  return Math.round(elapsedMs);
+}
+
+/** Add one container's wall-clock ms onto the job's running finish-elapsed sum (cf#268). */
+export function accumulateFinishElapsed(
+  job: { finish_elapsed_ms?: number },
+  elapsedMs: unknown,
+): void {
+  const n = normalizeFinishElapsedMs(elapsedMs);
+  if (n === null) return;
+  job.finish_elapsed_ms = (job.finish_elapsed_ms ?? 0) + n;
+}
+
 /** #663: after the film.finish chain, produce the FINAL .srt subtitle sidecar. The subtitle module
  *  (ui.order 5) writes its sidecar timed to the pre-card assembled film; a later film-titles step
  *  (ui.order 10) prepends a title card, shifting the FINAL film. This reads the raw per-step sidecar
@@ -1284,6 +1316,8 @@ export async function runFilmFinish(
     // in-memory only (single tick / non-persisting callers).
     durations?: Record<string, number>;
     persistDuration?: (key: string, seconds: number) => Promise<void>;
+    // cf#268: optional per-step CPU finish elapsed ms from FilmFinishOutput.elapsed_ms.
+    persistElapsed?: (elapsedMs: number) => Promise<void>;
     now?: number;
   },
 ): Promise<RunFilmFinishResult> {
@@ -1354,6 +1388,9 @@ export async function runFilmFinish(
     // differ and the length belongs to the artifact that exists.
     const ds = typeof out.duration_seconds === "number" && Number.isFinite(out.duration_seconds) && out.duration_seconds > 0 ? out.duration_seconds : 0;
     if (ds > 0) await recordDuration(curKey, ds);
+    // cf#268: module-forwarded container wall-clock (optional).
+    const em = normalizeFinishElapsedMs(out.elapsed_ms);
+    if (em !== null) await opts?.persistElapsed?.(em);
     return true;
   };
 
@@ -1508,6 +1545,8 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
     // Persisted per FILM ARTIFACT KEY so an adopted step still yields a length on a later tick.
     durations: job.film_output_seconds,
     persistDuration: async (key, seconds) => { job.film_output_seconds![key] = seconds; await putFilm(env, job); },
+    // cf#268: sum module-forwarded container elapsed onto the job for renders.finish_elapsed_ms.
+    persistElapsed: async (ms) => { accumulateFinishElapsed(job, ms); await putFilm(env, job); },
   });
   if (!r.ran) return true; // no film.finish module installed -> leave job untouched (identical to pre-refactor)
   if (r.errors.length > 0) {
@@ -1685,6 +1724,7 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
     job.film_output_seconds ??= {};
     job.film_output_seconds[outKey] = body.durationSeconds;
   }
+  accumulateFinishElapsed(job, body.elapsedMs);
   job.film_key = outKey;
   await transitionToDone(env, job, preModules);
 }
@@ -1890,6 +1930,7 @@ async function enterAssemblePhase(
     job.film_output_seconds ??= {};
     job.film_output_seconds[outputKey] = body.durationSeconds;
   }
+  accumulateFinishElapsed(job, body.elapsedMs);
   // #697/#698: capture the ACTUAL per-clip assembled seconds the container probed (submit order ==
   // finalClips order). Persisted so the later film.finish chain times captions to the real cut (#698).
   const actual = mapClipDurationsToShots(finalClips, body.clipDurations);
