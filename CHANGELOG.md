@@ -71,6 +71,9 @@ Hosts (cf PATCH `/api/modules/:name/config`) should 400 when `dropped` is non-em
 
 ### fix(provenance): keyframe hash includes bundle_key (cf#388)
 
+**Cost:** including `bundle_key` invalidates every existing `.prov` sidecar (one-time GPU respend when keyframes re-render). Fails safe.
+
+
 `keyframeProvenanceHash` used only `keyframe_config` on the premise that project is the
 content-addressed bundle stem. Project is caller-supplied on host doors, so two bundles could
 share a project namespace and cross-adopt keyframes. Hash now includes `bundle_key`. Call sites
