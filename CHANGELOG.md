@@ -5,6 +5,11 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## [Unreleased]
 
+### Chore: drop dead `sync:module-types` script (cf#315)
+
+The script copied from `../vivijure/src/modules/types.ts`, a path that no longer exists (hub is docs
+only). `src/modules/types.ts` is the in-tree canonical source; the script only failed and misled
+editors into treating the file as a copy that could be clobbered.
 ### Fixed: untrained `cast_loras` refusal names the voice-only path (mcp#29)
 
 `untrainedCastMessage` still tells the operator to train on the Cast page, and now also names
