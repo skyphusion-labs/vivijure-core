@@ -1067,7 +1067,8 @@ function normalizeRow(r: RawRenderRow): RenderRow {
     project: r.project == null ? "" : String(r.project),
     bundle_key: r.bundle_key == null ? "" : String(r.bundle_key),
     quality_tier: r.quality_tier == null ? "" : String(r.quality_tier),
-    // cf#393: SQL NULL / missing column (pre-migration row) -> null. Empty string also null so a
+    // cf#393: SQL NULL value -> null. (A missing COLUMN makes the SELECT throw before normalizeRow;
+    // pre-migration hosts must apply cf migration 0018 first -- that case never reaches here.) Empty string also null so a
     // hand-edited blank is not a truthy module name.
     motion_backend:
       typeof r.motion_backend === "string" && r.motion_backend.trim().length > 0
