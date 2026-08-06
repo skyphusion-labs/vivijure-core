@@ -80,9 +80,9 @@ npm run typecheck && npm test
 ensure repo secret `NPM_TOKEN` is set, then (example for the current line; use the version you ship):
 
 ```bash
-git tag vivijure-core-v1.7.2
-git push origin vivijure-core-v1.7.2
-gh release create vivijure-core-v1.7.2 --title "vivijure-core v1.7.2" --notes-file notes.md
+git tag vivijure-core-v1.7.3
+git push origin vivijure-core-v1.7.3
+gh release create vivijure-core-v1.7.3 --title "vivijure-core v1.7.3" --notes-file notes.md
 ```
 
 Tag push triggers **Publish npm package** (`.github/workflows/publish-npm.yml`). GitHub Releases are

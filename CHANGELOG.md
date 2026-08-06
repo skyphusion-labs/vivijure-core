@@ -103,6 +103,9 @@ GPU-assigned and are not a substitute.
 Host half: vivijure-cf migration adds the D1 columns and submit/finalize call sites pass the
 resolved names. Dual-panel: vivijure-local needs the same SQLite columns later.
 
+### Docs
+- **Docs audit 2026-08-05:** CLAUDE/ARCHITECTURE host naming; scatter/runpod in-core; dash strip.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
