@@ -47,16 +47,25 @@ export type ChangelogClaim = {
  *   ## [1.7.2]
  */
 export function topChangelogClaim(changelog: string): ChangelogClaim | null {
+  // Parse ONLY the first ## heading. Alternating whole-file regexes with /m wrongly pick a later
+  // ## vX.Y.Z (e.g. "## v1.7.3") over a top "## [1.8.1]" because the unbracketed form is tried
+  // first and matches mid-file. Newest-first changelogs always state the live claim in the first
+  // ## line.
+  const lineMatch = /^##\s+(.+)$/m.exec(changelog);
+  if (!lineMatch) return null;
+  const rest = lineMatch[1].trim();
   // No trailing \b after \] -- word-boundary fails between ] and newline (## [Unreleased]).
-  const m =
-    /^##\s+(?:\[Unreleased\]|Unreleased)(?:\s*\/\s*v?(\d+\.\d+\.\d+))?(?:\s|$)/m.exec(changelog) ??
-    /^##\s+v(\d+\.\d+\.\d+)\b/m.exec(changelog) ??
-    /^##\s+\[(\d+\.\d+\.\d+)\]/m.exec(changelog);
-  if (!m) return null;
-  const full = m[0];
-  const unreleased = /Unreleased/i.test(full);
-  const version = m[1] ?? null;
-  return { version, unreleased };
+  const unreleased =
+    /^(?:\[Unreleased\]|Unreleased)(?:\s*\/\s*v?(\d+\.\d+\.\d+))?(?:\s|$)/i.exec(rest);
+  if (unreleased) {
+    return { version: unreleased[1] ?? null, unreleased: true };
+  }
+  const released =
+    /^v(\d+\.\d+\.\d+)\b/.exec(rest) ?? /^\[(\d+\.\d+\.\d+)\]/.exec(rest);
+  if (released) {
+    return { version: released[1], unreleased: false };
+  }
+  return null;
 }
 
 /** Effective version the changelog claims for comparison to package.json. */
@@ -136,6 +145,14 @@ describe("package.json version matches the top CHANGELOG claim (core#119)", () =
       version: "1.7.2",
       unreleased: false,
     });
+  });
+
+  it("CONTROL: top bracketed heading wins over a later bare ## vX.Y.Z (1.8.1 shape)", () => {
+    // Real CHANGELOG after the 1.8.1 cut: ## [1.8.1] first, ## v1.7.3 still present lower down.
+    // The old whole-file alternation picked 1.7.3 and failed main green.
+    const sample =
+      "# Changelog\n\n## [1.8.1] -- 2026-08-06\n\nnotes\n\n## [1.8.0] -- 2026-08-06\n\n## v1.7.3\n\nPATCH\n";
+    expect(topChangelogClaim(sample)).toEqual({ version: "1.8.1", unreleased: false });
   });
 
   it("CONTROL: Unreleased / vX and bare Unreleased", () => {
