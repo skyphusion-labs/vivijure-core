@@ -71,6 +71,9 @@ Hosts (cf PATCH `/api/modules/:name/config`) should 400 when `dropped` is non-em
 
 ### feat(renders): persist resolved motion_backend + keyframe_backend on the render row (vivijure-cf#393)
 
+**REQUIRES** vivijure-cf migration `0018_render_motion_backend.sql` applied before any host dep bump that includes this SELECT/INSERT. Merging core alone is fine; pin without 0018 = `no such column` on every render read and insert.
+
+
 A completed render row carried `quality_tier` and `clip_deliveries` but not which motion (or
 keyframe) backend produced the film. Searching the library for `own-gpu` or `seedance` returned
 zero even when those backends had demonstrably rendered -- the column did not exist. Clip keys are
