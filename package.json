@@ -1,6 +1,6 @@
 {
   "name": "@skyphusion-labs/vivijure-core",
-  "version": "1.7.3",
+  "version": "1.8.0",
   "description": "Shared Vivijure orchestration unifying vivijure-cf and vivijure-local: module registry, film pipeline, Platform ICD.",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -54,7 +54,6 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage.enabled=true --coverage.provider=v8 --coverage.reporter=cobertura --coverage.reporter=text",
-    "sync:module-types": "cp ../vivijure/src/modules/types.ts src/modules/types.ts",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "engines": {
