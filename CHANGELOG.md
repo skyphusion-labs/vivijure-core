@@ -76,6 +76,15 @@ Hosts (cf PATCH `/api/modules/:name/config`) should 400 when `dropped` is non-em
 `setInstallConfig` return-shape change; gate before write.
 ## Unreleased
 
+### fix(provenance): keyframe hash includes bundle_key (cf#388)
+
+**Cost:** including `bundle_key` invalidates every existing `.prov` sidecar (one-time GPU respend when keyframes re-render). Fails safe.
+
+
+`keyframeProvenanceHash` used only `keyframe_config` on the premise that project is the
+content-addressed bundle stem. Project is caller-supplied on host doors, so two bundles could
+share a project namespace and cross-adopt keyframes. Hash now includes `bundle_key`. Call sites
+pass `job.bundle_key`.
 ### feat(renders): persist resolved motion_backend + keyframe_backend on the render row (vivijure-cf#393)
 
 **REQUIRES** vivijure-cf migration `0018_render_motion_backend.sql` applied before any host dep bump that includes this SELECT/INSERT. Merging core alone is fine; pin without 0018 = `no such column` on every render read and insert.
