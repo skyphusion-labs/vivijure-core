@@ -36,6 +36,7 @@ import type {
   RegisteredModule,
 } from "./modules/types.js";
 import { validateClipArtifact } from "./clip-validate.js";
+import { contentValidateDoneClips } from "./clip-content-validate.js";
 import { clipProvenanceHash, chooseProvenanceMatch, headEtag, writeProv } from "./clip-provenance.js";
 import { BUCKET_KEYFRAME_MOTION_BACKENDS, ensureClipKeyframeInR2 } from "./stage-clip-keyframe.js";
 
@@ -370,6 +371,9 @@ export async function advanceClipJob(env: Env, jobId: string, preModules?: Regis
   // clip actually landed is already done and skipped. A module without /cancel logs an honest orphan.
   await cancelFailedShots(env, job, preModules);
   await validateDoneClips(env, job); // #523 Layer 1: structural gate before the caller advances to finish/upscale spend
+  // cf#297: Layer 2 keyframe-similarity on the clips path (film path already runs this in
+  // film-orchestrator). Same gate, same contract: corrupt fails the shot; suspect degrades.
+  await contentValidateDoneClips(env, job);
   await env.R2_RENDERS.put(jobKey(jobId), JSON.stringify(job), { httpMetadata: { contentType: "application/json" } });
   return job;
 }
