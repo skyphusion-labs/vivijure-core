@@ -9,6 +9,7 @@ import { validateConfig } from "./modules/registry.js";
 import { summarizeJob, type ClipJob, type JobSummary } from "./clip-job-model.js";
 import { classifyTransientFailure } from "./render-orchestrator.js";
 import { coerceShotId } from "./storyboard-ids.js";
+import { defaultFilmOutputKey } from "./film-output-key.js";
 
 export interface FilmScene { shot_id: string; prompt: string; seconds: number; }
 
@@ -341,7 +342,24 @@ export interface FilmSummary {
   // #619: keyframe recovery hit the ceiling with a partial set; the film delivered only the scenes
   // that rendered. Absent on a normal render. Lets the API/UI show "N of M scenes, dropped [...]".
   keyframes_incomplete?: FilmJob["keyframes_incomplete"];
+  // cf#365: CONTENT length (not wall-clock). Integer milliseconds; absent = NOT MEASURED.
+  // assemble_ms = pre-film.finish concat at renders/<id>/film.mp4 (the assemble-stage duration that
+  // was write-only on the job doc until this field). output_ms = last-writer DELIVERED length for
+  // job.film_key (same basis as renders.output_ms / "we bill on the last writer"). Together they let
+  // a poll decompose predicted-vs-delivered without inventing a full meter.
+  // Distinct from finish_elapsed_ms (CPU wall-clock capacity telemetry, cf#268).
+  assemble_ms?: number;
+  output_ms?: number;
 }
+
+/** Seconds of content -> integer ms for summary/billing fields, or undefined when there is no honest
+ *  number. Matches outputMsFromSeconds in the orchestrator (positive finite only; 0 is not a film). */
+function contentMsFromSeconds(seconds: number | undefined): number | undefined {
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0
+    ? Math.round(seconds * 1000)
+    : undefined;
+}
+
 export function summarizeFinish(shots: FinishShot[]): FinishSummary {
   return {
     total: shots.length,
@@ -352,6 +370,15 @@ export function summarizeFinish(shots: FinishShot[]): FinishSummary {
   };
 }
 export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummary {
+  const durations = job.film_output_seconds;
+  const assembleKey = defaultFilmOutputKey(job.film_id);
+  // Assemble stage: the deterministic concat key. Delivered: whatever film_key points at after
+  // film.finish (may equal assembleKey when no cards ran). Both read the same map; absent keys stay
+  // off the summary rather than zero (NULL = not measured).
+  const assemble_ms = contentMsFromSeconds(durations?.[assembleKey]);
+  const output_ms = contentMsFromSeconds(
+    job.film_key ? durations?.[job.film_key] : undefined,
+  );
   return {
     film_id: job.film_id, phase: job.phase, error: job.error,
     clips: clipJob ? summarizeJob(clipJob) : undefined,
@@ -361,6 +388,8 @@ export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummar
     film_finish: job.film_finish,
     finish_unavailable: job.finish_unavailable,
     keyframes_incomplete: job.keyframes_incomplete,
+    assemble_ms,
+    output_ms,
   };
 }
 
