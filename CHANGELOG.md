@@ -5,6 +5,7 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased / v1.8.0
 
+(Nothing released under this version yet. Entries land here until it is tagged.)
 ### feat(finish): persist CPU finish wall-clock as finish_elapsed_ms (cf#268)
 
 Containers emit `elapsedMs` (vivijure-cf PR #427). Core now:
