@@ -62,14 +62,33 @@ export async function clipProvenanceHash(input: {
   return sha256Hex(canonicalJson(payload));
 }
 
-/** The 64-char hex provenance value for a KEYFRAME. Keyframes are motion-backend-agnostic (SDXL), so the
- *  backend is deliberately NOT in the hash: two renders of the same project that differ only in motion
- *  backend legitimately SHARE keyframes. The project namespace is already the content-addressed bundle
- *  stem (#759), so same-project keyframes can differ only by the keyframe config -- that is the fingerprint. */
+/**
+ * The 64-char hex provenance value for a KEYFRAME. Keyframes are motion-backend-agnostic (SDXL), so the
+ * backend is deliberately NOT in the hash: two renders that differ only in motion backend legitimately
+ * SHARE keyframes when they share the same storyboard content and keyframe config.
+ *
+ * **cf#388:** the earlier claim that "project is already the content-addressed bundle stem" is void
+ * when `project` is caller-supplied (host doors use `b.project ?? deriveProjectFromBundleKey`). Two
+ * different bundles can share one project namespace; with only keyframe_config in the hash, adoption
+ * could reuse keyframes across unrelated storyboards. The bundle_key (content-addressed under
+ * `bundles/`) is therefore part of the fingerprint. Empty string when unknown so callers that pass
+ * nothing stay deterministic rather than inventing a project string.
+ */
 export async function keyframeProvenanceHash(input: {
   keyframe_config: Record<string, unknown> | undefined;
+  /** Content-addressed bundle key (e.g. bundles/<stem>.tar.gz). Required for safe adoption (cf#388). */
+  bundle_key?: string | null;
 }): Promise<string> {
-  return sha256Hex(canonicalJson({ keyframe_config: input.keyframe_config ?? {} }));
+  const bundle =
+    typeof input.bundle_key === "string" && input.bundle_key.trim().length > 0
+      ? input.bundle_key.trim()
+      : "";
+  return sha256Hex(
+    canonicalJson({
+      keyframe_config: input.keyframe_config ?? {},
+      bundle_key: bundle,
+    }),
+  );
 }
 
 async function readProv(env: Env, artifactKey: string): Promise<string | null> {

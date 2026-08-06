@@ -57,13 +57,19 @@ function makeEnv(
           },
           async run() {
             if (/INSERT INTO renders/i.test(sql)) {
+              // Column order (buildInsertRenderStmt): public_id, job_id, project, bundle_key,
+              // quality_tier, motion_backend, keyframe_backend, render_overrides, status, ...
+              // Anchor status by finding it after the two backend columns rather than a fixed
+              // index that rots on every ADD COLUMN (same lesson as the markFinishDone bind
+              // below: fixed mid-list indices failed when output_ms landed).
+              const statusIdx = binds.length >= 9 ? 8 : 6;
               const row: Row = {
                 id: rows.size + 1,
                 job_id: String(binds[1]),
                 project: String(binds[2]),
                 bundle_key: String(binds[3] ?? ""),
                 quality_tier: String(binds[4]),
-                status: String(binds[6]),
+                status: String(binds[statusIdx]),
                 output_key: null,
                 output_json: null,
               };

@@ -4,7 +4,12 @@
 // lookup is not really identity-scoped; voice comes free off the row we already read for the LoRA.
 
 import type { Env } from "./platform/orchestrator-context.js";
-import { getCastById, getCastIdByPublicId } from "./cast-db.js";
+import {
+  getCastById,
+  getCastIdByPublicId,
+  isSdxlLoraReady,
+  isWanLoraReady,
+} from "./cast-db.js";
 import { isPublicId } from "./public-id.js";
 import { refreshTrainingLora } from "./cast-lora-train.js";
 import { coerceVoiceId, DEFAULT_VOICE_ID } from "./voices.js";
@@ -94,13 +99,18 @@ export async function resolveCastLoras(
     // (wan_lora_key_high/low). Resolve into the matching, DISJOINT map -- SDXL wins if both somehow
     // exist -- so the two families never cross-wire downstream. A ready-but-keyless row (should not
     // happen) fails safe into the "no trained LoRA" skip rather than resolving to nothing.
-    const sdxlKey = cast.lora_key && cast.lora_key.startsWith("loras/") ? cast.lora_key : null;
-    const wanHigh = cast.wan_lora_key_high && cast.wan_lora_key_high.startsWith("loras/") ? cast.wan_lora_key_high : null;
-    const wanLow = cast.wan_lora_key_low && cast.wan_lora_key_low.startsWith("loras/") ? cast.wan_lora_key_low : null;
-    if (sdxlKey) {
-      pretrained[slot] = sdxlKey;
-    } else if (wanHigh && wanLow) {
-      wanPretrained[slot] = { high: wanHigh, low: wanLow };
+    // Readiness helpers are key-presence only (cf#383); lora_status alone is not family-honest.
+    if (isSdxlLoraReady(cast) && cast.lora_key) {
+      pretrained[slot] = cast.lora_key;
+    } else if (
+      isWanLoraReady(cast) &&
+      cast.wan_lora_key_high &&
+      cast.wan_lora_key_low
+    ) {
+      wanPretrained[slot] = {
+        high: cast.wan_lora_key_high,
+        low: cast.wan_lora_key_low,
+      };
     } else {
       skip({ slot, name: cast.name, reason: "no trained LoRA" });
     }
@@ -109,11 +119,16 @@ export async function resolveCastLoras(
 }
 
 /** Build an actionable, per-character rejection message from the skipped slots: name who needs
- *  training (falling back to the slot id when the cast row did not resolve) and where to do it. */
+ *  training (falling back to the slot id when the cast row did not resolve) and where to do it.
+ *  Also names the voice-only escape hatch (dialogue_lines[].voice_id) so agents following cast_loras
+ *  for voice alone are not pointed at an expensive, unnecessary train (mcp#29). */
 export function untrainedCastMessage(skippedDetail: SkippedCast[]): string {
   const names = skippedDetail.map((d) => {
     const who = d.name ?? `slot ${d.slot}`;
     return d.reason === "LoRA still training" ? `${who} (still training)` : who;
   });
-  return `These characters have no trained LoRA -- train them on the Cast page first: ${names.join(", ")}.`;
+  return (
+    `These characters have no trained LoRA -- train them on the Cast page first: ${names.join(", ")}. ` +
+    `For voice only (no identity adapter), set dialogue_lines[].voice_id instead of cast_loras.`
+  );
 }
