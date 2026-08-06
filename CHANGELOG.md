@@ -6,6 +6,63 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 ## Unreleased / v1.8.0
 
 (Nothing released under this version yet. Entries land here until it is tagged.)
+### feat(finish): persist CPU finish wall-clock as finish_elapsed_ms (cf#268)
+
+Containers emit `elapsedMs` (vivijure-cf PR #427). Core now:
+
+- sums observed `elapsedMs` on assemble / mux / audio-mix (and optional `FilmFinishOutput.elapsed_ms`)
+- writes `renders.finish_elapsed_ms` in `markFinishDone` (COALESCE; null means not measured)
+- exposes the column on the full render read path
+
+Capacity planning only -- not billing, not GPU time (`execution_time_ms`). Requires cf migration
+0017 on the host D1. Version note: if core#144 (poll wait) also claims 1.8.0, stack and reversion.
+## [Unreleased]
+
+### Chore: drop dead `sync:module-types` script (cf#315)
+
+The script copied from `../vivijure/src/modules/types.ts`, a path that no longer exists (hub is docs
+only). `src/modules/types.ts` is the in-tree canonical source; the script only failed and misled
+editors into treating the file as a copy that could be clobbered.
+### Fixed: untrained `cast_loras` refusal names the voice-only path (mcp#29)
+
+`untrainedCastMessage` still tells the operator to train on the Cast page, and now also names
+`dialogue_lines[].voice_id` as the path for voice without an identity adapter. Agents that followed
+"pass cast_loras for voice" hit a hard 400 and were pointed at an expensive train they did not need.
+## Unreleased
+
+### feat(cast): per-family adapter readiness on public cast rows (vivijure-cf#383)
+
+`lora_status: "ready"` is shared across SDXL and Wan adapter families, so a Wan-trained cast with
+`lora_key` null still read ready and could be bound for keyframes with no identity LoRA (silent wrong
+output). Public cast rows now carry additive booleans derived from key presence:
+
+- `sdxl_lora_ready` -- `lora_key` under `loras/`
+- `wan_lora_ready` -- both `wan_lora_key_high` and `wan_lora_key_low` under `loras/`
+
+Legacy `lora_status` is unchanged (shared last training-job state). Prefer the new fields for
+selection / preflight. Helpers: `isSdxlLoraReady`, `isWanLoraReady`.
+### Added: `FilmSummary.assemble_ms` + `output_ms` (vivijure-cf#365)
+
+Additive poll-surface fields. `film_output_seconds` already stored per-artifact content length
+(assemble writes the deterministic `renders/<id>/film.mp4` entry; film.finish writes each step key;
+markFinishDone bills the final film_key as `renders.output_ms`). None of that reached `summarizeFilm`
+/ poll_film, so a delivered-vs-predicted delta could not be decomposed without D1 or R2.
+
+- `assemble_ms` -- pre-film.finish concat content length (ms) at the deterministic assemble key
+- `output_ms` -- last-writer DELIVERED content length (ms) for `job.film_key` (same basis as the D1 column)
+
+Absent = NOT MEASURED (never coalesced to zero). Distinct from `finish_elapsed_ms` (CPU wall-clock,
+cf#268). No new capture path; pure projection of an already-persisted map.
+### Fixed: operator install-config patch can report discarded keys (vivijure-cf#387)
+
+`clampInstallPatch` still drops unknown / render-scope keys (invoke path stays forgiving). New pure
+helpers for host routes that must refuse a silent no-op:
+
+- `droppedInstallKeys(schema, patch)` -- keys present in the patch that are not install-scope
+- `clampInstallPatchDetailed(schema, current, patch)` -- `{ next, dropped }`
+
+Hosts (cf PATCH `/api/modules/:name/config`) should 400 when `dropped` is non-empty. No
+`setInstallConfig` return-shape change; gate before write.
 
 ## v1.7.3
 
