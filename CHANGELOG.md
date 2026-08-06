@@ -10,6 +10,11 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 The script copied from `../vivijure/src/modules/types.ts`, a path that no longer exists (hub is docs
 only). `src/modules/types.ts` is the in-tree canonical source; the script only failed and misled
 editors into treating the file as a copy that could be clobbered.
+### Fixed: untrained `cast_loras` refusal names the voice-only path (mcp#29)
+
+`untrainedCastMessage` still tells the operator to train on the Cast page, and now also names
+`dialogue_lines[].voice_id` as the path for voice without an identity adapter. Agents that followed
+"pass cast_loras for voice" hit a hard 400 and were pointed at an expensive train they did not need.
 ## Unreleased
 
 ### feat(cast): per-family adapter readiness on public cast rows (vivijure-cf#383)
