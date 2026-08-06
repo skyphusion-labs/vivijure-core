@@ -11,6 +11,9 @@
 // (core#105): alias set == declare-module set, each body is only `export const MANIFEST:
 // ModuleManifest`, and the real MANIFEST from each module validates as ModuleManifest at runtime.
 // Prefer updating that test's REAL_MANIFESTS map when adding a module, not inventing fields here.
+//
+// Preferred resolution (cf#285): modules/{keyframe,own-gpu}/src/manifest.ts (data-only leaf).
+// Fallback: modules/*/src/index.ts for checkouts that predate the leaf extract.
 declare module "vivijure-modules/keyframe" {
   import type { ModuleManifest } from "../src/modules/types.js";
   export const MANIFEST: ModuleManifest;

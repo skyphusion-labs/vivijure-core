@@ -14,6 +14,10 @@
 // the moment they diverge. Adding a tier to QUALITY_TIERS without updating a module's enum (or vice
 // versa) turns this red. This is the control-plane analogue of the backend's config->engine mapping
 // meta-test (#20).
+//
+// Import path (cf#285 / class of core#115): vitest aliases vivijure-modules/* to data-only
+// modules/*/src/manifest.ts when present, so this guard does not pull module entrypoint graphs
+// (runpod-job-log, etc.) across sparse checkouts in core and local CI.
 import { describe, it, expect } from "vitest";
 import { QUALITY_TIERS } from "../src/render-module-config.js";
 import { MANIFEST as KEYFRAME_MANIFEST } from "vivijure-modules/keyframe";
