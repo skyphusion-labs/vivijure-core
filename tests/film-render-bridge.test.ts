@@ -55,6 +55,7 @@ describe("film-render-bridge", () => {
       bundle_key: "bundles/demo.tar.gz",
       scenes: [],
       motion_backend: null,
+      keyframe_backend: "keyframe",
       motion_config: {},
       finish_config: {},
       speech_config: {},
@@ -70,6 +71,8 @@ describe("film-render-bridge", () => {
     expect(seed.jobId).toBe("film-row");
     expect(seed.status).toBe("COMPLETED");
     expect(seed.mode).toBe("keyframes-only");
+    expect(seed.motionBackend).toBeNull();
+    expect(seed.keyframeBackend).toBe("keyframe");
   });
 
   it("resolveFilmOutputKey falls back to deterministic film.mp4 for done full renders (#99)", () => {

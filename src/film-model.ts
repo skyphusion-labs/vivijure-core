@@ -81,6 +81,10 @@ export interface FilmJob {
   scenes: FilmScene[];
   motion_backend: string | null;
   motion_config: Record<string, unknown>;
+  // cf#393: RESOLVED keyframe module name at submit (e.g. "keyframe", "cloud-keyframe"). Distinct from
+  // keyframe_binding (service-binding id). Absent on legacy job docs and on from-keyframes jobs that
+  // never ran a keyframe module. Mirrored onto the renders row so "which keyframe backend?" is answerable.
+  keyframe_backend?: string | null;
   // #767: the validated keyframe config, persisted so the R2-presence keyframe reclaim can fingerprint
   // (keyframeProvenanceHash) which config produced a keyframe and refuse to adopt one a DIFFERENT-config
   // render of the same project wrote. Backend-agnostic (SDXL), so the motion backend is NOT part of it --
