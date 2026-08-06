@@ -105,7 +105,7 @@ export interface StartScatterArgs {
  *  Bundle scenes must already be loaded by the caller (readBundleScenes); we do not
  *  re-fetch. Filter to shotIds so a shard only keeps its own lines.
  */
-async function resolveDialogueLines(
+export async function resolveDialogueLines(
   env: Env,
   args: StartScatterArgs,
   voices: Record<string, string>,
