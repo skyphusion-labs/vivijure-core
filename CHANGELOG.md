@@ -3,6 +3,19 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased
+
+### Fixed: operator install-config patch can report discarded keys (vivijure-cf#387)
+
+`clampInstallPatch` still drops unknown / render-scope keys (invoke path stays forgiving). New pure
+helpers for host routes that must refuse a silent no-op:
+
+- `droppedInstallKeys(schema, patch)` -- keys present in the patch that are not install-scope
+- `clampInstallPatchDetailed(schema, current, patch)` -- `{ next, dropped }`
+
+Hosts (cf PATCH `/api/modules/:name/config`) should 400 when `dropped` is non-empty. No
+`setInstallConfig` return-shape change; gate before write.
+
 ## v1.7.3
 
 PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2. Publish via tag `vivijure-core-v1.7.3` (not bare `v*`). Hosts (cf/local) should pin after this lands.
