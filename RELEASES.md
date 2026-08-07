@@ -31,6 +31,27 @@ npm view @skyphusion-labs/vivijure-core@1.2.2 version
 # 5. CLOSE THE LEDGER ROW -- see "Closing the row" below. Not optional, not a tidy-up.
 ```
 
+> **STANDING CONDITION, not a one-off. First instance v1.10.0 (2026-08-07).** The rule above says
+> seed the ledger and `CHANGELOG.md` in the same PR as the version bump. **Once core#146's guard is
+> in force, no cycle can.** After a release, `main` sits on a tagged version, so a bare
+> `## Unreleased` is refused and the next FEATURE PR is the one that must open the next version.
+> That is the steady state, not a deviation: the bump lands in the first feature PR of the cycle and
+> the seed lands in the release PR. v1.10.0 was the first instance (bump in #169, seed in #170).
+>
+> **This does NOT reintroduce the per-PR version pin that broke #144.** A version opens ONCE per
+> cycle. Every subsequent PR adds an entry under the already-open heading and touches no version
+> file, so the spent-version assertion never fires again until the next release.
+>
+> **STATUS: core#146 is still OPEN and its test is not on `main`.** The split above was made in
+> ANTICIPATION of that guard. When #146 merges, delete this sentence; until then, do not read the
+> paragraph as describing shipped behaviour.
+>
+> **AND A WARNING FOR WHOEVER CLOSES A ROW:** `tests/releases-ledger.test.ts` checks **SHAPE, never
+> correctness** -- not-`pending`, not-`(this PR)`, an ISO-date regex, a sha regex. **A well-formed
+> WRONG date passes it green.** The correctness of `source commit` and `published` rests entirely on
+> `git rev-list -n 1 <tag>` and the registry's own `time` map, never on CI. Green here is not
+> confirmation. (rollins, 2026-08-07)
+
 ## Closing the row (step 5, and the one that gets skipped)
 
 The ledger row is written in TWO moments against TWO different pieces of evidence, and only the
@@ -93,7 +114,7 @@ The test does not call the registry -- step 5 above is still a human act after `
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
-| `vivijure-core-v1.10.0` | 1.10.0 |  |  | **MINOR.** RunPod reached through the control-plane proxy when `RUNPOD_PROXY_BASE` is bound; direct `RUNPOD_API_KEY` route retained permanently as the self-host door (cp#321 step 1, #169). `src/runpod-route.ts` MOVED from `vivijure-cf`'s `modules/_shared/` so both hosts CAN import one implementation -- **no host imports it in this release**; cf adoption is cp#321 step 2 and is not shipped here. Also opens the version and repairs a lockfile left at 1.8.1 by the v1.9.0 cut. |
+| `vivijure-core-v1.10.0` | 1.10.0 | f6ebdcd | 2026-08-07 | **MINOR.** RunPod reached through the control-plane proxy when `RUNPOD_PROXY_BASE` is bound; direct `RUNPOD_API_KEY` route retained permanently as the self-host door (cp#321 step 1, #169). `src/runpod-route.ts` MOVED from `vivijure-cf`'s `modules/_shared/` so both hosts CAN import one implementation -- **no host imports it in this release**; cf adoption is cp#321 step 2 and is not shipped here. Also opens the version and repairs a lockfile left at 1.8.1 by the v1.9.0 cut. |
 | `vivijure-core-v1.9.0` | 1.9.0 | 8702fdd | 2026-08-07 | **MINOR.** Homelab SDXL cast train via `LOCAL_BACKEND_URL` (`submitTrainLoraJob` / `pollCastLoraJob`); packages with cf#460 deterministic tar mtime. GitHub Release: [vivijure-core v1.9.0](https://github.com/skyphusion-labs/vivijure-core/releases/tag/vivijure-core-v1.9.0). |
 | `vivijure-core-v1.8.1` | 1.8.1 | 6fd34ab | 2026-08-06 | **PATCH.** Post-1.8.0 main: PollResponse failure fields (#160), keyframe provenance `bundle_key` (#151 / cf#388), render `motion_backend`/`keyframe_backend` (#147 / cf#393; REQUIRES cf migration 0018 before host pin), scatter D1-empty dialogue fallback (#142 / core#122), docs audit (#158). GitHub Release: [vivijure-core v1.8.1](https://github.com/skyphusion-labs/vivijure-core/releases/tag/vivijure-core-v1.8.1). |
 | `vivijure-core-v1.8.0` | 1.8.0 | 9ef47e5 | 2026-08-06 | **MINOR.** Open version (#159) + finish_elapsed_ms (cf#268/#145; REQUIRES cf migration 0017), FilmSummary assemble_ms/output_ms (#152), cast per-family LoRA readiness (#150), install-patch dropped keys (#148), untrained LoRA voice path (#156), clips content gate (#143), modules.d.ts/RELEASES guards (#149), drop dead sync:module-types (#157). GitHub Release: [vivijure-core v1.8.0](https://github.com/skyphusion-labs/vivijure-core/releases/tag/vivijure-core-v1.8.0). |
