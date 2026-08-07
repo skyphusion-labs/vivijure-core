@@ -31,14 +31,26 @@ npm view @skyphusion-labs/vivijure-core@1.2.2 version
 # 5. CLOSE THE LEDGER ROW -- see "Closing the row" below. Not optional, not a tidy-up.
 ```
 
-> **Documented exception, v1.10.0 (2026-08-07).** The rule above says seed the ledger and
-> `CHANGELOG.md` in the same PR as the version bump. **v1.10.0 could not.** core#146 adds a guard
-> refusing `## Unreleased` on an already-tagged version, so the version had to be opened inside the
-> first FEATURE PR of the cycle (#169) rather than in a release PR. The bump therefore landed in
-> #169 and the seed in #170. **That split was deliberate and correct; it is not a deviation to
-> repeat-fix.** Opening a version happens ONCE per release cycle, not once per PR -- every
-> subsequent PR in the cycle adds a changelog entry under an already-open heading and touches no
-> version file, so this does not reintroduce the per-PR-version-pin problem that broke #144.
+> **STANDING CONDITION, not a one-off. First instance v1.10.0 (2026-08-07).** The rule above says
+> seed the ledger and `CHANGELOG.md` in the same PR as the version bump. **Once core#146's guard is
+> in force, no cycle can.** After a release, `main` sits on a tagged version, so a bare
+> `## Unreleased` is refused and the next FEATURE PR is the one that must open the next version.
+> That is the steady state, not a deviation: the bump lands in the first feature PR of the cycle and
+> the seed lands in the release PR. v1.10.0 was the first instance (bump in #169, seed in #170).
+>
+> **This does NOT reintroduce the per-PR version pin that broke #144.** A version opens ONCE per
+> cycle. Every subsequent PR adds an entry under the already-open heading and touches no version
+> file, so the spent-version assertion never fires again until the next release.
+>
+> **STATUS: core#146 is still OPEN and its test is not on `main`.** The split above was made in
+> ANTICIPATION of that guard. When #146 merges, delete this sentence; until then, do not read the
+> paragraph as describing shipped behaviour.
+>
+> **AND A WARNING FOR WHOEVER CLOSES A ROW:** `tests/releases-ledger.test.ts` checks **SHAPE, never
+> correctness** -- not-`pending`, not-`(this PR)`, an ISO-date regex, a sha regex. **A well-formed
+> WRONG date passes it green.** The correctness of `source commit` and `published` rests entirely on
+> `git rev-list -n 1 <tag>` and the registry's own `time` map, never on CI. Green here is not
+> confirmation. (rollins, 2026-08-07)
 
 ## Closing the row (step 5, and the one that gets skipped)
 
