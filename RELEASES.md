@@ -43,14 +43,12 @@ npm view @skyphusion-labs/vivijure-core@1.2.2 version
 > file, so the spent-version assertion never fires again until the next release.
 >
 > **STATUS: core#146 is still OPEN and its test is not on `main`.** The split above was made in
-> ANTICIPATION of that guard. When #146 merges, delete this sentence; until then, do not read the
-> paragraph as describing shipped behaviour.
->
-> **AND A WARNING FOR WHOEVER CLOSES A ROW:** `tests/releases-ledger.test.ts` checks **SHAPE, never
-> correctness** -- not-`pending`, not-`(this PR)`, an ISO-date regex, a sha regex. **A well-formed
-> WRONG date passes it green.** The correctness of `source commit` and `published` rests entirely on
-> `git rev-list -n 1 <tag>` and the registry's own `time` map, never on CI. Green here is not
-> confirmation. (rollins, 2026-08-07)
+> ANTICIPATION of that guard, so until it merges this blockquote describes intended behaviour rather
+> than an enforced check. **When #146 merges, delete this STATUS paragraph in its entirety** -- from
+> the bold `STATUS:` marker down to the end of this paragraph -- **and leave the rest of the
+> blockquote standing.** Do NOT delete the blockquote itself: the seed-split it documents is the
+> steady state and outlives this status note. (The previous wording said "delete this sentence",
+> which named neither which sentence nor what to keep.)
 
 ## Closing the row (step 5, and the one that gets skipped)
 
@@ -82,6 +80,13 @@ npm view @skyphusion-labs/vivijure-core time --json | python3 -c \
 npm view @skyphusion-labs/vivijure-core dist-tags.latest       # sanity: should be <semver>
 npm view @skyphusion-labs/vivijure-core@9.9.9 version          # negative control: must be E404
 ```
+
+**CI WILL NOT TELL YOU IF EITHER VALUE IS WRONG.** `tests/releases-ledger.test.ts` checks **SHAPE,
+never correctness** -- not-`pending`, not-`(this PR)`, an ISO-date regex, a sha regex. **A
+well-formed WRONG date passes it green**, and so does any 7-hex string in `source commit`. The
+correctness of both cells rests entirely on the two commands above -- `git rev-list -n 1 <tag>` and
+the registry's own `time` map -- and never on the suite. **Green here is not confirmation.**
+(rollins, 2026-08-07)
 
 **Both fixes above came from RUNNING this procedure rather than reading it**, on its second use and
 the first where someone else supplied the confirmation. The original `git rev-list ... | cut -c1-7`
