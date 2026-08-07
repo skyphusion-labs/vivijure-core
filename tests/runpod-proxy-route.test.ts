@@ -71,6 +71,20 @@ const fastOpts = (fetchImpl: typeof fetch) => ({
 
 const okEnvelope = { id: "job-1", status: "IN_QUEUE" };
 
+/**
+ * The HOST a call went to, parsed.
+ *
+ * `url.includes("rest.runpod.io")` is not an assertion about a host: it is satisfied by any URL
+ * that merely CONTAINS the string, including `https://evil.example/?x=rest.runpod.io`. CodeQL
+ * flags it as js/incomplete-url-substring-sanitization (high), and it is also the unanchored-matcher
+ * defect this crew keeps paying for -- in a file whose whole subject is "which origin did the
+ * credential go to". A parsed hostname cannot be satisfied that way.
+ *
+ * CodeQL reported TWO of these; there were THREE. Fixing only the reported instances is how a
+ * class stays open behind a green check.
+ */
+const hostOf = (url: string): string => new URL(url).hostname;
+
 describe("resolveRunpodRoute: the branch is BOUND-ness, never a failover", () => {
   it("unbound -> direct route carrying the RunPod key", () => {
     const r = resolveRunpodRoute(undefined, PLANE_TOKEN, DIRECT_KEY);
@@ -152,7 +166,7 @@ describe("submit on a proxied tenant reaches the plane and never RunPod", () => 
     expect(calls.length).toBe(1); // floor: the "never called RunPod" assertions below are not vacuous
     expect(calls[0].url).toBe(`${PLANE_BASE}/${EP}/run`);
     expect(calls[0].headers.authorization).toBe(`Bearer ${PLANE_TOKEN}`);
-    expect(calls.some((c) => c.url.includes("api.runpod.ai"))).toBe(false);
+    expect(calls.map((c) => hostOf(c.url))).not.toContain("api.runpod.ai");
     expect(JSON.stringify(calls[0].headers)).not.toContain(DIRECT_KEY);
   });
 
@@ -312,7 +326,7 @@ describe("the account-level workers-max reconcile is skipped on a proxied tenant
       fastOpts(fetchImpl),
     );
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.some((c) => c.url.includes("rest.runpod.io"))).toBe(false);
+    expect(calls.map((c) => hostOf(c.url))).not.toContain("rest.runpod.io");
     expect(calls[0].url).toBe(`${PLANE_BASE}/${EP}/run`);
   });
 
@@ -325,6 +339,6 @@ describe("the account-level workers-max reconcile is skipped on a proxied tenant
       { bundleKey: "bundles/x.tar.gz" },
       fastOpts(fetchImpl),
     );
-    expect(calls.some((c) => c.url.includes("rest.runpod.io"))).toBe(true);
+    expect(calls.map((c) => hostOf(c.url))).toContain("rest.runpod.io");
   });
 });
