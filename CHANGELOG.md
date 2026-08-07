@@ -5,6 +5,13 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased
 
+### feat: SDXL cast train on LOCAL_BACKEND_URL (homelab door)
+
+`submitTrainLoraJob` prefers the local door when `LOCAL_BACKEND_URL` is set (POST `/run`
+`action:train_lora`); falls back to `RUNPOD_ENDPOINT_ID` only when the door is not wired.
+`pollCastLoraJob` polls the door (after Wan EP, before render EP) so status harvest works without
+RunPod. Homelab cast identity train no longer requires a cloud GPU endpoint.
+
 ### Fixed: tar mtime defaults to epoch so content-addressed bundle keys are stable (cf#460)
 
 `emitTar` used `Date.now()/1000` as the default ustar mtime. Tar header bytes are part of the

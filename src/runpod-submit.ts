@@ -694,22 +694,195 @@ export async function submitRegenShotJob(
   );
 }
 
-// v0.57.0: submit a standalone LoRA training job. Differs only in the payload
-// builder.
+// ---------- Local-door SDXL train (homelab; no RunPod) ----------
+//
+// vivijure-local-12gb / 16gb accept action:train_lora on the same /run + /status
+// surface as i2v_clip. Prefer LOCAL_BACKEND_URL when set so cast train stays on
+// own silicon; fall back to RUNPOD_ENDPOINT_ID only when the door is not wired.
+
+/** Absolute http(s) door URL, no userinfo / metadata hosts. Null when unset/invalid. */
+export function normalizeLocalBackendUrl(raw: string): string | null {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return null;
+  let u: URL;
+  try {
+    u = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  if (u.username || u.password) return null;
+  const hostname = u.hostname.toLowerCase().replace(/\.$/, "");
+  if (hostname === "metadata.google.internal" || hostname.endsWith(".metadata.google.internal")) {
+    return null;
+  }
+  if (hostname === "169.254.169.254" || hostname.startsWith("169.254.")) return null;
+  if (u.pathname.includes("..")) return null;
+  return `${u.protocol}//${u.host}${u.pathname === "/" ? "" : u.pathname}`.replace(/\/+$/, "");
+}
+
+export async function resolveLocalBackendUrl(env: Env): Promise<string | null> {
+  const raw = await secretValue(
+    (env as { LOCAL_BACKEND_URL?: unknown }).LOCAL_BACKEND_URL as
+      SecretsStoreSecret | string | undefined,
+  );
+  return normalizeLocalBackendUrl(raw);
+}
+
+export async function resolveLocalBackendToken(env: Env): Promise<string> {
+  return (
+    await secretValue(
+      (env as { LOCAL_BACKEND_TOKEN?: unknown }).LOCAL_BACKEND_TOKEN as
+        SecretsStoreSecret | string | undefined,
+    )
+  ).trim();
+}
+
+export async function localDoorConfigured(env: Env): Promise<boolean> {
+  return Boolean(await resolveLocalBackendUrl(env));
+}
+
+async function submitToLocalDoor(
+  env: Env,
+  body: string,
+  label: string,
+  opts?: RunpodTransportOpts,
+): Promise<RunpodResult> {
+  const baseUrl = await resolveLocalBackendUrl(env);
+  if (!baseUrl) {
+    return {
+      ok: false,
+      error:
+        "LOCAL_BACKEND_URL must be set (homelab door for SDXL cast train) or wire RUNPOD_ENDPOINT_ID",
+    };
+  }
+  const token = await resolveLocalBackendToken(env);
+  const fetchImpl = opts?.fetchImpl ?? fetch;
+  const timeoutMs = opts?.timeoutMs ?? RUNPOD_TIMEOUT_MS;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (token) headers.authorization = `Bearer ${token}`;
+  try {
+    const resp = await fetchImpl(`${baseUrl}/run`, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    let raw: unknown;
+    try {
+      raw = await resp.json();
+    } catch {
+      return {
+        ok: false,
+        error: `local-door ${label} returned non-JSON (HTTP ${resp.status})`,
+        status: resp.status,
+      };
+    }
+    if (!resp.ok) {
+      const err =
+        raw && typeof raw === "object" && typeof (raw as { error?: unknown }).error === "string"
+          ? (raw as { error: string }).error
+          : `local-door ${label} failed (HTTP ${resp.status})`;
+      return { ok: false, error: err, status: resp.status };
+    }
+    const id =
+      raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string"
+        ? (raw as { id: string }).id
+        : "";
+    if (!id || !isValidJobId(id)) {
+      return { ok: false, error: `local-door ${label} returned no job id` };
+    }
+    // Door /run only returns { id }; status is IN_QUEUE until the serial worker picks it up.
+    return {
+      ok: true,
+      view: { jobId: id, status: "IN_QUEUE", statusRaw: "IN_QUEUE" },
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `local-door ${label} transport failed: ${(e as Error).message}`,
+    };
+  }
+}
+
+export async function pollLocalDoorJob(
+  env: Env,
+  jobId: string,
+  opts?: RunpodTransportOpts,
+): Promise<RunpodResult> {
+  if (!isValidJobId(jobId)) {
+    return { ok: false, error: "invalid job id", status: 400 };
+  }
+  const baseUrl = await resolveLocalBackendUrl(env);
+  if (!baseUrl) {
+    return { ok: false, error: "LOCAL_BACKEND_URL not configured", status: 404 };
+  }
+  const token = await resolveLocalBackendToken(env);
+  const fetchImpl = opts?.fetchImpl ?? fetch;
+  const timeoutMs = opts?.timeoutMs ?? RUNPOD_TIMEOUT_MS;
+  const headers: Record<string, string> = {};
+  if (token) headers.authorization = `Bearer ${token}`;
+  try {
+    const resp = await fetchImpl(`${baseUrl}/status/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    let raw: unknown;
+    try {
+      raw = await resp.json();
+    } catch {
+      return {
+        ok: false,
+        error: `local-door poll returned non-JSON (HTTP ${resp.status})`,
+        status: resp.status,
+      };
+    }
+    if (resp.status === 404) {
+      return { ok: false, error: "local-door job not found", status: 404 };
+    }
+    if (!resp.ok) {
+      const err =
+        raw && typeof raw === "object" && typeof (raw as { error?: unknown }).error === "string"
+          ? (raw as { error: string }).error
+          : `local-door poll failed (HTTP ${resp.status})`;
+      return { ok: false, error: err, status: resp.status };
+    }
+    // Door status envelope is RunPod-compatible: { id, status, output?, error? }.
+    const view = normalizeRunpodResponse(raw);
+    if (!view) {
+      return { ok: false, error: "local-door poll returned unparseable status envelope" };
+    }
+    return { ok: true, view };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `local-door poll transport failed: ${(e as Error).message}`,
+    };
+  }
+}
+
+// v0.57.0: submit a standalone LoRA training job. Prefers the local door when
+// LOCAL_BACKEND_URL is set (homelab SDXL train on own silicon); otherwise the
+// RunPod render endpoint.
 export async function submitTrainLoraJob(
   env: Env,
   args: TrainLoraArgs,
   opts?: RunpodTransportOpts,
 ): Promise<RunpodResult> {
+  const body = JSON.stringify(buildTrainLoraPayload(args));
+  if (await localDoorConfigured(env)) {
+    return submitToLocalDoor(env, body, "train-lora submit", opts);
+  }
   const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
-  if (!endpointId) return runpodMissingEndpoint();
-  return submitToRunpodEndpoint(
-    env,
-    endpointId,
-    JSON.stringify(buildTrainLoraPayload(args)),
-    "train-lora submit",
-    opts,
-  );
+  if (!endpointId) {
+    return {
+      ok: false,
+      error:
+        "SDXL cast train needs LOCAL_BACKEND_URL (homelab door) or RUNPOD_ENDPOINT_ID (cloud render EP)",
+    };
+  }
+  return submitToRunpodEndpoint(env, endpointId, body, "train-lora submit", opts);
 }
 
 // Submit a Wan 2.2 A14B LoRA training job to the DEDICATED Wan-training endpoint (the lead's
@@ -805,11 +978,12 @@ export function mergeCastLoraPollResults(
   return renderPoll;
 }
 
-// Poll a cast LoRA training job. Wan trains submit to RUNPOD_WAN_TRAIN_ENDPOINT_ID; SDXL trains
-// submit to RUNPOD_ENDPOINT_ID. RunPod job ids are scoped per endpoint, so a Wan job 404s on the
-// render endpoint (the /lora-status 502 users saw). Try the Wan train endpoint first when configured;
-// a 404 there means "not this endpoint's job" and we fall through to the render endpoint. Any
-// non-404 from either endpoint is authoritative.
+// Poll a cast LoRA training job. Order:
+//   1. Wan train EP (when wired) -- dual-expert A14B jobs live only there
+//   2. Local door (when LOCAL_BACKEND_URL wired) -- homelab SDXL train
+//   3. RunPod render EP -- cloud SDXL train
+// Job ids are scoped per backend, so a 404 means "not this backend" and we fall through.
+// Any non-404 from a tried backend is authoritative.
 export async function pollCastLoraJob(
   env: Env,
   jobId: string,
@@ -825,8 +999,23 @@ export async function pollCastLoraJob(
     if (wanPoll.ok) return wanPoll;
     if (wanPoll.status !== 404) return wanPoll;
   }
+
+  let localPoll: RunpodResult | undefined;
+  if (await localDoorConfigured(env)) {
+    localPoll = await pollLocalDoorJob(env, jobId, opts);
+    if (localPoll.ok) return localPoll;
+    if (localPoll.status !== 404) return localPoll;
+  }
+
+  const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
+  if (!endpointId) {
+    // No cloud render EP: surface local 404 (or wan) rather than "missing endpoint" if we tried door.
+    if (localPoll) return localPoll;
+    if (wanPoll) return wanPoll;
+    return runpodMissingEndpoint();
+  }
   const renderPoll = await pollRenderJob(env, jobId, opts);
-  return mergeCastLoraPollResults(wanPoll, renderPoll);
+  return mergeCastLoraPollResults(wanPoll ?? localPoll, renderPoll);
 }
 
 // ---------- Audio beat-sync (CPU Cloudflare Container) ----------
