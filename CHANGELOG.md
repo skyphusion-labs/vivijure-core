@@ -3,7 +3,16 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased
+## [1.9.0] -- 2026-08-07
+
+MINOR. Homelab SDXL cast train on the local door (no RunPod required).
+
+### feat: SDXL cast train on LOCAL_BACKEND_URL (homelab door)
+
+`submitTrainLoraJob` prefers the local door when `LOCAL_BACKEND_URL` is set (POST `/run`
+`action:train_lora`); falls back to `RUNPOD_ENDPOINT_ID` only when the door is not wired.
+`pollCastLoraJob` polls the door (after Wan EP, before render EP) so status harvest works without
+RunPod. Homelab cast identity train no longer requires a cloud GPU endpoint.
 
 ### Fixed: tar mtime defaults to epoch so content-addressed bundle keys are stable (cf#460)
 
@@ -11,7 +20,8 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 hash that becomes the bundle key, so two byte-identical assemblies that straddled a wall-clock
 second produced different keys (measured flake on vivijure-cf upload-namespace interchange row B).
 Default is now Unix epoch `0`. Pass an explicit `mtime` only when a consumer needs wall-clock
-semantics. Control test forces a second-boundary with fake timers.
+semantics. Control test forces a second-boundary with fake timers. (Shipped on main; first headed
+release that includes it.)
 
 ## [1.8.1] -- 2026-08-06
 
