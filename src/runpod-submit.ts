@@ -700,9 +700,16 @@ export async function submitRegenShotJob(
 // surface as i2v_clip. Prefer LOCAL_BACKEND_URL when set so cast train stays on
 // own silicon; fall back to RUNPOD_ENDPOINT_ID only when the door is not wired.
 
+/** Strip trailing ASCII '/' without a regex (CodeQL: ReDoS on /\/+$/ over env input). */
+function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47) end -= 1;
+  return end === s.length ? s : s.slice(0, end);
+}
+
 /** Absolute http(s) door URL, no userinfo / metadata hosts. Null when unset/invalid. */
 export function normalizeLocalBackendUrl(raw: string): string | null {
-  const trimmed = raw.trim().replace(/\/+$/, "");
+  const trimmed = stripTrailingSlashes(raw.trim());
   if (!trimmed) return null;
   let u: URL;
   try {
@@ -712,13 +719,15 @@ export function normalizeLocalBackendUrl(raw: string): string | null {
   }
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   if (u.username || u.password) return null;
-  const hostname = u.hostname.toLowerCase().replace(/\.$/, "");
+  let hostname = u.hostname.toLowerCase();
+  if (hostname.endsWith(".")) hostname = hostname.slice(0, -1);
   if (hostname === "metadata.google.internal" || hostname.endsWith(".metadata.google.internal")) {
     return null;
   }
   if (hostname === "169.254.169.254" || hostname.startsWith("169.254.")) return null;
   if (u.pathname.includes("..")) return null;
-  return `${u.protocol}//${u.host}${u.pathname === "/" ? "" : u.pathname}`.replace(/\/+$/, "");
+  const path = u.pathname === "/" ? "" : stripTrailingSlashes(u.pathname);
+  return `${u.protocol}//${u.host}${path}`;
 }
 
 export async function resolveLocalBackendUrl(env: Env): Promise<string | null> {
