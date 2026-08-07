@@ -39,11 +39,12 @@ describe("localDoorConfigured", () => {
 
 describe("submitTrainLoraJob prefers local door", () => {
   it("POSTs /run on LOCAL_BACKEND_URL when the door is wired", async () => {
-    const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({ id: "abc123def456abc123def456abc123de" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit): Promise<Response> =>
+        new Response(JSON.stringify({ id: "abc123def456abc123def456abc123de" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
     );
     const result = await submitTrainLoraJob(
       {
@@ -59,14 +60,17 @@ describe("submitTrainLoraJob prefers local door", () => {
       expect(result.view.status).toBe("IN_QUEUE");
     }
     expect(fetchImpl).toHaveBeenCalledOnce();
-    const [url, init] = fetchImpl.mock.calls[0]!;
+    const call = fetchImpl.mock.calls[0];
+    expect(call).toBeDefined();
+    const url = call![0];
+    const init = call![1] as RequestInit;
     expect(url).toBe("http://door:8000/run");
-    expect((init as RequestInit).method).toBe("POST");
-    expect((init as RequestInit).headers).toMatchObject({
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({
       authorization: "Bearer tok",
       "content-type": "application/json",
     });
-    const body = JSON.parse(String((init as RequestInit).body));
+    const body = JSON.parse(String(init.body));
     expect(body.input.action).toBe("train_lora");
     expect(body.input.project).toBe("lora-cast-1-1");
     expect(body.input.bundle_key).toBe("bundles/lora-cast-1-1.tar.gz");
