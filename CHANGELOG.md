@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## [Unreleased]
+## Unreleased / v1.10.0
 
 ### feat: reach RunPod through the control-plane proxy when it is bound (cp#321 step 1)
 
