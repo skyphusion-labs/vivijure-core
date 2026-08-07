@@ -3,6 +3,31 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [Unreleased]
+
+### feat: reach RunPod through the control-plane proxy when it is bound (cp#321 step 1)
+
+`src/runpod-route.ts` is `vivijure-cf`'s `modules/_shared/runpod-route.ts` MOVED into core under the
+cp#321 ruling ("move it into core and have both sides import it; do NOT write a second
+implementation"). Core's RunPod submit / poll / cancel now resolve a ROUTE before building a URL:
+
+- `RUNPOD_PROXY_BASE` **bound** -> proxied. Every call goes to the control plane, the bearer is
+  `RUNPOD_PROXY_TOKEN`, and this Worker never touches `api.runpod.ai`.
+- **unbound** -> direct. Bearer is `RUNPOD_API_KEY`, byte-for-byte the behaviour that shipped
+  before. This is the SELF-HOST DOOR and is permanently supported.
+
+It is a branch on BOUND-ness, **never a failover**: a proxied Worker with a missing or broken token
+refuses honestly and does not find another way to RunPod. Ordering is load-bearing -- core learns
+the proxy while the direct key still works, and only then may the plane stop installing the key.
+Reversed, every hosted render breaks.
+
+Also on the proxied route only: a plane-authored refusal (`x-vivijure-plane-refusal`) is reported as
+a PLANE refusal rather than a RunPod failure; the account-level `RUNPOD_WORKERS_MAX` reconcile
+(`rest.runpod.io`) is skipped, because a proxied tenant holds no account credential by design; and a
+request URL that does not belong to the resolved route is refused rather than carrying that route's
+credential to another origin. `RUNPOD_PROXY_BASE` / `RUNPOD_PROXY_TOKEN` are declared on
+`OrchestratorEnv`.
+
 ## [1.9.0] -- 2026-08-07
 
 MINOR. Homelab SDXL cast train on the local door (no RunPod required).
