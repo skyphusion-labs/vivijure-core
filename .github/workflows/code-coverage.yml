@@ -24,8 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # fetch-tags: core#119 changelog-version guard needs vivijure-core-v* tags visible
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-tags: true
 
       - name: Checkout vivijure (module manifest drift guard)
         uses: actions/checkout@v7
