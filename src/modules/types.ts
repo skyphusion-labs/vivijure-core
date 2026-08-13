@@ -384,8 +384,22 @@ export interface FinishInput {
                       // Absent => a silent shot, so lip-sync no-ops (passthrough).
   src_fps?: number;  // optional hints; the finish backend probes the clip if absent
   frames?: number;
+  // SOURCE dimensions: what this clip ACTUALLY IS, measured. Absence is meaningful and honest here
+  // -- the backend probes the clip -- so a miss does NOT render as a value, unlike the film-level
+  // `?? 1920` this change exists to remove.
   width?: number;
   height?: number;
+  // cf#507b THE DELIVERY TARGET: what the FILM SHIPS AT. A DECISION, deliberately named apart from
+  // width/height above rather than overloading them. Those are a measurement of the footage; this is
+  // the resolution the finished film is delivered in, and conflating the two is what would make the
+  // upscale target its own input size instead of the deliverable.
+  //
+  // Its consumer is the upscale factor choice: a module compares the SOURCE dims against THIS and
+  // picks a scale that does not undershoot, instead of a blind 2x that lands below the target and
+  // gets stretched back up. Absent => the module keeps its existing default, which is today's
+  // behaviour.
+  delivery_width?: number;
+  delivery_height?: number;
   // #583 provenance: the core-computed param-hash of this step's inputs (finishStepInputHash), passed
   // so the producer can STAMP it verbatim to `<output_key>.hash` (artifact first, sidecar last). OPAQUE
   // to the module -- forward it into the RunPod job unchanged; never parse/recompute it. Optional +

@@ -621,8 +621,51 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: FinishShot, pre
 
 /** Advance the finish chain: per shot, submit its current finish module or poll the in-flight one,
  *  chaining to the next module on completion. Phase -> assemble when every shot is terminal. */
+/** cf#507b: the MEASURED dimensions of each finished clip, read from the clip job at dispatch time.
+ *
+ *  LOOKUP rather than a copy onto FinishShot, deliberately. A copy taken when finish shots are built
+ *  is a snapshot of a measurement, and it goes stale the moment a clip is re-rendered mid-finish
+ *  with nothing to report it. The lookup cannot drift because it reads the record every time.
+ *
+ *  The cost is honest and worth stating: the clip shots live on a SEPARATE R2 document
+ *  (FilmJob carries `clip_job_id`, not the shots), so this is a GET plus a parse. It reuses the
+ *  exact path assemble already uses for the clips_only fallback rather than inventing one.
+ *
+ *  A MISS IS NOT A DEFAULT. Absent doc, unparseable doc, or no matching shot all yield NO ENTRY,
+ *  and the caller leaves the dimensions off the request entirely. That is honest by construction
+ *  here: FinishInput.width/height are documented as hints the backend probes for when absent, so an
+ *  absence triggers a real measurement rather than rendering as a guessed value. Falling back to a
+ *  assumed dimension would be `?? 1920` rebuilt inside the code removing it. */
+export async function measuredClipDimensions(
+  env: Env,
+  job: FilmJob,
+): Promise<Map<string, { width: number; height: number }>> {
+  const out = new Map<string, { width: number; height: number }>();
+  if (!job.clip_job_id) return out;
+  try {
+    const obj = await env.R2_RENDERS.get(clipDocKey(job.clip_job_id));
+    if (!obj) return out;
+    const clipJob = JSON.parse(await obj.text()) as ClipJob;
+    for (const sh of clipJob.shots || []) {
+      const w = Number(sh.delivered_width), h = Number(sh.delivered_height);
+      if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
+        out.set(sh.shot_id, { width: w, height: h });
+      }
+    }
+  } catch {
+    // Unreadable or unparseable clip doc. Return what we have (nothing) rather than a guess: the
+    // finish backend probes when dimensions are absent, so an empty map degrades to today's
+    // behaviour honestly instead of shipping a fabricated size.
+    return out;
+  }
+  return out;
+}
+
 async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
   const envRec = env as unknown as Record<string, unknown>;
+  // Read once per pass, not per shot: one GET serves every shot in this dispatch.
+  const clipDims = await measuredClipDimensions(env, job);
+  const delivery = resolveDeliveryResolution(job);
   const modules = preModules ?? await discoverModules(envRec);
   const finishModByBinding = new Map(modules.filter((m) => m.hooks.includes("finish")).map((m) => [m.binding, m]));
   // A transient invocation/poll blip re-dispatches the step (status stays `pending`) up to the cap
@@ -660,7 +703,17 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     if (!fetcher) { fs.status = "failed"; fs.error = `finish module ${binding} not bound`; continue; }
     const req = {
       hook: "finish" as const,
-      input: { shot_id: fs.shot_id, clip_key: fs.clip_key, audio_key: dialogueAudioKey } as FinishInput,
+      input: {
+        shot_id: fs.shot_id,
+        clip_key: fs.clip_key,
+        audio_key: dialogueAudioKey,
+        // SOURCE hints, omitted entirely when unmeasured so the backend probes (never guessed).
+        ...(clipDims.get(fs.shot_id) ?? {}),
+        // The DELIVERY TARGET, always supplied: the module compares the source against it to pick
+        // a scale that does not undershoot.
+        delivery_width: delivery.width,
+        delivery_height: delivery.height,
+      } as FinishInput,
       config: fs.configs?.[fs.idx] ?? {}, // validated per-module config (issue #75); {} only for legacy jobs
       context: { project: job.project, job_id: job.film_id },
     };
