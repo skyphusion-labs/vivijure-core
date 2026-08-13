@@ -714,7 +714,12 @@ export interface FilmFinishInput {
   // ships whatever the upscale produced instead of the delivery resolution.
   width: number;
   height: number;
-  fps?: number;
+  // NOTE, deliberately no `fps` here. The panel modules also carry `fps: input.fps ?? 24`, which is
+  // the identical defect in a second dimension -- a frame rate nobody decided, defaulting in two
+  // places. It is NOT fixed here because Conrad's ruling settled the RESOLUTION and no target frame
+  // rate has been decided by anyone. Declaring an `fps` field that nothing populates would be the
+  // exact shape this change exists to remove: `width` got here by being declared and never set.
+  // Filed rather than half-built.
   title?: { text: string; subtitle?: string }; // opening title card text; absent => no title card
   credits?: { lines: string[] };               // end-credit lines; absent => no credit card
   captions: FilmFinishCaption[];                // time-synced dialogue cues; empty => subtitle no-op
