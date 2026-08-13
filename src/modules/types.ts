@@ -701,6 +701,20 @@ export interface FilmFinishInput {
   video_url: string;   // presigned GET of the input film (the module fetches it)
   output_url: string;  // presigned PUT the module writes the carded film to
   output_key: string;  // the R2 key behind output_url (so the core knows where the result landed)
+  // cf#507b THE DELIVERY TARGET. REQUIRED, deliberately: the panel modules carry
+  // `width: input.width ?? 1920` / `height: input.height ?? 1080`, and those defaults are the
+  // defect -- 1080p was never decided anywhere, it was two independent fallbacks in two modules
+  // that were never told anything. Making these required means the core CANNOT emit a seed without
+  // them, so the modules' `??` arms become unreachable rather than silently load-bearing. A
+  // structural guarantee, not a convention a later edit can drop.
+  //
+  // A DECISION, not a measurement. Sourced from FilmJob.delivery_width/height via
+  // resolveDeliveryResolution, which falls back to ONE estate default and reports whether the
+  // value was decided or defaulted. Never the clips' own dimensions: assembling at the clips' size
+  // ships whatever the upscale produced instead of the delivery resolution.
+  width: number;
+  height: number;
+  fps?: number;
   title?: { text: string; subtitle?: string }; // opening title card text; absent => no title card
   credits?: { lines: string[] };               // end-credit lines; absent => no credit card
   captions: FilmFinishCaption[];                // time-synced dialogue cues; empty => subtitle no-op

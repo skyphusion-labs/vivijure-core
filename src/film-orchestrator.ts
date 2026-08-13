@@ -70,6 +70,7 @@ import {
   resolvePlannedSeconds,
   findClipDurationShortfalls,
   captionDurations,
+  resolveDeliveryResolution,
 } from "./film-model.js";
 import type {
   ConfigSchema,
@@ -1040,6 +1041,11 @@ export interface RunFilmFinishInput {
   // #698: ACTUAL per-shot assembled seconds (video-finish probe at assemble). Times caption cues to the
   // real cut; absent falls back to the bundle plan (readShotDurationsFromBundle).
   actual_durations?: Record<string, number>;
+  // cf#507b: the film's DELIVERY TARGET, carried from FilmJob. Absent falls back to the ONE estate
+  // default via resolveDeliveryResolution, which also reports whether it was decided -- so a
+  // defaulted target is never mistaken for a chosen one at the point it is used.
+  delivery_width?: number;
+  delivery_height?: number;
 }
 export interface RunFilmFinishResult {
   ran: boolean;      // false when no film.finish module is installed (caller leaves its state untouched)
@@ -1095,7 +1101,16 @@ async function filmFinishSeed(
     presignR2Put(env, sidecarKey, ttl),
     presignR2Put(env, metaKey, ttl),
   ]);
+  // cf#507b: ALWAYS populated, never conditionally. The panel modules fall back to `?? 1920` /
+  // `?? 1080`, and the whole defect is that those fallbacks were doing the deciding. Emitting the
+  // target on every seed makes those arms unreachable instead of load-bearing.
+  const delivery = resolveDeliveryResolution({
+    delivery_width: input.delivery_width,
+    delivery_height: input.delivery_height,
+  });
   return {
+    width: delivery.width,
+    height: delivery.height,
     film_key: inKey,
     video_url: videoUrl,
     output_url: outputUrl,
@@ -1517,6 +1532,8 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
   job.film_finish_prepend ??= {};
   job.film_output_seconds ??= {};
   const r = await runFilmFinish(env, {
+    delivery_width: job.delivery_width,
+    delivery_height: job.delivery_height,
     film_key: job.film_key,
     scenes: job.scenes,
     dialogue_lines: job.dialogue_lines,
@@ -1882,9 +1899,23 @@ async function enterAssemblePhase(
   // stripping it (-an) -- otherwise the assembled film comes out silent despite the spoken clips.
   const keepClipAudio = !!job.dialogue_audio && Object.keys(job.dialogue_audio).length > 0;
 
-  // Resolution/fps are left to the container default (it normalizes the clips); the motion output
-  // does not carry width/height, so matching the source resolution is a later polish, not a gate.
-  const resp = await callVideoFinish(env, { clips, outputUrl, outputKey, keepClipAudio });
+  // cf#507b: the container defaults to 1920x1080 when told nothing (containers/video-finish
+  // app.py) and letterboxes every clip into whatever geometry it is handed. Telling it the film's
+  // DELIVERY TARGET makes that geometry a decision rather than a coincidence of two defaults
+  // agreeing.
+  //
+  // The prior comment here said "the motion output does not carry width/height, so matching the
+  // source resolution is a later polish". That premise does not hold: validateDoneClips probes
+  // every done clip's tkhd and now persists delivered_width/height. It is also the wrong quantity
+  // -- assembling at the CLIPS' size ships whatever the upscale produced (2560x1440) instead of
+  // the delivery resolution, which is the opposite of shipping 1080p. Source dimensions choose the
+  // upscale factor; the target is what assemble is told.
+  const delivery = resolveDeliveryResolution(job);
+  const resp = await callVideoFinish(env, {
+    clips, outputUrl, outputKey, keepClipAudio,
+    width: delivery.width,
+    height: delivery.height,
+  });
   // A transient gateway outcome (unreachable / 502 / 503 / 504) auto-recovers across polls instead of
   // going terminal: the clips are intact in R2 and re-PUTting the same film key is idempotent, so keep
   // phase="assemble" and let the next poll re-attempt against a (by then) warmer container -- bounded so
