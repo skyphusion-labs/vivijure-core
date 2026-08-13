@@ -701,7 +701,16 @@ export interface FilmFinishInput {
   video_url: string;   // presigned GET of the input film (the module fetches it)
   output_url: string;  // presigned PUT the module writes the carded film to
   output_key: string;  // the R2 key behind output_url (so the core knows where the result landed)
-  // cf#507b THE DELIVERY TARGET. REQUIRED, deliberately: the panel modules carry
+  // cf#507b THE DELIVERY TARGET. OPTIONAL on the exported contract, and the reason is worth
+  // keeping because the first version of this had it REQUIRED. A required field on a published
+  // interface is breaking for every consumer that CONSTRUCTS one, and a published package cannot
+  // enumerate its consumers. It also buys no enforcement where the defect actually lives: the cf
+  // panel modules read a VENDORED copy of this contract, so this declaration never governed their
+  // `?? 1920` in the first place. Required-ness belongs on the thing that EMITS a seed, not on the
+  // shape both ends share -- see FilmFinishSeed in film-orchestrator.ts, whose fields ARE required,
+  // so the core still cannot dispatch without a target. Optional here, mandatory there.
+  //
+  // The panel modules carry
   // `width: input.width ?? 1920` / `height: input.height ?? 1080`, and those defaults are the
   // defect -- 1080p was never decided anywhere, it was two independent fallbacks in two modules
   // that were never told anything. Making these required means the core CANNOT emit a seed without
@@ -712,9 +721,10 @@ export interface FilmFinishInput {
   // resolveDeliveryResolution, which falls back to ONE estate default and reports whether the
   // value was decided or defaulted. Never the clips' own dimensions: assembling at the clips' size
   // ships whatever the upscale produced instead of the delivery resolution.
-  width: number;
-  height: number;
-  // NOTE, deliberately no `fps` here. The panel modules also carry `fps: input.fps ?? 24`, which is
+  width?: number;
+  height?: number;
+  fps?: number;
+  // NOTE on `fps`, which is now populated the same way width/height are. The panel modules also carry `fps: input.fps ?? 24`, which is
   // the identical defect in a second dimension -- a frame rate nobody decided, defaulting in two
   // places. It is NOT fixed here because Conrad's ruling settled the RESOLUTION and no target frame
   // rate has been decided by anyone. Declaring an `fps` field that nothing populates would be the

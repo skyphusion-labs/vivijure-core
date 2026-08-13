@@ -71,6 +71,7 @@ import {
   findClipDurationShortfalls,
   captionDurations,
   resolveDeliveryResolution,
+  DEFAULT_DELIVERY_FPS,
 } from "./film-model.js";
 import type {
   ConfigSchema,
@@ -1046,6 +1047,7 @@ export interface RunFilmFinishInput {
   // defaulted target is never mistaken for a chosen one at the point it is used.
   delivery_width?: number;
   delivery_height?: number;
+  delivery_fps?: number;
 }
 export interface RunFilmFinishResult {
   ran: boolean;      // false when no film.finish module is installed (caller leaves its state untouched)
@@ -1083,6 +1085,17 @@ export const FILM_FINISH_ASYNC_PRESIGN_TTL_SECONDS = 7200;
  *  FilmFinishInput seed. Shared by the synchronous dispatchChain path (ttl 1800) and the async submit
  *  path (a long ttl, since the PUT must outlive a multi-tick encode). The module is credentialless: it
  *  only ever sees these presigned URLs, never R2 creds. */
+/** cf#507b: what the CORE is allowed to emit as a film.finish seed.
+ *
+ *  Identical to FilmFinishInput except the delivery geometry is REQUIRED. That is where the
+ *  invariant belongs: the exported contract has to tolerate absence (consumers that construct their
+ *  own, a vendored copy on the panel side), while the producer must never be able to dispatch
+ *  without deciding. Making it required HERE keeps the structural guarantee -- the compiler refuses
+ *  a seed with no target -- without charging a breaking change to every consumer of the published
+ *  package for enforcement it would not provide anyway, since the panel modules read a vendored
+ *  copy of the contract rather than this one. */
+type FilmFinishSeed = FilmFinishInput & { width: number; height: number; fps: number };
+
 async function filmFinishSeed(
   env: Env,
   input: RunFilmFinishInput,
@@ -1090,7 +1103,7 @@ async function filmFinishSeed(
   outKey: string,
   captions: FilmFinishInput["captions"],
   ttl = 1800,
-): Promise<FilmFinishInput> {
+): Promise<FilmFinishSeed> {
   const sidecarKey = outKey.replace(/\.mp4$/i, "") + ".srt";
   // #130/#663: the measurement sidecar, presigned alongside the .srt one and for the same reason --
   // data that has to survive the step's OUTPUT never being read (see FilmFinishInput.meta_url).
@@ -1111,6 +1124,7 @@ async function filmFinishSeed(
   return {
     width: delivery.width,
     height: delivery.height,
+    fps: input.delivery_fps ?? DEFAULT_DELIVERY_FPS,
     film_key: inKey,
     video_url: videoUrl,
     output_url: outputUrl,
@@ -1534,6 +1548,7 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
   const r = await runFilmFinish(env, {
     delivery_width: job.delivery_width,
     delivery_height: job.delivery_height,
+    delivery_fps: job.delivery_fps,
     film_key: job.film_key,
     scenes: job.scenes,
     dialogue_lines: job.dialogue_lines,

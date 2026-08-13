@@ -88,6 +88,7 @@ export interface FilmJob {
    *  opposite of the 1080p ruling. */
   delivery_width?: number;
   delivery_height?: number;
+  delivery_fps?: number;
   film_id: string;
   project: string;
   bundle_key: string;
@@ -896,6 +897,15 @@ export function filmProgressMarker(job: FilmJob, clipJob: ClipJob | null): strin
  *  default and a substituted one are byte-identical. Single-sourcing it here means changing the
  *  estate default is one edit that cannot half-land. */
 export const DEFAULT_DELIVERY_WIDTH = 1920;
+/** The delivery frame rate. Same shape and same reason as the geometry: the panel modules carry
+ *  `fps: input.fps ?? 24`, the identical defect in a third dimension -- a frame rate nobody decided,
+ *  defaulting independently at two consumers. Sourced here so it is a decision, and carried on every
+ *  seed so those `?? 24` arms stop being what picks it.
+ *
+ *  NOT derived from a clip's measured `delivered_fps` or a step's `out_fps`: those are what the
+ *  footage IS, and this is what the film SHIPS AT. Deriving a target from a measurement is the same
+ *  conflation that would assemble a 1080p film at the upscale's 2560x1440. */
+export const DEFAULT_DELIVERY_FPS = 24;
 export const DEFAULT_DELIVERY_HEIGHT = 1080;
 
 /** A delivery target, plus whether it was DECIDED or merely defaulted.

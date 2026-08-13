@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { runFilmFinish } from "../src/film-orchestrator.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 import type { RegisteredModule } from "../src/modules/types.js";
-import { DEFAULT_DELIVERY_WIDTH, DEFAULT_DELIVERY_HEIGHT } from "../src/film-model.js";
+import { DEFAULT_DELIVERY_WIDTH, DEFAULT_DELIVERY_HEIGHT, DEFAULT_DELIVERY_FPS } from "../src/film-model.js";
 
 const FILM = "renders/p1/film.mp4";
 
@@ -74,6 +74,9 @@ describe("cf507b wiring: the film.finish seed carries the delivery target", () =
     expect(seen.length).toBeGreaterThan(0);
     expect(seen[0].width).toBe(DEFAULT_DELIVERY_WIDTH);
     expect(seen[0].height).toBe(DEFAULT_DELIVERY_HEIGHT);
+    // fps rides the same road for the same reason: the modules carry `fps: input.fps ?? 24`,
+    // which is this defect in a third dimension. Carried explicitly so that arm cannot decide.
+    expect(seen[0].fps).toBe(DEFAULT_DELIVERY_FPS);
     // Present, not absent. `undefined` here would mean the module is still doing the deciding.
     expect(seen[0].width).toBeDefined();
     expect(seen[0].height).toBeDefined();
