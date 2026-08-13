@@ -368,6 +368,14 @@ async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<boolean>
   job.film_finish_prepend ??= {};
   job.film_output_seconds ??= {};
   const r = await runFilmFinish(env, {
+    // cf#507b: scatter films decide their delivery target like every other path. Without this they
+    // silently take the default while the film path decides, which is how a permanent inconsistency
+    // gets in under "not a regression". ScatterJob has no delivery_* fields today, so this resolves
+    // to the estate default -- but it resolves it through the SAME single source, so giving scatter
+    // a per-film target later is a populate-it change rather than another call site to remember.
+    delivery_width: (job as { delivery_width?: number }).delivery_width,
+    delivery_height: (job as { delivery_height?: number }).delivery_height,
+    delivery_fps: (job as { delivery_fps?: number }).delivery_fps,
     film_key: job.film_key,
     // Caption scenes in the SAME order the gather assembles the clips (expected_shot_ids), NOT bundle
     // order, so buildCaptionCues' cumulative timeline matches the cut (the crux, #284/#285).

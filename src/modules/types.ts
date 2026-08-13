@@ -384,8 +384,22 @@ export interface FinishInput {
                       // Absent => a silent shot, so lip-sync no-ops (passthrough).
   src_fps?: number;  // optional hints; the finish backend probes the clip if absent
   frames?: number;
+  // SOURCE dimensions: what this clip ACTUALLY IS, measured. Absence is meaningful and honest here
+  // -- the backend probes the clip -- so a miss does NOT render as a value, unlike the film-level
+  // `?? 1920` this change exists to remove.
   width?: number;
   height?: number;
+  // cf#507b THE DELIVERY TARGET: what the FILM SHIPS AT. A DECISION, deliberately named apart from
+  // width/height above rather than overloading them. Those are a measurement of the footage; this is
+  // the resolution the finished film is delivered in, and conflating the two is what would make the
+  // upscale target its own input size instead of the deliverable.
+  //
+  // Its consumer is the upscale factor choice: a module compares the SOURCE dims against THIS and
+  // picks a scale that does not undershoot, instead of a blind 2x that lands below the target and
+  // gets stretched back up. Absent => the module keeps its existing default, which is today's
+  // behaviour.
+  delivery_width?: number;
+  delivery_height?: number;
   // #583 provenance: the core-computed param-hash of this step's inputs (finishStepInputHash), passed
   // so the producer can STAMP it verbatim to `<output_key>.hash` (artifact first, sidecar last). OPAQUE
   // to the module -- forward it into the RunPod job unchanged; never parse/recompute it. Optional +
@@ -701,6 +715,35 @@ export interface FilmFinishInput {
   video_url: string;   // presigned GET of the input film (the module fetches it)
   output_url: string;  // presigned PUT the module writes the carded film to
   output_key: string;  // the R2 key behind output_url (so the core knows where the result landed)
+  // cf#507b THE DELIVERY TARGET. OPTIONAL on the exported contract, and the reason is worth
+  // keeping because the first version of this had it REQUIRED. A required field on a published
+  // interface is breaking for every consumer that CONSTRUCTS one, and a published package cannot
+  // enumerate its consumers. It also buys no enforcement where the defect actually lives: the cf
+  // panel modules read a VENDORED copy of this contract, so this declaration never governed their
+  // `?? 1920` in the first place. Required-ness belongs on the thing that EMITS a seed, not on the
+  // shape both ends share -- see FilmFinishSeed in film-orchestrator.ts, whose fields ARE required,
+  // so the core still cannot dispatch without a target. Optional here, mandatory there.
+  //
+  // The panel modules carry
+  // `width: input.width ?? 1920` / `height: input.height ?? 1080`, and those defaults are the
+  // defect -- 1080p was never decided anywhere, it was two independent fallbacks in two modules
+  // that were never told anything. Making these required means the core CANNOT emit a seed without
+  // them, so the modules' `??` arms become unreachable rather than silently load-bearing. A
+  // structural guarantee, not a convention a later edit can drop.
+  //
+  // A DECISION, not a measurement. Sourced from FilmJob.delivery_width/height via
+  // resolveDeliveryResolution, which falls back to ONE estate default and reports whether the
+  // value was decided or defaulted. Never the clips' own dimensions: assembling at the clips' size
+  // ships whatever the upscale produced instead of the delivery resolution.
+  width?: number;
+  height?: number;
+  fps?: number;
+  // NOTE on `fps`, which is now populated the same way width/height are. The panel modules also carry `fps: input.fps ?? 24`, which is
+  // the identical defect in a second dimension -- a frame rate nobody decided, defaulting in two
+  // places. It is NOT fixed here because Conrad's ruling settled the RESOLUTION and no target frame
+  // rate has been decided by anyone. Declaring an `fps` field that nothing populates would be the
+  // exact shape this change exists to remove: `width` got here by being declared and never set.
+  // Filed rather than half-built.
   title?: { text: string; subtitle?: string }; // opening title card text; absent => no title card
   credits?: { lines: string[] };               // end-credit lines; absent => no credit card
   captions: FilmFinishCaption[];                // time-synced dialogue cues; empty => subtitle no-op

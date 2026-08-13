@@ -75,6 +75,20 @@ export interface FilmKeyframeRef {
 }
 
 export interface FilmJob {
+  /** cf#507b: THE DELIVERY TARGET for this film -- a DECISION, not a measurement.
+   *
+   *  Absent today on every job: populated from DEFAULT_DELIVERY_WIDTH/HEIGHT via
+   *  resolveDeliveryResolution, which reports `decided:false` for that case so a consumer can tell
+   *  a defaulted target from a chosen one. The field exists now so a per-film or per-tier target
+   *  later is a populate-it-differently change rather than a contract change.
+   *
+   *  NOT to be confused with ClipShot.delivered_width/height, which are a MEASUREMENT of what the
+   *  motion/finish chain produced and whose only job is choosing an upscale factor. Threading the
+   *  measurement where this decision belongs assembles the film at the clips' size, which is the
+   *  opposite of the 1080p ruling. */
+  delivery_width?: number;
+  delivery_height?: number;
+  delivery_fps?: number;
   film_id: string;
   project: string;
   bundle_key: string;
@@ -875,6 +889,55 @@ export function filmProgressMarker(job: FilmJob, clipJob: ClipJob | null): strin
 
 /** Default fraction of a shot`s planned seconds an assembled clip must reach before it is treated as a
  *  truncation defect (#697) rather than a legitimate beat-trim. Clamped to [0,1]; a 0 disables the gate. */
+/** THE delivery resolution for a film, in ONE place.
+ *
+ *  Films have always shipped 1920x1080, and until now that was not a decision expressed anywhere:
+ *  it was `?? 1920` and `?? 1080` defaulting INDEPENDENTLY in two panel modules that were never
+ *  told anything. Nothing set it, and nothing could observe that nothing set it, because a honoured
+ *  default and a substituted one are byte-identical. Single-sourcing it here means changing the
+ *  estate default is one edit that cannot half-land. */
+export const DEFAULT_DELIVERY_WIDTH = 1920;
+/** The delivery frame rate. Same shape and same reason as the geometry: the panel modules carry
+ *  `fps: input.fps ?? 24`, the identical defect in a third dimension -- a frame rate nobody decided,
+ *  defaulting independently at two consumers. Sourced here so it is a decision, and carried on every
+ *  seed so those `?? 24` arms stop being what picks it.
+ *
+ *  NOT derived from a clip's measured `delivered_fps` or a step's `out_fps`: those are what the
+ *  footage IS, and this is what the film SHIPS AT. Deriving a target from a measurement is the same
+ *  conflation that would assemble a 1080p film at the upscale's 2560x1440. */
+export const DEFAULT_DELIVERY_FPS = 24;
+export const DEFAULT_DELIVERY_HEIGHT = 1080;
+
+/** A delivery target, plus whether it was DECIDED or merely defaulted.
+ *
+ *  `decided` is the load-bearing field and it is not decoration: without it, a film carrying an
+ *  explicit target and a film carrying nothing return identical values, which is precisely the
+ *  state the panel modules are in today. A consumer that cannot tell the two apart has rebuilt
+ *  `?? 1920` with more steps. */
+export interface DeliveryResolution {
+  width: number;
+  height: number;
+  decided: boolean;
+}
+
+function positiveInt(n: unknown): number {
+  const v = Number(n);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+
+/** Resolve a film's delivery target. BOTH axes or neither: a half-supplied target is an upstream
+ *  bug, not a decision, and completing it from the default would produce a confident wrong aspect
+ *  ratio, which is worse than defaulting both. Total by construction -- every refusal path lands on
+ *  the default, so a zero geometry (letterboxing into nothing) can never reach the container. */
+export function resolveDeliveryResolution(
+  job: { delivery_width?: unknown; delivery_height?: unknown },
+): DeliveryResolution {
+  const w = positiveInt(job?.delivery_width);
+  const h = positiveInt(job?.delivery_height);
+  if (w && h) return { width: w, height: h, decided: true };
+  return { width: DEFAULT_DELIVERY_WIDTH, height: DEFAULT_DELIVERY_HEIGHT, decided: false };
+}
+
 export const DEFAULT_CLIP_DURATION_FLOOR = 0.5;
 
 /** Pure: parse + clamp the per-shot duration-floor knob (env.FILM_CLIP_DURATION_FLOOR) into [0,1].

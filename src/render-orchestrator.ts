@@ -490,6 +490,12 @@ export async function validateDoneClips(env: Env, job: ClipJob): Promise<boolean
     if (shot.status !== "done" || !shot.clip_key || shot.validated) continue;
     const res = await validateClipArtifact(env, shot.clip_key, shot.seconds);
     shot.validated = res.verdict;
+    // cf#507b: keep the dimensions this probe already measured. They were computed here and
+    // dropped into the event below while only the verdict survived, which is why the finish chain
+    // had to assume a resolution it could have known. Recorded regardless of verdict: a failed
+    // clip's real size is still evidence, and the shot is failed on its own merits below.
+    if (typeof res.checks?.width === "number" && res.checks.width > 0) shot.delivered_width = res.checks.width;
+    if (typeof res.checks?.height === "number" && res.checks.height > 0) shot.delivered_height = res.checks.height;
     emitStructuredEvent({
       ev: "clip.validate",
       job_id: job.job_id,
