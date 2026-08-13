@@ -5,7 +5,9 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## [1.11.0] -- 2026-08-13
 
-MINOR. An explicit `model_family` is now HONOURED rather than silently substituted.
+MINOR. The film delivery resolution becomes a DECISION carried on every seed; finish shots keep
+the dimensions the pipeline already measured; `summarizeFinish` reports degraded shots; and an
+explicit `model_family` is HONOURED rather than silently substituted.
 
 ### fix(cast-train): explicit "wan" no longer collapses into the host default (core#174)
 
@@ -49,6 +51,50 @@ wan when not wired"`, `"ignores renderOverrides wan family when Wan train is not
 inverted. `tests/cast-train-explicit-wan-refusal.test.ts` is new and drives `handleCastTrainLora`
 end to end, which nothing in the suite had done before, so the 501 this fix defers to is now
 observed firing rather than assumed.
+
+### feat(film): the delivery resolution is a decision, not two defaults agreeing (#177)
+
+**What changes for a consumer.** Every `film.finish` seed now carries `width`, `height` and `fps`
+explicitly, so a module's `width: input.width ?? 1920` arm is unreachable rather than silently
+load-bearing. A module that relied on that fallback to choose the resolution will now receive one.
+The values are additive and optional on `FilmFinishInput`, so nothing is forced to change.
+
+Films shipped at 1920x1080 and that was never a decision anyone made. It was `?? 1920` and `?? 1080`
+defaulting INDEPENDENTLY in two panel modules that were never told anything -- and nothing could
+observe that nothing set it, because a honoured default and a substituted one are byte-identical.
+
+Two quantities are now separated and must not be conflated:
+
+- **`delivery_width` / `delivery_height` / `delivery_fps`** -- a DECISION, what the film ships at.
+  Resolved through one source (`resolveDeliveryResolution`) which reports `decided`, so a defaulted
+  target and a chosen one are distinguishable at the point of use. Both axes or neither: a
+  half-supplied target is an upstream bug, and completing it from the default produces a confident
+  wrong aspect ratio, which is worse than defaulting both.
+- **`ClipShot.delivered_width` / `delivered_height`, and `FinishInput.width` / `height`** -- a
+  MEASUREMENT, what the footage actually is. Its only consumer is choosing an upscale factor.
+
+Threading the measurement where the decision belongs assembles the film at the clips' size, which
+with an upscale in the chain is the opposite of shipping 1080p.
+
+**No new probe.** `validateDoneClips` already parsed every finished clip's `tkhd` box and dropped
+the result into a log event one line after computing it. The premise recorded at the assemble leg --
+*"the motion output does not carry width/height, so matching the source resolution is a later
+polish"* -- did not hold as a statement about what the core knows.
+
+`FinishInput` gains `delivery_width` / `delivery_height`, named apart from the existing
+`width` / `height` deliberately: those are SOURCE hints the backend probes for when absent, and
+overloading them for the target would make an upscale aim at its own input size.
+
+Source dimensions are LOOKED UP at dispatch rather than copied onto the finish shot, because a copy
+is a snapshot of a measurement and goes stale when a clip is re-rendered mid-finish. A lookup miss
+(no clip job, no document, an unparseable document, no matching shot) yields NO ENTRY rather than a
+guessed dimension, so absence still triggers a real probe downstream instead of rendering as a value.
+
+### fix(film-model): report degraded finish shots in `summarizeFinish` (#176)
+
+**What changes for a consumer.** `FinishSummary` gains a `degraded` count. It reads correctly on job
+documents written before this change, since it is derived from shot state rather than stored.
+
 
 ## [1.10.0] -- 2026-08-07
 
