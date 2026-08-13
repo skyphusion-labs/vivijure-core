@@ -3,6 +3,53 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.11.0] -- 2026-08-13
+
+MINOR. An explicit `model_family` is now HONOURED rather than silently substituted.
+
+### fix(cast-train): explicit "wan" no longer collapses into the host default (core#174)
+
+`resolveCastTrainFamily` had two branches returning the identical expression:
+
+```ts
+if (norm === "wan") return wanConfigured ? "wan" : "sdxl";   // explicit "wan"
+return wanConfigured ? "wan" : "sdxl";                        // absent
+```
+
+so passing `model_family: "wan"` was byte-identical to passing nothing, and `"sdxl"` was the only
+value in the function that changed anything. The explicit branch existed and did nothing.
+
+**The consequence was a consent defect, not a routing nicety.** On a host with no
+`RUNPOD_WAN_TRAIN_ENDPOINT_ID`, `POST /api/cast/:id/train-lora` with `model_family: "wan"` returned
+**200** having trained **SDXL**, after the panel had shown the user a Wan 2.2 confirm dialog quoting
+a different duration and a different price. The one field carrying the truth, `modelFamily`, has
+zero read sites on the panels, so nothing surfaced the substitution.
+
+The resolver now separates two questions it had been answering with one expression:
+
+- **EXPLICIT** -- the caller named a family, so honour it verbatim. `"wan"` returns `"wan"` whatever
+  the host state, and `executeCastTrain`'s already-shipped 501 (`"Wan cast LoRA training is not
+  configured on this host"`) refuses. No second refusal path was invented: that guard re-reads the
+  binding itself, so it cannot be defeated by what the resolver was passed.
+- **ABSENT** -- no preference expressed, so pick the host default (Wan when wired, SDXL otherwise).
+  Unchanged, and it stays silent, because choosing for someone who did not choose is legitimate.
+
+An unrecognised value takes the ABSENT path rather than being waved through to a refusal nobody
+asked for.
+
+**Behaviour change consumers must handle.** `POST /train-lora` with an explicit `"wan"` on an
+unwired host was 200 + an SDXL job and is now **501 + no job submitted**. Both panels currently
+call `/train-lora` and have no 501 handling on that button, so they will surface a raw failure
+where they previously showed false success. Wiring the button to the refusal is tracked separately
+(vivijure-cf#420, vivijure-local#346, vivijure-local#329). Every other path is untouched: explicit
+`"sdxl"`, no family at all, and explicit `"wan"` on a wired host all behave exactly as before.
+
+Two existing tests had pinned the defect as intended behaviour (`"falls back to sdxl for explicit
+wan when not wired"`, `"ignores renderOverrides wan family when Wan train is not wired"`); both are
+inverted. `tests/cast-train-explicit-wan-refusal.test.ts` is new and drives `handleCastTrainLora`
+end to end, which nothing in the suite had done before, so the 501 this fix defers to is now
+observed firing rather than assumed.
+
 ## [1.10.0] -- 2026-08-07
 
 ### feat: reach RunPod through the control-plane proxy when it is bound (cp#321 step 1)
