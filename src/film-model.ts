@@ -295,7 +295,7 @@ export function joinKeyframesToScenes(
   return { matched, missing };
 }
 
-export interface FinishSummary { total: number; done: number; failed: number; pending: number; adopted: number; }
+export interface FinishSummary { total: number; done: number; failed: number; pending: number; adopted: number; degraded: number; }
 /** #707: per-shot delivered-vs-planned duration, surfaced on the film summary. A fixed-grid motion
  *  backend (e.g. CogVideoX: 8fps pinned, per-tier frame caps) honestly clamps a shot's requested
  *  duration; the clamp was always visible in the module output but silent to the API/UI. One entry per
@@ -375,6 +375,15 @@ export function summarizeFinish(shots: FinishShot[]): FinishSummary {
     failed: shots.filter((s) => s.status === "failed").length,
     pending: shots.filter((s) => s.status === "pending").length,
     adopted: shots.filter((s) => (s.adopted?.length ?? 0) > 0).length, // #583: shots with >=1 finish step reused from R2
+    // A soft-degraded shot is DONE and did no work. The module tags it `passthrough:<reason>` rather
+    // than fabricating a success tag (#77/#249), so the disclosure is already persisted -- it was only
+    // never SUMMARISED, and an all-degraded stage read total:N done:N failed:0 exactly like a clean one.
+    // Read off `applied`/`adopted` deliberately: no new FinishShot field, so this reports correctly on
+    // job docs written before this change. `noop:` is EXCLUDED -- an intentional no-op (e.g. a lip-sync
+    // module on a shot with no dialogue) is not a degrade and must not raise an alarm.
+    degraded: shots.filter((s) =>
+      [...(s.applied ?? []), ...(s.adopted ?? [])].some((tag) => tag.startsWith("passthrough:")),
+    ).length,
   };
 }
 export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummary {
