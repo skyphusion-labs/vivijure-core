@@ -89,6 +89,20 @@ export interface FilmJob {
   delivery_width?: number;
   delivery_height?: number;
   delivery_fps?: number;
+  /** cf#518: RESPONSE-ONLY. Set to `true` on the job a submit gets back when that submit was
+   *  DEDUPLICATED against a live claim -- i.e. the caller's inputs matched an in-flight submit
+   *  inside the idempotency window and no second film was started.
+   *
+   *  NON-OPTIONAL by ruling, and the reason is worth keeping at the field: a 201-that-is-really-a-200
+   *  with no marker is an absence rendering as a value. Without it the caller cannot distinguish
+   *  "your film started" from "you got an existing film's id", and neither can a log, a test, or a
+   *  load test counting submissions.
+   *
+   *  NEVER PERSISTED, and that is structural rather than a convention: the only code that sets it is
+   *  the dedup return path, which reads the existing doc and writes nothing at all. There is no path
+   *  on which a job carrying this field reaches putFilm. A test asserts the persisted docs never
+   *  carry it. */
+  deduplicated?: true;
   film_id: string;
   project: string;
   bundle_key: string;

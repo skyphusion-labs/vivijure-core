@@ -3,6 +3,76 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.12.0
+
+MINOR. Film submit gets an idempotency guard, so a double-click, a client timeout or a proxy retry
+returns the film that is already running instead of starting a second one and a second GPU bill.
+
+### feat(film): guard film submit against duplicate starts (cf#518)
+
+`film_id` is minted as `"film-" + crypto.randomUUID()` at both mint sites, so two identical submits
+produced two different ids, two jobs and two bills. Nothing guarded it. It is not hypothetical: a D1
+storage-timeout on `insertRender` turned **film-941a4d3b**'s 201 into a 500 and baited a retry-on-5xx
+client into a SECOND film, denial-of-wallet by our own response. cf#695 fixed that TRIGGER (post-start
+bookkeeping is best-effort now) and left the EXPOSURE, because a double-click, a client-side timeout
+or a proxy retry still produces a second live film.
+
+**The guard is in core, not in a panel.** Both mint sites are here, and `vivijure-cf`,
+`vivijure-local` and the scatter path all funnel through them, so a cf-side guard would knowingly
+leave the other two exposed against a standing two-panel parity invariant.
+
+Two mechanisms, per the cf#518 ruling:
+
+- **A client-supplied idempotency key** (`idempotency_key` on both entry points). Zero false
+  positives, because the client declares intent, and the double-click case IS the panel. When
+  present it REPLACES the natural key, so the same declared key is the same submit whatever the
+  inputs.
+- **A natural-key backstop over a 60-second window**, for every path that cannot be changed: MCP,
+  direct API consumers, proxy retries. The number is defended rather than picked: every mechanism
+  this guards fires in seconds (a double-click ~2s, a retry-on-5xx seconds, a proxy retry seconds),
+  and nobody deliberately re-renders an identical bundle within 60 seconds. Longer starts eating
+  legitimate re-renders; shorter starts missing slow client retries.
+
+A deduplicated submit returns the EXISTING job carrying `deduplicated: true`. That marker is not
+optional: a 201-that-is-really-a-200 with no marker is an absence rendering as a value, and without
+it neither a caller, a log, a test nor a load test counting submissions can tell "your film started"
+from "you got an existing film's id". It is response-only and never persisted, structurally rather
+than by convention: the only code that sets it is the dedup return path, which reads the existing
+doc and writes nothing at all.
+
+**Refuse-with-409 was rejected.** It is hostile and it breaks a LEGITIMATE re-render of identical
+inputs, which is exactly what someone does after a degraded run. A guard that refuses correct work is
+the guard people switch off. The load-bearing test is therefore the false-positive one, and it was
+driven red first: **a deliberate re-render OUTSIDE the window must NOT be deduplicated.** A suite
+that only proved dedup works would pass against a version that swallows every legitimate re-render.
+
+Two further cases the guard deliberately lets through, each with a test: a submit that FAILED at
+start spent nothing, so it releases its claim rather than making the user wait out a window for a
+film that never lived; and a claim naming a film whose job doc is absent starts fresh rather than
+handing back a ghost id nothing can poll.
+
+**Storage.** Core already writes the host-supplied `env.DB` directly and already ships a table it
+creates itself where it writes it (`storage_usage_meta`). `film_submit_claims` mirrors that exactly:
+no new binding, no new storage concept, and no panel migration. Each host keeps its own dedup state
+in its own D1, which is the correct shape anyway, since a tenant's dedup window is a tenant's
+business. The claim is ONE statement -- an `INSERT ... ON CONFLICT(claim_key) DO UPDATE ... WHERE
+claimed_at <= ?` -- so it is race-free rather than a read-then-write with a window in the middle, and
+the `WHERE` arm is what lets an expired claim be taken over.
+
+**The guard fails OPEN, decided at design time and stated at the code.** No database, an unavailable
+table, a D1 error: every degraded path proceeds with the submit and reports `guarded: false` with a
+named reason, logged greppably. A submit that 500s because the dedup guard could not run would be
+strictly worse than the defect the guard exists to fix, and an unguarded submit is exactly what
+shipped before this release.
+
+`renders-db.ts` already carries `ON CONFLICT(job_id) DO NOTHING` one module away, and the
+resemblance is a trap worth naming: that clause deduplicates a retry carrying the SAME `job_id`,
+while this defect mints a DIFFERENT id on every submit, so it never fires for it. What it does
+establish is that this is the layer where such things live.
+
+Adopting hosts get the natural-key backstop with nothing but the version bump. Passing
+`idempotency_key` through from a panel's submit route is a panel change and is tracked separately.
+
 ## [1.11.0] -- 2026-08-13
 
 MINOR. The film delivery resolution becomes a DECISION carried on every seed; finish shots keep
