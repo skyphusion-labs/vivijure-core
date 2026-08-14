@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.14.0
+## [1.14.0] -- 2026-08-14
 
 MINOR. Per-render participation for the `finish` chain (cf#537), so a caller names which finish
 modules run on their render instead of every bound module running on every shot.
