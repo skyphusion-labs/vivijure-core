@@ -6,7 +6,54 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 ## Unreleased / v1.13.0
 
 MINOR. Presigned satellite inputs for the finish and speech chains, so a satellite can fetch its
-input and write its output without holding an R2 credential.
+input and write its output without holding an R2 credential. Plus a starvation fix and a coverage
+metric for the cron sweep.
+
+### fix(sweep): rotate the sweep window so the newest films are reached (#180)
+
+Both sweep passes were `ORDER BY submitted_at ASC LIMIT 25` with no offset, so every tick re-read
+the same oldest page. **Oldest-first with any cap starves the tail, and the tail is the newest
+work** -- exactly what a load test or a beta tester is waiting on. Raising the cap only moves the
+cliff.
+
+MEASURED against the real vivijure-cf schema in a real SQLite engine (`tests/helpers/d1-sqlite.ts`;
+the pre-existing renders-db fakes record SQL text and are structurally unable to see this):
+
+| population | ticks | reached | **never reached** |
+|---|---|---|---|
+| 40 unresolved films | 10 | 25 | **15** (`film-025`..`film-039`) |
+| 40, of which the oldest 25 can never resolve | 100 | 25 | **15, zero attempts** |
+
+The fix rotates the page over the whole population, so every row is handled once per
+`ceil(total / limit)` ticks regardless of what the head of the queue is doing. An unresolvable row
+now costs one slot for one tick per cycle instead of holding it forever.
+
+- **Least-recently-attempted is not available and this was checked rather than assumed.** `renders`
+  carries no attempt-history column: `advance_lease` is a mutual-exclusion lease set back to NULL on
+  release, and `updated_at` moves only on genuine progress, so a permanently stuck row keeps an old
+  stamp and would be re-selected forever. Adding a column means a vivijure-cf migration, which makes
+  this cross-repo and no longer independently deployable. The rotation buys the same
+  starvation-freedom from the clock and a column that already exists.
+- **`ORDER BY submitted_at ASC` had no tiebreaker**, and `submitted_at` is INTEGER *seconds*, so a
+  bulk submit puts many films on the same value with an unspecified order between them -- which is
+  precisely the load-test workload. `, id ASC` makes the page boundary deterministic; without it a
+  rotating window can skip or repeat rows.
+- **A film in phase `done` past 24h was in NEITHER pass** and stayed open forever: pass 1 had aged
+  it out, pass 2 matched only `assemble`/`finish`/`mux`. `done` is now in pass 2's match list.
+  Residual, stated rather than papered over: a `done` row whose film-job doc has been GC'd from R2
+  is still skipped, because nothing can close it from the DB alone.
+- **Coverage is now reportable.** `@event render_sweep` carries each pass's population, offset,
+  returned count and the doc-missing count. Nothing anywhere previously distinguished *swept and
+  clean* from *never reached*. `total: null` means UNMEASURED and is never rendered as 0 -- a total
+  defaulting to zero would disable rotation and claim full coverage in the same breath.
+
+`sweepUnresolvedJobs` keeps its `Promise<number>` signature and its handled-count semantics, so
+vivijure-cf's existing sweep test is unaffected; that test routes D1 queries by SQL text and its
+fake returns row-shaped results for the new COUNT query, which lands as `total: null` and disables
+rotation rather than producing a wrong window. Verified by running cf's whole suite (2747 tests)
+against a local build of this branch, with controls proving the swapped build carried the change and
+the stock one did not.
+
 
 ### fix(storage): stage-and-swap the reconcile, so a killed rebuild cannot certify a partial ledger (cf#516)
 
