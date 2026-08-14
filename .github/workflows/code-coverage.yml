@@ -43,6 +43,7 @@ jobs:
             modules/keyframe
             modules/own-gpu
             modules/_shared
+            migrations
           sparse-checkout-cone-mode: false
 
       - name: Setup Node.js environment
