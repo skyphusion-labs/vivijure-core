@@ -2823,20 +2823,28 @@ async function advanceFilmJobLocked(env: Env, filmId: string): Promise<{ job: Fi
       const p = await pollModule<KeyframeOutput>(fetcher, { poll: job.keyframe_poll });
       if (!p.ok) { job.phase = "failed"; job.error = p.error; }
       else if (!(p as { pending?: boolean }).pending) {
+        job.keyframe_wait = undefined;
         const out = (p as { output: KeyframeOutput }).output;
         const v = hookOutputViolation(job.keyframe_binding ?? "keyframe", "keyframe", out);
         if (v) { job.phase = "failed"; job.error = v; }
         else await afterKeyframeOutput(env, job, out, modules);
-      } else if (await keyframeSetCompleteInR2(env, job)) {
-        // R2 PRESENCE IS AUTHORITATIVE, even on a *pending* poll (#129 sibling, mirrors #154 for finish):
-        // the keyframe job's RunPod envelope can freeze at IN_PROGRESS after the GPU already wrote every
-        // renders/<project>/keyframes/shot_NN.png to R2, so the poll reads pending forever. Don't wait for
-        // KEYFRAME_STALL_SECONDS (20min) to adopt -- once the FULL set is in R2, advance now. The
-        // completeness guard is essential: adopting a PARTIAL set (mid-generation) would advance to clips
-        // with keyframes missing. (recoverStalledKeyframePhase stays as the >20min backstop, which HOLDS a
-        // partial set below the ceiling and delivers-with-degrade at it, #619.) This path already proved the
-        // FULL set is present, so atCeiling=false is moot: recovery takes its full-set advance branch.
-        await recoverStalledKeyframePhase(env, job, modules, false);
+      } else {
+        // cf#307: surface module wait phase (accepted vs running) so the poll view can distinguish
+        // cold start from sampling. Modules that omit wait leave keyframe_wait cleared.
+        const wait = (p as { wait?: string }).wait;
+        if (wait === "accepted" || wait === "running") job.keyframe_wait = wait;
+        else job.keyframe_wait = undefined;
+        if (await keyframeSetCompleteInR2(env, job)) {
+          // R2 PRESENCE IS AUTHORITATIVE, even on a *pending* poll (#129 sibling, mirrors #154 for finish):
+          // the keyframe job's RunPod envelope can freeze at IN_PROGRESS after the GPU already wrote every
+          // renders/<project>/keyframes/shot_NN.png to R2, so the poll reads pending forever. Don't wait for
+          // KEYFRAME_STALL_SECONDS (20min) to adopt -- once the FULL set is in R2, advance now. The
+          // completeness guard is essential: adopting a PARTIAL set (mid-generation) would advance to clips
+          // with keyframes missing. (recoverStalledKeyframePhase stays as the >20min backstop, which HOLDS a
+          // partial set below the ceiling and delivers-with-degrade at it, #619.) This path already proved the
+          // FULL set is present, so atCeiling=false is moot: recovery takes its full-set advance branch.
+          await recoverStalledKeyframePhase(env, job, modules, false);
+        }
       }
     }
     await putFilm(env, job);

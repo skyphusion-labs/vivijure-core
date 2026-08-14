@@ -38,6 +38,21 @@ chains are ordinary and are covered.
 One-time effect on deploy: the marker gains a third field, so the first advance after this ships sees
 a changed marker and re-stamps once. Harmless, and stated so it is not read as a defect.
 
+### feat(modules): PollResponse can say accepted vs running (cf#307)
+
+Optional additive `wait?: "accepted" | "running"` on `{ ok: true, pending: true }`. Backend-neutral
+(not RunPod vocabulary): cold start / queue vs compute underway. Keyframe film path stores
+`keyframe_wait` and maps `accepted` -> poll view `IN_QUEUE` so the panel can distinguish spinning-up
+from sampling without inventing a state when the module omits `wait`.
+
+The host NARROWS the module's value to the two-member set before storing it, and clears it
+otherwise, so a module cannot put an arbitrary string on the poll view: `backend_wait` is only ever
+`accepted` or `running`.
+
+Modules that omit `wait` are unchanged -- both phases keep reading as bare pending, which is the
+pre-cf#307 behaviour. The emit half is vivijure-cf#429, which is a companion rather than a
+replacement: it needs this merged and published before `IN_QUEUE` can appear.
+
 ### fix(sweep): rotate the sweep window so the newest films are reached (#180)
 
 Both sweep passes were `ORDER BY submitted_at ASC LIMIT 25` with no offset, so every tick re-read

@@ -128,6 +128,10 @@ export interface FilmJob {
   // The keyframe module's backend RunPod job id (#318), surfaced on its async-accept envelope. Lets
   // the poll handler read that job's progress snapshot (counts.keyframe_done) for keyframe sub-progress.
   keyframe_job_id?: string;
+  // cf#307: last module `/poll` wait phase while keyframe is still pending. Backend-neutral
+  // (`accepted` = not started / cold start; `running` = compute underway). Absent when the module
+  // does not report wait (pre-cf#307 modules) -- host must not invent a queue state.
+  keyframe_wait?: "accepted" | "running";
   clip_job_id?: string;
   finish_shots?: FinishShot[];
   speech_shots?: SpeechShot[]; // per-shot speech (dialogue-audio enhance) chain, run between dialogue and finish
