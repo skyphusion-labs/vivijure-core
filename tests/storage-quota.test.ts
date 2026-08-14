@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  STORAGE_REBUILD_DDL,
   STORAGE_USAGE_DDL,
+  StorageReconcileTooLargeError,
   checkStorageQuota,
   isMeteredStore,
   isStorageSubmitRoute,
@@ -34,13 +36,23 @@ interface FakeDb extends Database {
   /** storage_usage_meta, and whether it EXISTS yet: core creates it where it writes it. */
   meta: Map<string, string>;
   metaTableExists: boolean;
+  /** storage_usage_rebuild: the cf#516 staging table, created where it is written like meta. */
+  rebuild: Map<string, number>;
+  rebuildTableExists: boolean;
   failNext?: string;
 }
 
 function fakeDb(): FakeDb {
   const rows = new Map<string, number>();
   const calls: string[] = [];
-  const db = { rows, calls, meta: new Map<string, string>(), metaTableExists: false } as FakeDb;
+  const db = {
+    rows,
+    calls,
+    meta: new Map<string, string>(),
+    metaTableExists: false,
+    rebuild: new Map<string, number>(),
+    rebuildTableExists: false,
+  } as FakeDb;
 
   // D1 semantics: prepare() yields a statement, and bind() yields a NEW statement carrying ITS OWN
   // values, so one prepared statement can be bound many times (the pattern reconcile uses).
@@ -70,8 +82,21 @@ function fakeDb(): FakeDb {
       if (db.failNext && norm.includes(db.failNext)) throw new Error("db exploded");
       if (norm.startsWith("CREATE TABLE IF NOT EXISTS storage_usage_meta")) {
         db.metaTableExists = true;
+      } else if (norm.startsWith("CREATE TABLE IF NOT EXISTS storage_usage_rebuild")) {
+        db.rebuildTableExists = true;
       } else if (norm.startsWith("INSERT INTO storage_usage_meta")) {
         db.meta.set(String(bound[0]), String(bound[1]));
+      } else if (norm.startsWith("DELETE FROM storage_usage_meta WHERE key = ?")) {
+        db.meta.delete(String(bound[0]));
+      } else if (norm.startsWith("INSERT INTO storage_usage_rebuild")) {
+        if (!db.rebuildTableExists) throw new Error("no such table: storage_usage_rebuild");
+        db.rebuild.set(String(bound[0]), Number(bound[1]));
+      } else if (norm.startsWith("DELETE FROM storage_usage_rebuild")) {
+        db.rebuild.clear();
+      } else if (norm.startsWith("INSERT INTO storage_usage (object_key, bytes, updated_at) SELECT")) {
+        // The swap's promote step: staged rows become the ledger.
+        if (!db.rebuildTableExists) throw new Error("no such table: storage_usage_rebuild");
+        for (const [k, v] of db.rebuild) rows.set(k, v);
       } else if (norm.startsWith("INSERT INTO storage_usage")) {
         rows.set(String(bound[0]), Number(bound[1]));
       } else if (norm.startsWith("DELETE FROM storage_usage WHERE object_key = ?")) {
@@ -868,7 +893,10 @@ describe("reconcileStorageUsage (backfill + drift repair)", () => {
     for (let i = 0; i < 250; i += 1) bucket.objects.set(`k${i}`, 1);
     const report = await reconcileStorageUsage(bucket, db, { chunkSize: 100 });
     expect(report.objects).toBe(250);
-    expect(batches).toEqual([100, 100, 50]);
+    // Three staging chunks, then the cf#516 swap as ONE batch of four statements (drop the old
+    // rows, promote the staged ones, clear the scratch, re-stamp). The swap being a single batch is
+    // the atomicity guarantee, so its size is pinned rather than left to drift.
+    expect(batches).toEqual([100, 100, 50, 4]);
     expect(await storageUsedBytes(db)).toBe(250);
   });
 });
@@ -879,5 +907,258 @@ describe("STORAGE_USAGE_DDL", () => {
     expect(STORAGE_USAGE_DDL).toContain("object_key TEXT PRIMARY KEY");
     expect(STORAGE_USAGE_DDL).toContain("bytes INTEGER NOT NULL");
     expect(STORAGE_USAGE_DDL).toContain("updated_at INTEGER NOT NULL");
+  });
+});
+
+// --------------------------------------------------------------- cf#516: partial rebuild
+//
+// A reconcile used to DELETE the ledger and then re-insert it. If the invocation died between those
+// two steps the ledger was left neither the old state nor the new one -- and nothing said so,
+// because `ledger_true_since` still carried the stamp from the PREVIOUS successful rebuild. So
+// `storageQuotaState` reported `complete: true` about a ledger that was under-reporting: the
+// completeness mechanism cp#195 built to keep "we read zero" and "we could not read" apart was
+// CERTIFYING the one state it exists to catch, in the direction that under-bills. Measured before
+// the fix: 39 of 40 injection points left the ledger stamped at a total that was never true,
+// including 0 bytes.
+//
+// THE INVARIANT, stated deliberately without reference to how the rebuild is implemented:
+//
+//     a STAMPED ledger holds a total that was actually true at some instant.
+//
+// Intact-and-stamped is fine, incomplete-and-unstamped is fine, incomplete-and-stamped is the
+// defect. Asserting the invariant rather than one injection point is what lets this survive a change
+// of strategy; asserting "the stamp is null after a death" would pin one implementation and go green
+// on a rebuild that never destroyed anything in the first place.
+//
+// The seam is a db whose Nth ledger write throws, which is what a platform-terminated invocation
+// looks like from inside the module: no application error, just a call that does not return.
+
+/** A statement that touches the ledger or its stamp, i.e. one whose loss can corrupt state. */
+function isLedgerWrite(norm: string): boolean {
+  return /^(INSERT INTO|DELETE FROM) storage_usage/.test(norm);
+}
+
+/**
+ * Wrap a fake db so the Nth ledger-affecting write throws, as a killed invocation would.
+ * `atomicBatch` models D1, where `batch()` is one transaction: it applies wholly or not at all.
+ */
+function dieOnWrite(db: FakeDb, nth: number, opts?: { atomicBatch?: boolean }): FakeDb {
+  const realPrepare = db.prepare.bind(db);
+  let writes = 0;
+  // Statements issued from INSIDE a batch must not be injected into individually, or the "atomic"
+  // batch is interruptible half-way and the harness quietly models the opposite of what it claims.
+  // This bit cost a real debugging round: the atomic sweep reported one partial ledger, and it was
+  // the instrument, not the code.
+  let insideBatch = false;
+  const wrap = (s: PreparedStatement, norm: string): PreparedStatement => ({
+    bind: (...v: unknown[]) => wrap(s.bind(...v), norm),
+    first: <T,>() => s.first<T>(),
+    all: <T,>() => s.all<T>(),
+    async run() {
+      if (!insideBatch && isLedgerWrite(norm)) {
+        writes += 1;
+        if (writes === nth) throw new Error("Worker exceeded resource limits");
+      }
+      return s.run();
+    },
+  });
+  db.prepare = (sql: string) => {
+    const norm = sql.replace(/\s+/g, " ").trim();
+    return wrap(realPrepare(sql), norm);
+  };
+  if (opts?.atomicBatch) {
+    db.batch = async (stmts: PreparedStatement[]) => {
+      // D1 runs a batch inside an implicit transaction, so a failure rolls the whole batch back.
+      // Model that by counting the batch as ONE write and applying it all-or-nothing.
+      writes += 1;
+      if (writes === nth) throw new Error("Worker exceeded resource limits");
+      insideBatch = true;
+      try {
+        for (const s of stmts) await s.run();
+      } finally {
+        insideBatch = false;
+      }
+      return [];
+    };
+  }
+  return db;
+}
+
+describe("cf#516: a partial rebuild must never leave the ledger CERTIFIED", () => {
+  const SEED_TOTAL = 31375; // sum 1..250
+  const EXTRA = 100000; // one object added after the seed, so a COMPLETE rebuild has its own total
+  const COMPLETE_TOTAL = SEED_TOTAL + EXTRA;
+  /** Past the longest write sequence either host produces, so the sweep covers every phase. */
+  const SWEEP = 300;
+
+  /** A studio whose ledger is complete and STAMPED (i.e. billable), then an object arrives. */
+  async function seededStudio() {
+    const db = fakeDb();
+    const bucket = fakeBucket();
+    for (let i = 1; i <= 250; i += 1) bucket.objects.set(`renders/k${i}.mp4`, i);
+    await reconcileStorageUsage(bucket, db);
+    bucket.objects.set("renders/new.mp4", EXTRA);
+    return { db, bucket };
+  }
+
+  it("CONTROL: the fake keeps the ledger and the staging table APART", async () => {
+    // "storage_usage" is a PREFIX of "storage_usage_rebuild", so a mis-ordered dispatch arm in the
+    // fake would make staging write straight into the ledger and every assertion below would pass
+    // about a rebuild that never staged anything.
+    const db = fakeDb();
+    await db.prepare(STORAGE_REBUILD_DDL).bind().run();
+    await db
+      .prepare("INSERT INTO storage_usage_rebuild (object_key, bytes, updated_at) VALUES (?, ?, ?)")
+      .bind("staged", 7, 1)
+      .run();
+    expect(db.rebuild.get("staged")).toBe(7);
+    expect(db.rows.has("staged")).toBe(false);
+  });
+
+  it("CONTROL: the seeded studio is complete and billable before anything goes wrong", async () => {
+    const { db } = await seededStudio();
+    expect(await storageUsedBytes(db)).toBe(SEED_TOTAL);
+    expect(await storageLedgerTrueSince(db)).not.toBeNull();
+    const state = await storageQuotaState({ DB: db, R2_STORAGE_QUOTA_BYTES: "999999999", R2_STORAGE_QUOTA_MODE: "meter" });
+    expect(state.complete).toBe(true);
+  });
+
+  it("CONTROL: an uninterrupted rebuild picks the new object up and stays billable", async () => {
+    const { db, bucket } = await seededStudio();
+    await reconcileStorageUsage(bucket, db, { chunkSize: 100 });
+    expect(await storageUsedBytes(db)).toBe(COMPLETE_TOTAL);
+    expect(await storageLedgerTrueSince(db)).not.toBeNull();
+    expect(db.rebuild.size).toBe(0); // the scratch table is emptied on the way out
+  });
+
+  /** Run one full sweep of injection points and classify how each run ended. */
+  async function sweep(atomicBatch: boolean) {
+    let intact = 0;
+    let incomplete = 0;
+    let complete = 0;
+    let unstamped = 0;
+    const violations: string[] = [];
+    for (let nth = 1; nth <= SWEEP; nth += 1) {
+      const { db, bucket } = await seededStudio();
+      try {
+        await reconcileStorageUsage(bucket, dieOnWrite(db, nth, { atomicBatch }), { chunkSize: 100 });
+        complete += 1;
+      } catch {
+        /* the invocation died, which is the case under test */
+      }
+      const used = await storageUsedBytes(db);
+      const stamped = (await storageLedgerTrueSince(db)) !== null;
+      if (!stamped) unstamped += 1;
+      if (used === SEED_TOTAL) intact += 1;
+      else if (used !== COMPLETE_TOTAL) incomplete += 1;
+      if (stamped && used !== SEED_TOTAL && used !== COMPLETE_TOTAL) {
+        violations.push(`death at write ${nth}: ledger STAMPED at ${used} bytes, which was never true`);
+      }
+    }
+    return { intact, incomplete, complete, unstamped, violations };
+  }
+
+  it("INVARIANT, host with NO batch (Node/SQLite): partial is possible, certified-partial is not", async () => {
+    const r = await sweep(false);
+    // DENOMINATORS, so a clean result cannot be a sweep that never reached the dangerous phase.
+    expect(r.intact).toBeGreaterThan(0); // deaths during staging destroy nothing
+    expect(r.complete).toBeGreaterThan(0); // the sweep runs past the end of the write sequence
+    expect(r.unstamped).toBeGreaterThan(0); // the invalidate step is really reached
+    // Without transactions the swap CAN be interrupted, so a partial ledger is reachable here...
+    expect(r.incomplete).toBeGreaterThan(0);
+    // ...and every one of them is unstamped. That is the guarantee this host gets.
+    expect(r.violations).toEqual([]);
+  });
+
+  it("INVARIANT, host with ATOMIC batch (D1/Workers): the ledger is never partial at all", async () => {
+    const r = await sweep(true);
+    expect(r.intact).toBeGreaterThan(0);
+    expect(r.complete).toBeGreaterThan(0);
+    expect(r.unstamped).toBeGreaterThan(0);
+    // The stronger guarantee: the swap is one transaction, so no interruption leaves a partial
+    // ledger. Not merely "no violations" -- the corrupt state is unreachable.
+    expect(r.incomplete).toBe(0);
+    expect(r.violations).toEqual([]);
+  });
+
+  it("an interrupted rebuild reports a metering GAP, never a smaller confident total", async () => {
+    // Find an injection point that actually leaves the ledger neither old nor new.
+    let found = 0;
+    for (let nth = 1; nth <= SWEEP; nth += 1) {
+      const { db, bucket } = await seededStudio();
+      try {
+        await reconcileStorageUsage(bucket, dieOnWrite(db, nth), { chunkSize: 100 });
+      } catch {
+        /* expected */
+      }
+      const used = await storageUsedBytes(db);
+      if (used === SEED_TOTAL || used === COMPLETE_TOTAL) continue;
+      found += 1;
+      const state = await storageQuotaState({
+        DB: db,
+        R2_STORAGE_QUOTA_BYTES: "999999999",
+        R2_STORAGE_QUOTA_MODE: "meter",
+      });
+      expect(state.complete).toBe(false);
+      expect(state.reason).toMatch(/floor|true/i);
+      const verdict = await checkStorageQuota({ DB: db, R2_STORAGE_QUOTA_BYTES: "999999999" });
+      expect(verdict.complete).toBe(false);
+    }
+    // Not a vacuous pass: the loop must really have found interrupted-and-incomplete ledgers.
+    expect(found).toBeGreaterThan(0);
+  });
+});
+
+describe("cf#516: a rebuild that cannot finish REFUSES instead of half-running", () => {
+  it("refuses before deleting anything, and says nothing was deleted", async () => {
+    const db = fakeDb();
+    const bucket = fakeBucket();
+    for (let i = 1; i <= 250; i += 1) bucket.objects.set(`renders/k${i}.mp4`, i);
+    await reconcileStorageUsage(bucket, db); // establish a good, stamped ledger
+    const before = await storageUsedBytes(db);
+    expect(before).toBe(31375);
+
+    // A budget far below what 250 objects need on a host with no batch (one call per row).
+    await expect(reconcileStorageUsage(bucket, db, { subrequestBudget: 20 })).rejects.toThrow(
+      StorageReconcileTooLargeError,
+    );
+    // THE POINT: the refusal is not a partial run. The ledger is untouched and still billable.
+    expect(await storageUsedBytes(db)).toBe(before);
+    expect(await storageLedgerTrueSince(db)).not.toBeNull();
+  });
+
+  it("the refusal carries the numbers an operator needs, and names the remedy", async () => {
+    const db = fakeDb();
+    const bucket = fakeBucket();
+    for (let i = 1; i <= 250; i += 1) bucket.objects.set(`renders/k${i}.mp4`, i);
+    const err = await reconcileStorageUsage(bucket, db, { subrequestBudget: 20 }).catch((e) => e);
+    expect(err).toBeInstanceOf(StorageReconcileTooLargeError);
+    expect(err.budget).toBe(20);
+    expect(err.projectedCalls).toBeGreaterThan(20);
+    expect(err.message).toMatch(/NOTHING WAS DELETED/);
+    expect(err.message).toMatch(/prefix/);
+  });
+
+  it("refuses DURING enumeration too, before a single row is staged", async () => {
+    const db = fakeDb();
+    const bucket = fakeBucket();
+    // A store that would page forever: the budget is what stops it.
+    bucket.list = async () => ({ objects: [{ key: "k", size: 1 }], truncated: true, cursor: "next" });
+    await expect(reconcileStorageUsage(bucket, db, { subrequestBudget: 5 })).rejects.toThrow(
+      /still listing/,
+    );
+    expect(db.rebuild.size).toBe(0);
+    expect(db.rows.size).toBe(0);
+  });
+
+  it("CONTROL: a studio comfortably inside the budget is not refused", async () => {
+    const db = fakeDb();
+    const bucket = fakeBucket();
+    for (let i = 1; i <= 250; i += 1) bucket.objects.set(`renders/k${i}.mp4`, i);
+    // The default budget must not fire on an ordinary studio: a guard that refuses correct work is
+    // the guard people switch off.
+    const report = await reconcileStorageUsage(bucket, db, { chunkSize: 100 });
+    expect(report.objects).toBe(250);
+    expect(await storageLedgerTrueSince(db)).not.toBeNull();
   });
 });
