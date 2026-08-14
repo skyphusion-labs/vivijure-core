@@ -50,5 +50,12 @@ export function validateManifest(raw: unknown): ModuleManifest | string {
     if (typeof m.keyframe_label !== "string" || !m.keyframe_label.trim())
       return "keyframe_label must be a non-empty string";
   }
+  // cf#537: refuse a malformed participation value at LOAD rather than coercing it. The field's
+  // default is permissive, so a typo ("optin", "opt-in", true) that fell through to the default would
+  // silently put an opt-in module back on every render -- the failure would look exactly like the
+  // module never having declared anything. Absent stays legal; wrong does not.
+  if (m.participation !== undefined && m.participation !== "default" && m.participation !== "opt_in") {
+    return `participation ${JSON.stringify(m.participation)} unknown (default | opt_in)`;
+  }
   return m as unknown as ModuleManifest;
 }

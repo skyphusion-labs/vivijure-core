@@ -48,6 +48,7 @@
 import type { Database } from "./platform/types.js";
 import { canonicalJson, sha256Hex } from "./finish-hash.js";
 import { emitStructuredEvent } from "./structured-events.js";
+import type { HookSelection } from "./modules/types.js";
 
 /** Canonical DDL. Core creates this table where it writes it, so neither panel needs a migration and
  *  the guard is live the moment a host adopts the release. */
@@ -131,6 +132,7 @@ export function naturalKeyForStartFilmJob(args: {
   keyframe_config?: Record<string, unknown>;
   motion_config?: Record<string, unknown>;
   finish_config?: Record<string, Record<string, unknown>>;
+  finish_select?: HookSelection;
   speech_config?: Record<string, Record<string, unknown>>;
   film_finish_config?: Record<string, Record<string, unknown>>;
   master_config?: Record<string, Record<string, unknown>>;
@@ -154,6 +156,11 @@ export function naturalKeyForStartFilmJob(args: {
       keyframe_config: args.keyframe_config ?? null,
       motion_config: args.motion_config ?? null,
       finish_config: args.finish_config ?? null,
+      // cf#537: render-affecting. Two submits differing ONLY in which finish modules were requested
+      // are different renders; omit this and the second caller silently inherits the first's chain.
+      // The `?? null` convention keeps absent, {mode:"default"} and {mode:"named",modules:[]} as three
+      // distinct canonical JSON values, so the three wire states survive the fingerprint.
+      finish_select: args.finish_select ?? null,
       speech_config: args.speech_config ?? null,
       film_finish_config: args.film_finish_config ?? null,
       master_config: args.master_config ?? null,
@@ -180,6 +187,7 @@ export function naturalKeyForStartFromKeyframes(args: {
   motion_config?: Record<string, unknown>;
   motion_configs?: Record<string, Record<string, unknown>>;
   finish_config?: Record<string, Record<string, unknown>>;
+  finish_select?: HookSelection;
   speech_config?: Record<string, Record<string, unknown>>;
   film_finish_config?: Record<string, Record<string, unknown>>;
   master_config?: Record<string, Record<string, unknown>>;
@@ -200,6 +208,11 @@ export function naturalKeyForStartFromKeyframes(args: {
       motion_config: args.motion_config ?? null,
       motion_configs: args.motion_configs ?? null,
       finish_config: args.finish_config ?? null,
+      // cf#537: render-affecting. Two submits differing ONLY in which finish modules were requested
+      // are different renders; omit this and the second caller silently inherits the first's chain.
+      // The `?? null` convention keeps absent, {mode:"default"} and {mode:"named",modules:[]} as three
+      // distinct canonical JSON values, so the three wire states survive the fingerprint.
+      finish_select: args.finish_select ?? null,
       speech_config: args.speech_config ?? null,
       film_finish_config: args.film_finish_config ?? null,
       master_config: args.master_config ?? null,

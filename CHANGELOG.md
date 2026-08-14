@@ -3,6 +3,52 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.14.0
+
+MINOR. Per-render participation for the `finish` chain (cf#537), so a caller names which finish
+modules run on their render instead of every bound module running on every shot.
+
+### feat(modules): per-render `finish` participation, and `participation` on the manifest (cf#537)
+
+`finish` is a CHAIN hook, so BINDING a module was the entire enrolment: `servingForHook` applied no
+participation filter and `enterFinishPhase` folded every bound finish module into every shot's chain.
+There was no per-render gate anywhere on the path. `finish-blender` was therefore applying a real
+`filmic_warm` grade at strength 1.0 to every shot of every film, unrequested, and the job reported
+`finish: done, failed 0, degraded 0` -- a module ran that nobody asked for and every signal read
+clean.
+
+Conrad ruled the fix is PER-RENDER and caller-named. This ships the mechanism:
+
+- **`ModuleManifest.participation?: "default" | "opt_in"`** -- OPTIONAL and additive, so no
+  `MODULE_API` bump (the same pattern as `cancelable` / `finish_consumes_audio`). A module declares
+  its OWN nature; the policy stays in the core.
+- **`HookSelection` / `RenderHookSelection`** -- a tagged union, deliberately not a `string[]`. Three
+  wire states that must never collapse: ABSENT (a caller predating the contract), `{mode:"default"}`,
+  and `{mode:"named",modules}` where `[]` means ZERO finish modules and is a first-class value. A
+  bare array invites `sel?.length ? named : all()` at some call site nobody reviews, which rebuilds
+  this exact defect; with the tag that collapse does not typecheck.
+- **`selectForChain`** -- the single place the policy lives, pure and unit-tested.
+- **`SELECTABLE_HOOKS`** -- the gate is PER HOOK and contains only `finish`. The other six chain
+  hooks (`score`, `speech`, `master`, `film.finish`, `notify`, `plan.enhance`) keep
+  run-every-bound-module, deliberately and unchanged. `HOOK_CARDINALITY` is untouched.
+- **Wire** -- `select` rides INSIDE the `renderOverrides` bag, so the replay paths (`regen-shot`,
+  `finalize`, `animate-cloud`, `animate-hybrid`) inherit a selection with no `renders` schema change,
+  and the two store-shipped native clients can express one through expert JSON with no app release.
+  `finish_select` is carried to `FilmJob` as its own field and is part of BOTH idempotency natural
+  keys.
+- **Conformance** requires an explicit `participation` from any module serving a selectable hook;
+  `validateManifest` still LOADS one without it (a third-party manifest is not our gate to fail) but
+  REFUSES a malformed value, so a typo cannot read as the permissive default.
+
+**No caller has to change.** A render that sends no selection keeps `finish-rife` /
+`finish-lipsync` / `finish-upscale` byte-for-byte as before and simply stops getting the grade. The
+manifest default is permissive, which is a stated limit rather than an oversight: absence at the
+manifest layer is a signal, and the mitigation is the conformance gate rather than a simultaneous
+27-manifest cutover.
+
+**Consumers** repin to pick this up; `vivijure-cf` carries the matching `finish-blender`
+`participation: "opt_in"` declaration and the door plumbing.
+
 ## [1.13.0] -- 2026-08-14
 
 MINOR. Presigned satellite inputs for the finish and speech chains, so a satellite can fetch its

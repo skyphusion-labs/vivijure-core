@@ -7,7 +7,7 @@
 // downstream invoker) -- this is the plan it hands off. Pure + dependency-free, so it unit-tests
 // without bindings.
 
-import type { HookName, RegisteredModule } from "./types.js";
+import { SELECTABLE_HOOKS, type HookName, type HookSelection, type RegisteredModule, type RenderHookSelection } from "./types.js";
 import { servingForHook, validateConfig } from "./registry.js";
 
 /** One resolved module in a render pipeline: who serves the hook + the clamped config to send it. */
@@ -37,6 +37,48 @@ export interface RenderPipelineSelection {
   motion_backend_choice?: string;
   keyframe_backend_choice?: string;
   config?: Record<string, Record<string, unknown>>;
+  /** cf#537: the caller's per-render participation statement, keyed by hook. Honoured only for hooks
+   *  in SELECTABLE_HOOKS; an absent entry means the default-participation set for that hook. */
+  select?: RenderHookSelection;
+}
+
+/** What `selectForChain` resolved: the modules that will actually run, and any NAMED module that is
+ *  not serving this hook. `missing` is never silently dropped by the caller -- a caller that asked for
+ *  a specific finish module and did not get it must be told (cf#500 from the other side: a module
+ *  nobody named must not run by accident, and a module you DID name and cannot have must not be
+ *  silent). */
+export interface ChainSelection {
+  modules: RegisteredModule[];
+  missing: string[];
+}
+
+/** PURE. Apply a caller's per-render participation statement to the modules serving a chain hook
+ *  (cf#537). This is the single place the policy lives; the manifest declares only each module's own
+ *  nature (`participation`) and the hook allowlist declares only which hooks honour a selection.
+ *
+ *  - hook NOT in SELECTABLE_HOOKS -> `serving` unchanged, whatever the selection says. The gate is
+ *    per-hook, so turning `finish` on does not turn `notify` on.
+ *  - `{ mode: "named" }` -> exactly those, intersected with `serving`, KEEPING ui.order (the order is
+ *    the registry's, never the caller's array order: the finish chain's order is a correctness
+ *    property, see finish_consumes_audio). Naming a module overrides its `participation`.
+ *  - ABSENT or `{ mode: "default" }` -> every serving module that does not declare
+ *    `participation: "opt_in"`. This is what makes the pre-cf#537 behaviour survive for every caller
+ *    that sends nothing, minus exactly the modules that asked to be opted into. */
+export function selectForChain(
+  serving: RegisteredModule[],
+  hook: HookName,
+  selection: HookSelection | undefined,
+): ChainSelection {
+  if (!SELECTABLE_HOOKS.has(hook)) return { modules: serving, missing: [] };
+  if (selection && selection.mode === "named") {
+    const named = new Set(selection.modules);
+    const modules = serving.filter((m) => named.has(m.name));
+    const found = new Set(modules.map((m) => m.name));
+    // Deduplicated, and in the caller's own order, so the diagnostic reads back what they sent.
+    const missing = [...new Set(selection.modules)].filter((n) => !found.has(n));
+    return { modules, missing };
+  }
+  return { modules: serving.filter((m) => (m.participation ?? "default") !== "opt_in"), missing: [] };
 }
 
 export function normalizeBackendChoice(choice: string | undefined): string | undefined {
@@ -113,8 +155,11 @@ export function resolveRenderPipeline(
   selection: RenderPipelineSelection = {},
 ): RenderPipelinePlan {
   const cfg = selection.config ?? {};
+  // cf#537: chains resolve through the participation gate. For a non-selectable hook this is the
+  // identity, so every hook except `finish` folds exactly as it did before.
   const chain = (hook: HookName): ResolvedModule[] =>
-    servingForHook(modules, hook).map((m) => resolve(m, cfg[m.name]));
+    selectForChain(servingForHook(modules, hook), hook, selection.select?.[hook]).modules
+      .map((m) => resolve(m, cfg[m.name]));
   const motion = pickOneForHook(modules, "motion.backend", selection.motion_backend_choice);
   const keyframeChoice = coupleLocalGpuKeyframeChoice(
     modules,
