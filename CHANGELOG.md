@@ -49,12 +49,52 @@ manifest layer is a signal, and the mitigation is the conformance gate rather th
 **Consumers** repin to pick this up; `vivijure-cf` carries the matching `finish-blender`
 `participation: "opt_in"` declaration and the door plumbing.
 
-## [1.13.0] -- 2026-08-14
 
-MINOR. Presigned satellite inputs for the finish and speech chains, so a satellite can fetch its
-input and write its output without holding an R2 credential. Plus a stall-clock fix for shots
-working correctly through a multi-step finish chain, and a starvation fix and coverage metric for
-the cron sweep.
+### fix(scatter): discover the module registry once per request, not once per shard (vivijure-cf#515)
+
+`advanceScatterJob` drives every shard inside ONE HTTP request, and each shard called
+`advanceFilmJob`, which discovered the module registry bare. A discovery is one subrequest per bound
+module, so the cost was **SHARDS x MODULES**.
+
+Measured with the suite's own fetch counter, before and after, same instrument:
+
+```
+shards        1     2     3     6    12
+before       27    54    81   162   324      manifest fetches per request
+after        27    27    27    27    27
+```
+
+At the live catalogue of 27 modules and the UI's shard floor of 2, that is 54 fetches for the
+smallest scatter render and 162 for a 6-shard board, against a 1000-subrequest request ceiling --
+before any per-shot work, and repeated on the panel's 8-second poll.
+
+**#521 already fixed this shape one level down, and its bound could not reach here.** That change
+discovers once per FILM tick and threads the registry through every phase leg; its comment records
+why (per-leg discovery once blew the free-plan 50-subrequest cap on a 25-module install). Scatter
+runs S film ticks per request, so it multiplied precisely the thing #521 bounded. The fix is the same
+mechanism extended one level up: `advanceFilmJob` and `advanceFilmJobLocked` take an optional
+`preModules`, and the shard loop discovers once and hands the same registry to every shard. Manifests
+are static within a request for the same reason #521 says they are static within a tick.
+
+**Discovery sits just above the shard loop, not at the top of the function**, so the early-return
+paths (cancelled, done, failed, finishing) still pay nothing. Hoisting it would add a fan-out to
+every poll of an already-finished render -- a new cost introduced by a change whose purpose is
+removing one -- so that placement carries its own assertion rather than only a comment.
+
+**Scoped to the scatter fan-out deliberately.** Jitter, a `cacheTtlMs` default, a visibility pause
+and error backoff are all real and all separate arguments; bundling any of them here would make this
+result unmeasurable. Worth recording alongside: **`d1-retry.ts:78` jitters its retries while the
+panel poll does not** -- the server jitters and the client does not, in the same estate.
+
+**Why this mattered more than the issue as filed.** cf#515 models two poll modes, a lease winner and
+a lease loser, and warns that a mean hides the winner's cost. The lease is released in `finally`
+every tick and is keyed on `job_id`, so different films never contend and "more concurrent films"
+does not shift the mode mix at all -- the two defects in that issue are orthogonal, not compounding.
+The mode a mean actually hides is this third one, which the issue does not model: **an acceptance
+test written from cf#515 as filed would have passed while this stayed exactly where it was.**
+
+Work merged after `vivijure-core-v1.13.0` was cut. These entries were originally filed under
+the 1.13.0 heading, which is published and does not contain them. See core#202.
 
 ### fix(stall): count per-STEP progress in the film progress marker (#182)
 
@@ -98,6 +138,31 @@ otherwise, so a module cannot put an arbitrary string on the poll view: `backend
 Modules that omit `wait` are unchanged -- both phases keep reading as bare pending, which is the
 pre-cf#307 behaviour. The emit half is vivijure-cf#429, which is a companion rather than a
 replacement: it needs this merged and published before `IN_QUEUE` can appear.
+
+### test(tar): the bundle-key determinism suite could not observe a constant key (cf#460 residual)
+
+`tests/tar-deterministic-mtime.test.ts` shipped with every case a SAME-INPUT case, and its
+`assembleBundle` assertion was `if (first.ok && second.ok) expect(second.bundleKey).toBe(first.bundleKey)`.
+That cannot distinguish STABLE from ABSENT from CONSTANT: `undefined === undefined` passes, and an
+implementation returning one hardcoded key passes too. Stability is the whole property the file
+exists to guard, and a content address that is not a function of the content has stopped being an
+address -- a strictly worse defect than the wall-clock one the file was written for.
+
+Adds the missing negative control (different portrait bytes MUST yield a different key) and routes
+both cases through a helper that asserts a key EXISTS unconditionally, rather than inside a
+narrowing `if` where the assertion vanishes with its branch. Driven, not asserted: mutating
+`assembleBundle` to return a constant key reddens the new control while the stability case stays
+GREEN -- which is precisely the blindness being fixed -- and mutating it to return no key at all
+reddens both. Restore verified byte-identical by sha256.
+
+No production code changed.
+
+## [1.13.0] -- 2026-08-14
+
+MINOR. Presigned satellite inputs for the finish and speech chains, so a satellite can fetch its
+input and write its output without holding an R2 credential. Plus a stall-clock fix for shots
+working correctly through a multi-step finish chain, and a starvation fix and coverage metric for
+the cron sweep.
 
 ### fix(sweep): rotate the sweep window so the newest films are reached (#180)
 
@@ -144,24 +209,6 @@ rotation rather than producing a wrong window. Verified by running cf's whole su
 against a local build of this branch, with controls proving the swapped build carried the change and
 the stock one did not.
 
-
-### test(tar): the bundle-key determinism suite could not observe a constant key (cf#460 residual)
-
-`tests/tar-deterministic-mtime.test.ts` shipped with every case a SAME-INPUT case, and its
-`assembleBundle` assertion was `if (first.ok && second.ok) expect(second.bundleKey).toBe(first.bundleKey)`.
-That cannot distinguish STABLE from ABSENT from CONSTANT: `undefined === undefined` passes, and an
-implementation returning one hardcoded key passes too. Stability is the whole property the file
-exists to guard, and a content address that is not a function of the content has stopped being an
-address -- a strictly worse defect than the wall-clock one the file was written for.
-
-Adds the missing negative control (different portrait bytes MUST yield a different key) and routes
-both cases through a helper that asserts a key EXISTS unconditionally, rather than inside a
-narrowing `if` where the assertion vanishes with its branch. Driven, not asserted: mutating
-`assembleBundle` to return a constant key reddens the new control while the stability case stays
-GREEN -- which is precisely the blindness being fixed -- and mutating it to return no key at all
-reddens both. Restore verified byte-identical by sha256.
-
-No production code changed.
 
 ### fix(storage): stage-and-swap the reconcile, so a killed rebuild cannot certify a partial ledger (cf#516)
 

@@ -2786,11 +2786,15 @@ async function persistFilmJobFailed(env: Env, filmId: string, error: string): Pr
  *  the claimFinish conditional-UPDATE pattern): the loser skips quietly and reports the doc
  *  read-only; the lease is released after the tick and expires on its own if the winner crashed,
  *  so a genuine retry is never deadlocked. */
-export async function advanceFilmJob(env: Env, filmId: string): Promise<{ job: FilmJob; clipJob: ClipJob | null } | null> {
+export async function advanceFilmJob(
+  env: Env,
+  filmId: string,
+  preModules?: RegisteredModule[],
+): Promise<{ job: FilmJob; clipJob: ClipJob | null } | null> {
   const claim = await claimAdvanceOrFailOpen(env, filmId);
   if (!claim.won) return readFilmJobReadOnly(env, filmId);
   try {
-    return await advanceFilmJobLocked(env, filmId);
+    return await advanceFilmJobLocked(env, filmId, preModules);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // #32: a corrupt / truncated R2 job doc makes JSON.parse throw on EVERY advance tick, so the render
@@ -2823,7 +2827,11 @@ export async function advanceFilmJob(env: Env, filmId: string): Promise<{ job: F
 }
 
 /** The advance tick body; the caller holds (or fail-opened past) the advance lease. */
-async function advanceFilmJobLocked(env: Env, filmId: string): Promise<{ job: FilmJob; clipJob: ClipJob | null } | null> {
+async function advanceFilmJobLocked(
+  env: Env,
+  filmId: string,
+  preModules?: RegisteredModule[],
+): Promise<{ job: FilmJob; clipJob: ClipJob | null } | null> {
   const obj = await env.R2_RENDERS.get(filmKey(filmId));
   if (!obj) return null;
   const job = JSON.parse(await obj.text()) as FilmJob;
@@ -2834,7 +2842,13 @@ async function advanceFilmJobLocked(env: Env, filmId: string): Promise<{ job: Fi
   // each phase function re-fanning-out N `/module.json` subrequests. A tick can chain several discovering
   // legs (finish -> assemble -> master/mux -> film.finish + notify), so the old per-leg discovery blew the
   // free-plan 50-subrequest cap on a 25-module install (F9). Manifests are static within a tick.
-  const modules = await discoverModules(envRec);
+  //
+  // cf#515: `preModules` extends that ONE LEVEL UP, for a caller that drives several films inside a
+  // single request. #521's bound is per-FILM, and `advanceScatterJob` runs S film ticks per HTTP
+  // request, so scatter multiplied exactly the thing #521 bounded: S x M manifest fetches, measured
+  // at 162 for S=6 / M=27 before this. Manifests are static within a tick for the same reason they
+  // are static within a request, so one registry serves every shard.
+  const modules = preModules ?? await discoverModules(envRec);
 
   // Stall recovery (#129): a pollable phase whose module poll never resolves (RunPod GC'd the finished
   // job) would otherwise hang IN_PROGRESS forever. Run BEFORE the phase legs so an adopted keyframe
