@@ -100,7 +100,12 @@ function introducingCommit(title: string): string | null {
   return shas.length ? shas[shas.length - 1] : null;
 }
 
-const BACKFILL_RE = /^\s*[-*]?\s*Backfilled:\s*\S+/im;
+// The reason must be on the SAME LINE as the marker. `\s` matches newlines, so an earlier
+// `\s*\S+` was satisfied by the CONTINUATION line of an otherwise-empty declaration:
+//   - Backfilled:\n     ...indented prose...
+// passed as a declared reason. `[^\S\n]` is horizontal whitespace only, so an empty marker
+// stays empty. Found by measuring the condition rather than by reading the regex.
+const BACKFILL_RE = /^[^\S\n]*[-*]?[^\S\n]*Backfilled:[^\S\n]*\S+/im;
 
 describe("every entry under a released heading is IN that release (core#202)", () => {
   const changelog = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8");
@@ -207,6 +212,14 @@ describe("every entry under a released heading is IN that release (core#202)", (
     // Prose ABOUT backfilling is not a declaration, and an empty reason is not one either.
     expect(BACKFILL_RE.test("### x\n\n- this was backfilled at some point")).toBe(false);
     expect(BACKFILL_RE.test("### x\n\n- Backfilled:")).toBe(false);
+    // THE SHAPE THAT ACTUALLY OCCURS, and the one the fixture above could not produce: an empty
+    // marker whose bullet CONTINUES on the next line. `\s` spans newlines, so a reason-less
+    // declaration was previously satisfied by its own continuation text. A fixture with nothing
+    // after the colon cannot reach that path, which is why this case is stated separately.
+    expect(BACKFILL_RE.test("### x\n\n- Backfilled:\n  continuation prose, not a reason")).toBe(false);
+    expect(BACKFILL_RE.test("### x\n\n- Backfilled:   \n  continuation prose")).toBe(false);
+    // ...and a real same-line reason still passes, so the tightening did not break the escape.
+    expect(BACKFILL_RE.test("### x\n\n- Backfilled: the code shipped; only the entry was late.\n  more")).toBe(true);
   });
 
   it("CONTROL: isAncestor can return BOTH answers on this repo", () => {
