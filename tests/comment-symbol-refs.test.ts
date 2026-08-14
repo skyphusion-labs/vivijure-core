@@ -148,6 +148,19 @@ describe("core#183 stale-consumer-reference detector: it must be able to FAIL", 
     expect(r.out).toContain("REFUSED");
   });
 
+  it("REFUSES a root that exists but holds no .py at all, which can only contribute absences", () => {
+    // The degenerate form of a present-but-incomplete root. The real CI run hit the NON-degenerate
+    // form -- a sparse checkout with 13 .py files -- which this floor does not catch and is not
+    // claimed to; that one is prevented by the wiring, not by a check.
+    const live = consumer("live8", ["handler.py"]);
+    const barren = join(work, "barren");
+    mkdirSync(join(barren, "src"), { recursive: true });
+    writeFileSync(join(barren, "src", "readme.txt"), "no python here\n");
+    const r = run({ src: srcWith("mentions handler.py"), roots: [live, barren] });
+    expect(r.code).toBe(2);
+    expect(r.out).toContain("no .py files at all");
+  });
+
   it("REFUSES an exclusion with no reason, and one with no expected count", () => {
     const c = consumer("live6", ["handler.py"]);
     const src = srcWith("the pod reads this in gone_forever.py");

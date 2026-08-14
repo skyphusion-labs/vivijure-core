@@ -152,6 +152,24 @@ function main() {
     process.exit(2);
   }
 
+  // Per-root floor. A root that exists but contributes NOTHING is the degenerate form of a root
+  // that is present but incomplete, and it is the form that is cheap to catch.
+  //
+  // HONEST LIMIT, because the alternative is implying coverage this does not have: a merely NARROW
+  // root is not caught. Reusing a sparse vivijure-cf checkout here contributed 13 .py files rather
+  // than 0, passed this floor, and made five live files read as deleted. The defence against that is
+  // the CI wiring not reusing a narrowed checkout, not this check.
+  const perRoot = resolved.map((r) => [r, indexConsumers([r]).size]);
+  for (const [r, n] of perRoot) console.log(`  ${String(n).padStart(4)} .py under ${r}`);
+  const empty = perRoot.filter(([, n]) => n === 0);
+  if (empty.length) {
+    console.error(
+      `REFUSED: ${empty.length} declared consumer root(s) contain no .py files at all, so they can\n` +
+        "  only ever contribute absences. A root that cannot match anything is not a root.",
+    );
+    process.exit(2);
+  }
+
   const present = indexConsumers(resolved);
   console.log(`consumer .py files indexed: ${present.size}`);
 

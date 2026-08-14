@@ -75,7 +75,16 @@ jobs:
         with:
           repository: skyphusion-labs/vivijure-wan-train
           path: consumers/vivijure-wan-train
+      # A FULL vivijure-cf checkout, deliberately NOT the sparse `vivijure` one above. That one is
+      # scoped to modules/* for the manifest drift guard, so it cannot contain containers/*/app.py --
+      # and pointing the detector at it made five live files read as deleted. A root that is present
+      # but incomplete is indistinguishable from a complete one, so the fix is to not reuse a
+      # narrowed checkout rather than to try to detect narrowness.
+      - uses: actions/checkout@v7
+        with:
+          repository: skyphusion-labs/vivijure-cf
+          path: consumers/vivijure-cf
       - name: Stale consumer references (core#183)
         env:
-          VIVIJURE_CONSUMER_ROOTS: consumers/vivijure-backend:consumers/vivijure-musetalk:consumers/vivijure-upscale:consumers/vivijure-audio-upscale:consumers/vivijure-wan-train:vivijure
+          VIVIJURE_CONSUMER_ROOTS: consumers/vivijure-backend:consumers/vivijure-musetalk:consumers/vivijure-upscale:consumers/vivijure-audio-upscale:consumers/vivijure-wan-train:consumers/vivijure-cf
         run: node scripts/comment-symbol-refs.mjs
