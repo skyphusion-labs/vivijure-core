@@ -111,10 +111,22 @@ The test does not call the registry -- step 5 above is still a human act after `
 
 **`published` is the npm publish date in UTC.** Take it from `npm view <pkg> time` and read the
 date off the `Z` timestamp, not off a local clock. This is not pedantry: v1.12.0 published at
-`2026-08-14T03:39:03.710Z`, which is `2026-08-13` in US Central and `2026-08-14` in CEST. Only UTC
-makes both this row and v1.11.0's correct -- Central falsifies one, CEST falsifies the other. A row
+`2026-08-14T03:39:03.710Z`, which is `2026-08-13` in US Central and `2026-08-14` in CEST. A row
 filled from a local clock reads plausibly in isolation and is wrong, and nothing in this file would
-catch it. The convention was previously established only by the two rows agreeing with each other.
+catch it -- `tests/releases-ledger.test.ts` asserts only `/^\d{4}-\d{2}-\d{2}$/`, so a well-formed
+wrong date passes green.
+
+**The convention was already implemented; only its name was missing.** Step 5 of the closing
+procedure above runs `npm view <pkg> time --json` and slices `[:10]`, and every timestamp the
+registry returns is `Z`-suffixed, so that slice is a UTC date unconditionally. This paragraph names
+what the procedure already does, so that a row filled by hand cannot disagree with a row filled by
+the command.
+
+**Measured against the whole ledger, not just the newest rows:** re-deriving all 30 rows' dates from
+the npm publish epochs, UTC matches **30 of 30**. US Central matches 20, CEST matches 27, and a
+UTC+14 control matches 11. So 13 rows discriminate between zones -- Central falsifies 10 of them and
+CEST falsifies 3. The convention is not a coincidence that has held twice; it is the only zone
+consistent with the file.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
