@@ -109,6 +109,13 @@ The test does not call the registry -- step 5 above is still a human act after `
 
 ## Release ledger
 
+**`published` is the npm publish date in UTC.** Take it from `npm view <pkg> time` and read the
+date off the `Z` timestamp, not off a local clock. This is not pedantry: v1.12.0 published at
+`2026-08-14T03:39:03.710Z`, which is `2026-08-13` in US Central and `2026-08-14` in CEST. Only UTC
+makes both this row and v1.11.0's correct -- Central falsifies one, CEST falsifies the other. A row
+filled from a local clock reads plausibly in isolation and is wrong, and nothing in this file would
+catch it. The convention was previously established only by the two rows agreeing with each other.
+
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
 | `vivijure-core-v1.12.0` | 1.12.0 | d31c269 | 2026-08-14 | **MINOR.** Film submit gets an idempotency guard (cf#518, #184): a client-supplied `idempotency_key` on both entry points, plus a natural-key backstop over a 60-second window for paths that cannot be changed (MCP, scatter). Both mint sites are in core, so a cf-side guard would knowingly leave `vivijure-local` and the scatter path exposed against the two-panel parity invariant. Also: the changelog-version guard now refuses Unreleased work on an already-tagged version (core#119, #146) -- it needs `fetch-tags: true` in CI to be non-vacuous, which ships with it. |
