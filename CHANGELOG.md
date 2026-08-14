@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.12.0
+## [1.12.0] -- 2026-08-14
 
 MINOR. Film submit gets an idempotency guard, so a double-click, a client timeout or a proxy retry
 returns the film that is already running instead of starting a second one and a second GPU bill.
