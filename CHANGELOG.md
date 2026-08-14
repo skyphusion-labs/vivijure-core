@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.13.0
+## [1.13.0] -- 2026-08-14
 
 MINOR. Presigned satellite inputs for the finish and speech chains, so a satellite can fetch its
 input and write its output without holding an R2 credential. Plus a starvation fix and a coverage
