@@ -31,6 +31,25 @@ npm view @skyphusion-labs/vivijure-core@1.2.2 version
 # 5. CLOSE THE LEDGER ROW -- see "Closing the row" below. Not optional, not a tidy-up.
 ```
 
+> **STANDING CONDITION, not a one-off. First instance v1.10.0 (2026-08-07).** The rule above says
+> seed the ledger and `CHANGELOG.md` in the same PR as the version bump. **Once core#146's guard is
+> in force, no cycle can.** After a release, `main` sits on a tagged version, so a bare
+> `## Unreleased` is refused and the next FEATURE PR is the one that must open the next version.
+> That is the steady state, not a deviation: the bump lands in the first feature PR of the cycle and
+> the seed lands in the release PR. v1.10.0 was the first instance (bump in #169, seed in #170).
+>
+> **This does NOT reintroduce the per-PR version pin that broke #144.** A version opens ONCE per
+> cycle. Every subsequent PR adds an entry under the already-open heading and touches no version
+> file, so the spent-version assertion never fires again until the next release.
+>
+> **STATUS: core#146 is still OPEN and its test is not on `main`.** The split above was made in
+> ANTICIPATION of that guard, so until it merges this blockquote describes intended behaviour rather
+> than an enforced check. **When #146 merges, delete this STATUS paragraph in its entirety** -- from
+> the bold `STATUS:` marker down to the end of this paragraph -- **and leave the rest of the
+> blockquote standing.** Do NOT delete the blockquote itself: the seed-split it documents is the
+> steady state and outlives this status note. (The previous wording said "delete this sentence",
+> which named neither which sentence nor what to keep.)
+
 ## Closing the row (step 5, and the one that gets skipped)
 
 The ledger row is written in TWO moments against TWO different pieces of evidence, and only the
@@ -61,6 +80,13 @@ npm view @skyphusion-labs/vivijure-core time --json | python3 -c \
 npm view @skyphusion-labs/vivijure-core dist-tags.latest       # sanity: should be <semver>
 npm view @skyphusion-labs/vivijure-core@9.9.9 version          # negative control: must be E404
 ```
+
+**CI WILL NOT TELL YOU IF EITHER VALUE IS WRONG.** `tests/releases-ledger.test.ts` checks **SHAPE,
+never correctness** -- not-`pending`, not-`(this PR)`, an ISO-date regex, a sha regex. **A
+well-formed WRONG date passes it green**, and so does any 7-hex string in `source commit`. The
+correctness of both cells rests entirely on the two commands above -- `git rev-list -n 1 <tag>` and
+the registry's own `time` map -- and never on the suite. **Green here is not confirmation.**
+(rollins, 2026-08-07)
 
 **Both fixes above came from RUNNING this procedure rather than reading it**, on its second use and
 the first where someone else supplied the confirmation. The original `git rev-list ... | cut -c1-7`
@@ -93,6 +119,9 @@ The test does not call the registry -- step 5 above is still a human act after `
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.11.0` | 1.11.0 |  |  | **MINOR.** An explicit `model_family` is HONOURED rather than silently substituted (core#174). `resolveCastTrainFamily`'s explicit-`"wan"` branch and its fallthrough were the identical expression, so `model_family: "wan"` was byte-identical to sending nothing; on an unwired host the server returned **200 having trained SDXL** after the panel quoted the user a Wan job at a different duration and price. Explicit `"wan"` now returns `"wan"` and `executeCastTrain`'s shipped 501 refuses. **Consumer-visible:** `POST /train-lora` with explicit `"wan"` on an unwired host goes 200 -> **501, no job submitted**; neither panel handles 501 on that button yet (vivijure-cf#420, vivijure-local#346, vivijure-local#329). Default path, explicit `"sdxl"`, and explicit `"wan"` on a wired host are unchanged. |
+| `vivijure-core-v1.10.0` | 1.10.0 | f6ebdcd | 2026-08-07 | **MINOR.** RunPod reached through the control-plane proxy when `RUNPOD_PROXY_BASE` is bound; direct `RUNPOD_API_KEY` route retained permanently as the self-host door (cp#321 step 1, #169). `src/runpod-route.ts` MOVED from `vivijure-cf`'s `modules/_shared/` so both hosts CAN import one implementation -- **no host imports it in this release**; cf adoption is cp#321 step 2 and is not shipped here. Also opens the version and repairs a lockfile left at 1.8.1 by the v1.9.0 cut. |
+| `vivijure-core-v1.9.0` | 1.9.0 | 8702fdd | 2026-08-07 | **MINOR.** Homelab SDXL cast train via `LOCAL_BACKEND_URL` (`submitTrainLoraJob` / `pollCastLoraJob`); packages with cf#460 deterministic tar mtime. GitHub Release: [vivijure-core v1.9.0](https://github.com/skyphusion-labs/vivijure-core/releases/tag/vivijure-core-v1.9.0). |
 | `vivijure-core-v1.8.1` | 1.8.1 | 6fd34ab | 2026-08-06 | **PATCH.** Post-1.8.0 main: PollResponse failure fields (#160), keyframe provenance `bundle_key` (#151 / cf#388), render `motion_backend`/`keyframe_backend` (#147 / cf#393; REQUIRES cf migration 0018 before host pin), scatter D1-empty dialogue fallback (#142 / core#122), docs audit (#158). GitHub Release: [vivijure-core v1.8.1](https://github.com/skyphusion-labs/vivijure-core/releases/tag/vivijure-core-v1.8.1). |
 | `vivijure-core-v1.8.0` | 1.8.0 | 9ef47e5 | 2026-08-06 | **MINOR.** Open version (#159) + finish_elapsed_ms (cf#268/#145; REQUIRES cf migration 0017), FilmSummary assemble_ms/output_ms (#152), cast per-family LoRA readiness (#150), install-patch dropped keys (#148), untrained LoRA voice path (#156), clips content gate (#143), modules.d.ts/RELEASES guards (#149), drop dead sync:module-types (#157). GitHub Release: [vivijure-core v1.8.0](https://github.com/skyphusion-labs/vivijure-core/releases/tag/vivijure-core-v1.8.0). |
 | `vivijure-core-v1.7.3` | 1.7.3 | 34d2f84 | 2026-08-05 | **PATCH: dependency updates and docs (CLAUDE release procedure) on main since 1.7.2.** Hosts (cf/local) should pin after this lands. GitHub Release: [vivijure-core v1.7.3](https://github.com/skyphusion-labs/vivijure-core/releases/tag/vivijure-core-v1.7.3). PR #136. |

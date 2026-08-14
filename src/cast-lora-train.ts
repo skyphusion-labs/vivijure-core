@@ -45,15 +45,34 @@ export async function wanTrainEndpointConfigured(env: Env): Promise<boolean> {
   return Boolean(endpointId.trim());
 }
 
-// Default cast train family: Wan when the dedicated endpoint is configured (cf#29 Phase E);
-// SDXL on the render endpoint only when explicitly requested or when Wan train is not wired.
+// Resolves the cast train family from an OPTIONAL caller preference plus the host's wiring. It
+// answers two different questions and must never answer one with the other (core#174):
+//
+//   EXPLICIT -- the caller named a family. Honour it verbatim. An explicit "wan" returns "wan"
+//   whatever the host state; if RUNPOD_WAN_TRAIN_ENDPOINT_ID is unwired, executeCastTrain refuses
+//   with its shipped 501 and trains nothing. We do NOT substitute a different model family for a
+//   request the user actually made: a Wan cast train is a different job at a different duration
+//   and a different price, and the panel has already shown the user those numbers. Silently
+//   training SDXL instead returns 200 for a job they did not consent to.
+//
+//   ABSENT -- the caller expressed no preference, so we pick the host-appropriate default: Wan
+//   when the dedicated endpoint is wired (cf#29 Phase E), SDXL otherwise. Choosing on behalf of
+//   someone who did not choose is legitimate and stays silent.
+//
+// An UNRECOGNISED value is not a preference we can honour, so it takes the ABSENT path rather
+// than being waved through to a refusal it never asked for.
+//
+// Both branches previously returned `wanConfigured ? "wan" : "sdxl"`, which collapsed EXPLICIT
+// into ABSENT and made `model_family: "wan"` byte-identical to sending nothing. Note that the
+// wanConfigured argument is now consulted by the ABSENT path only; the refusal for an unwired
+// host lives in executeCastTrain, which re-reads the binding itself.
 export function resolveCastTrainFamily(
   wanConfigured: boolean,
   explicit?: string | null,
 ): CastTrainModelFamily {
   const norm = String(explicit ?? "").trim().toLowerCase();
   if (norm === "sdxl") return "sdxl";
-  if (norm === "wan") return wanConfigured ? "wan" : "sdxl";
+  if (norm === "wan") return "wan";
   return wanConfigured ? "wan" : "sdxl";
 }
 
