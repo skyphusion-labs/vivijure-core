@@ -722,6 +722,7 @@ export async function listUnresolvedNotifiableJobs(
   env: Env,
   maxAgeSeconds: number,
   limit = 25,
+  offset = 0,
 ): Promise<string[]> {
   const cutoff = nowSeconds() - Math.max(0, maxAgeSeconds);
   const res = await env.DB.prepare(
@@ -731,10 +732,10 @@ export async function listUnresolvedNotifiableJobs(
          AND COALESCE(mode, 'full') != 'keyframes-only'
          AND parent_id IS NULL
          AND submitted_at >= ?
-       ORDER BY submitted_at ASC
-       LIMIT ?`,
+       ORDER BY submitted_at ASC, id ASC
+       LIMIT ? OFFSET ?`,
   )
-    .bind(cutoff, Math.min(Math.max(1, limit), 100))
+    .bind(cutoff, Math.min(Math.max(1, limit), 100), Math.max(0, Math.trunc(offset)))
     .all<{ job_id: string }>();
   return (res.results ?? []).map((r) => String(r.job_id)).filter((s) => s.length > 0);
 }
@@ -754,6 +755,7 @@ export async function listStrandedPostClipsFilmJobs(
   env: Env,
   maxAgeSeconds: number,
   limit = 25,
+  offset = 0,
 ): Promise<string[]> {
   const cutoff = nowSeconds() - Math.max(0, maxAgeSeconds);
   const res = await env.DB.prepare(
@@ -767,13 +769,81 @@ export async function listStrandedPostClipsFilmJobs(
            output_json LIKE '%"phase":"assemble"%'
            OR output_json LIKE '%"phase":"finish"%'
            OR output_json LIKE '%"phase":"mux"%'
+           OR output_json LIKE '%"phase":"done"%'
          )
-       ORDER BY submitted_at ASC
-       LIMIT ?`,
+       ORDER BY submitted_at ASC, id ASC
+       LIMIT ? OFFSET ?`,
   )
-    .bind(cutoff, Math.min(Math.max(1, limit), 100))
+    .bind(cutoff, Math.min(Math.max(1, limit), 100), Math.max(0, Math.trunc(offset)))
     .all<{ job_id: string }>();
   return (res.results ?? []).map((r) => String(r.job_id)).filter((s) => s.length > 0);
+}
+
+/**
+ * How many rows each sweep pass could handle, as opposed to how many it will.
+ *
+ * These exist because the sweep's cap made "swept and clean" indistinguishable from "never
+ * reached" (core#180): nothing anywhere counted the population, so a starved tail produced no
+ * signal at all. The count is also what lets the caller rotate its window over the WHOLE set
+ * instead of re-reading the same oldest page every tick.
+ *
+ * Returns `null`, never a number, when the count cannot be read. A total that silently defaults
+ * to 0 would disable rotation AND report full coverage -- the reassuring reading of a broken
+ * instrument. `null` is carried into the coverage event so the gap is visible rather than
+ * rendered as agreement.
+ */
+async function countPopulation(env: Env, sql: string, binds: unknown[]): Promise<number | null> {
+  try {
+    const res = await env.DB.prepare(sql)
+      .bind(...binds)
+      .all<{ total: number }>();
+    const raw = (res.results ?? [])[0]?.total;
+    return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Population of sweep pass 1 (unresolved, notifiable, inside the age window). */
+export async function countUnresolvedNotifiableJobs(
+  env: Env,
+  maxAgeSeconds: number,
+): Promise<number | null> {
+  const cutoff = nowSeconds() - Math.max(0, maxAgeSeconds);
+  return countPopulation(
+    env,
+    `SELECT COUNT(*) AS total FROM renders
+       WHERE status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+         AND notified_at IS NULL
+         AND COALESCE(mode, 'full') != 'keyframes-only'
+         AND parent_id IS NULL
+         AND submitted_at >= ?`,
+    [cutoff],
+  );
+}
+
+/** Population of sweep pass 2 (post-clips films aged out of pass 1). */
+export async function countStrandedPostClipsFilmJobs(
+  env: Env,
+  maxAgeSeconds: number,
+): Promise<number | null> {
+  const cutoff = nowSeconds() - Math.max(0, maxAgeSeconds);
+  return countPopulation(
+    env,
+    `SELECT COUNT(*) AS total FROM renders
+       WHERE status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+         AND notified_at IS NULL
+         AND COALESCE(mode, 'full') != 'keyframes-only'
+         AND parent_id IS NULL
+         AND submitted_at < ?
+         AND (
+           output_json LIKE '%"phase":"assemble"%'
+           OR output_json LIKE '%"phase":"finish"%'
+           OR output_json LIKE '%"phase":"mux"%'
+           OR output_json LIKE '%"phase":"done"%'
+         )`,
+    [cutoff],
+  );
 }
 
 export async function markFinishFailed(env: Env, jobId: string, error: string): Promise<void> {
