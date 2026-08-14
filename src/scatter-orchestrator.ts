@@ -554,6 +554,10 @@ async function finalizeScatterDone(env: Env, job: ScatterJob): Promise<void> {
       output_key: job.film_key,
       project: job.project,
       mode: "full",
+      // fc#1662/cf#549: see the note in film-orchestrator. This object is a hand-built duplicate of
+      // what scatterJobToPollView produces, and output_json is an unconditional write, so the field
+      // has to be here too or the scatter row loses it depending on which write lands last.
+      film_finish: filmFinishView(job.film_finish),
     }),
     outputMsFromSeconds(job.film_output_seconds?.[job.film_key]),
     job.finish_elapsed_ms,

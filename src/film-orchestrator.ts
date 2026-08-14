@@ -52,6 +52,7 @@ import {
   classifyFinishRetry,
   resolveFinishConfigs,
   finishShotAdoptableFromR2,
+  filmFinishView,
   reclaimFinishShotsFromR2,
   finishStepOutputKey,
   finishStepAppliedTag,
@@ -1210,6 +1211,11 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
     const mode = job.derive_mode ?? (job.keyframes_only ? "keyframes-only" : "full");
     const out: Record<string, unknown> = { output_key: filmKey, project: job.project, mode };
     if (job.film_finish?.sidecar_key) out.sidecar_key = job.film_finish.sidecar_key;
+    // fc#1662/cf#549: markFinishDone writes output_json UNCONDITIONALLY (not COALESCE), so this
+    // hand-built object is the LAST writer on the single-film path. Omitting film_finish here would
+    // erase what filmJobToPollView just put on the row -- the field would exist in the view, pass
+    // its tests, and be absent from the artifact anyone actually queries.
+    out.film_finish = filmFinishView(job.film_finish);
     if (job.finish_unavailable) {
       out.finish_unavailable = {
         at: job.finish_unavailable.at,
