@@ -96,6 +96,54 @@ test written from cf#515 as filed would have passed while this stayed exactly wh
 Work merged after `vivijure-core-v1.13.0` was cut. These entries were originally filed under
 the 1.13.0 heading, which is published and does not contain them. See core#202.
 
+### feat(film-finish): surface the film.finish outcome on the poll view, so a decarded film is countable (fleet-chezmoi#1662)
+
+A film that ships **without its title card or subtitles** is `done`, carries no error, and was
+indistinguishable in render history from one that shipped complete. Not a failure wearing success --
+a **DEGRADATION wearing completion**.
+
+The chain already recorded everything needed. `FilmJob.film_finish` carries `applied`, `adopted`,
+`errors` and a `degraded` reason, and the type's own comment says it exists to prevent *"a silent
+green ... a `degraded` reason set when cards were requested but could not be applied"*. It was never
+carried onto the poll view -- and the poll view is what `updateRenderFromView` writes into
+`output_json`. **So the data was designed for exactly this question and stopped one hop short of the
+place anyone would ask it.**
+
+`filmFinishView()` now rides in `output` on both the single-film and scatter paths. **No migration
+and no panel change**: `output_json` is an existing column with an existing writer.
+
+**Four states, deliberately not a boolean:**
+
+| value | meaning |
+|---|---|
+| key absent | the row predates this change -- **NOT MEASURED** |
+| `null` | the chain did not run (nothing to card) |
+| `degraded: null` | the chain ran and applied everything asked of it |
+| `degraded: "..."` | the chain ran and **shipped uncarded**, with the reason |
+
+Collapsing "no cards were requested" into "cards applied cleanly" would rebuild the defect one field
+over. An absence never renders as a value.
+
+`adopted` is carried alongside `degraded` because it counts the **recovered re-encodes** -- steps
+whose artifact was found in R2 rather than run. Under fc#1662 that is the wasted-work signal, and it
+is the number that says whether the waste is real rather than theoretical.
+
+**Why this landed before any fix for fc#1662 itself.** That issue offers four remedies (shared
+registry, pin the poll, N-consecutive-404s, drop to one replica), and each trades cost against an
+incidence **nobody can currently count**. Picking between them on that basis is guessing with extra
+steps. This makes the incidence measurable first.
+
+**Scope, stated so green is not read as coverage:** the summary is emitted on COMPLETED views only,
+which is correct for this question (a decarded film is `done` by definition) and means a FAILED
+film's film.finish state stays invisible. And this changes nothing about fc#1662's mechanism -- it
+measures it.
+
+**Adjacent finding, not fixed here:** `finish_elapsed_ms` is NULL on all 200 render rows sampled, and
+it is **not** a column without a writer -- `renders-db.ts:648` writes it and the orchestrator passes
+`job.finish_elapsed_ms`. The value is never produced, because it accumulates only from a module
+forwarding `elapsed_ms`. That refines cf#369 item 2: the gap is the producer, not the column, and
+those need different fixes.
+
 ### fix(stall): count per-STEP progress in the film progress marker (#182)
 
 The 90 minute phase ceiling measures from `last_progress_at`, which is re-stamped only when the

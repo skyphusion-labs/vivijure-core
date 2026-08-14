@@ -24,6 +24,7 @@ import {
 } from "./film-orchestrator.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
 import { filmJobToPollView, filterScenesByShotIds, orderScenesByShotIds, mapRenderOverridesToModuleConfigs } from "./film-render-bridge.js";
+import { filmFinishView } from "./film-model.js";
 import { presignR2Get, presignR2Put } from "./presign.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
 import { defaultGpuDoorModule, discoverModules, servingForHook } from "./modules/registry.js";
@@ -791,7 +792,8 @@ export function scatterJobToPollView(job: ScatterJob): RunpodJobView {
     status = "CANCELLED";
   } else if (job.phase === "done") {
     status = "COMPLETED";
-    output = { output_key: job.film_key, project: job.project, mode: "full" };
+    // cf#1662: scatter carries the identical film_finish shape and was equally invisible.
+    output = { output_key: job.film_key, project: job.project, mode: "full", film_finish: filmFinishView(job.film_finish) };
   } else if (job.phase === "failed") {
     status = "FAILED";
   } else {

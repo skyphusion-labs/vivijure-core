@@ -7,6 +7,7 @@ import type { FilmJob, FilmScene } from "./film-model.js";
 import {
   summarizeFilm,
   clipDeliveries,
+  filmFinishView,
   KEYFRAME_STALL_SECONDS,
 } from "./film-model.js";
 import type { RunpodJobView, RunpodStatus } from "./runpod-types.js";
@@ -161,6 +162,8 @@ export function filmJobToPollView(job: FilmJob, clipJob: ClipJob | null, keyfram
       mode,
     };
     if (job.film_finish?.sidecar_key) output.sidecar_key = job.film_finish.sidecar_key;
+    // cf#1662: ALWAYS set, including null. The key's presence is what says this row was measured.
+    output.film_finish = filmFinishView(job.film_finish);
     if (job.finish_unavailable) {
       output.finish_unavailable = {
         at: job.finish_unavailable.at,

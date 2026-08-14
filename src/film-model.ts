@@ -597,6 +597,41 @@ export function reclaimFinishShotsFromR2(finishShots: FinishShot[], present: Map
   return adopted;
 }
 
+/** cf#1662: the film.finish outcome in the shape that reaches the RENDER ROW.
+ *
+ *  WHY THIS EXISTS. A film that ships without its title card or subtitles is `done`, carries no
+ *  error, and was previously indistinguishable in render history from one that shipped complete --
+ *  a DEGRADATION wearing completion. The chain already records everything needed (this type's own
+ *  comment says `degraded` exists to prevent "a silent green"); it was simply never carried onto the
+ *  poll view, and the poll view is what `updateRenderFromView` writes into `output_json`. So nobody
+ *  could COUNT how often it happens, which makes every proposed fix for fc#1662 a trade against an
+ *  incidence that does not exist anywhere.
+ *
+ *  FOUR STATES, and the shape is four rather than a boolean deliberately:
+ *
+ *    key absent         this row predates the change            -- NOT MEASURED
+ *    null               the chain did not run (nothing to card) -- MEASURED, not applicable
+ *    degraded: null     the chain ran and applied everything    -- MEASURED, clean
+ *    degraded: "..."    the chain ran and SHIPPED UNCARDED      -- MEASURED, the finding
+ *
+ *  Collapsing "no cards were requested" into "cards applied cleanly" would rebuild the very defect
+ *  this is here to expose, one field over. An absence never renders as a value.
+ *
+ *  `adopted` is carried because it counts the RECOVERED re-encodes: a step whose artifact was found
+ *  in R2 rather than run. Under fc#1662 that is the wasted-work signal, so it is as load-bearing as
+ *  `degraded` and it is the number that says whether the waste is real. */
+export function filmFinishView(
+  ff?: { applied?: string[]; adopted?: string[]; degraded?: string },
+): { applied: string[]; adopted: string[]; degraded: string | null } | null {
+  if (!ff) return null;
+  return {
+    applied: ff.applied ?? [],
+    adopted: ff.adopted ?? [],
+    // Empty string is not a reason. Only a non-empty string counts as degraded.
+    degraded: typeof ff.degraded === "string" && ff.degraded.length > 0 ? ff.degraded : null,
+  };
+}
+
 /** #662 honesty invariant: does this finish shot's per-step ledger reconcile 1:1 to its chain? True unless
  *  a DONE shot has a ledger that fails to cover every chain step in order. Absent ledger (a pre-#662 job
  *  doc) or a non-done shot (still advancing, or failed mid-chain with a partial ledger) is NOT asserted.
