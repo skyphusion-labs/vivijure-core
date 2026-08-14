@@ -3,6 +3,35 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.13.0
+
+MINOR. Presigned satellite inputs for the finish and speech chains, so a satellite can fetch its
+input and write its output without holding an R2 credential.
+
+### feat(finish): presign satellite finish/speech inputs (cf#312, #154)
+
+`attachFinishPresigns` and `attachSpeechPresigns` mint short-lived GET/PUT URLs for a finish or
+speech step's inputs and outputs, so the satellite never needs an R2 key of its own.
+
+Three things worth knowing before building on it:
+
+- **The provenance sidecar key is `<output_key>.hash`**, not the extension-stripped form. In
+  presigned mode the SATELLITE writes to whatever `hash_url` core hands it, so core decides this key
+  -- and the adoption gate reads `${artifactKey}.hash`. Getting it wrong made
+  `finishArtifactHashMatches` return false on every presigned step, which meant the #166 GC/frozen-job
+  recovery and the final-artifact adoption both refused permanently and silently re-ran paid GPU work.
+- **Presign application is all-or-nothing.** All four legs resolve before any field is assigned. A
+  partial application would leave presigned transport set with `audio_url` absent, and musetalk
+  REQUIRES it in presigned mode -- a hard job failure reported as a skip.
+- **The presigned body must OMIT `clip_key` / `audio_key`, not merely add the URLs.** All three
+  satellites select R2-vs-presigned on the PRESENCE of those keys, never on the URLs, and both are
+  required fields in core. Send them alongside the URLs and every satellite takes the R2 branch, the
+  render SUCCEEDS, and a load test comes back green having never exercised the credentialless path.
+  That is not a wrong number, it is an unfalsifiable green.
+
+Opens the v1.13.0 cycle. Note the entry lands here rather than in #154 itself, which merged with no
+CHANGELOG entry at all -- see the guard gap that let that through.
+
 ## [1.12.0] -- 2026-08-14
 
 MINOR. Film submit gets an idempotency guard, so a double-click, a client timeout or a proxy retry
