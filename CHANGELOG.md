@@ -3,6 +3,34 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.15.0
+
+### test(releases): the ledger's source commit must RESOLVE to its tag, not merely look like a sha (core#209)
+
+- `tests/releases-ledger.test.ts` asserted the cell was seven hex characters. Two different wrong
+  values passed that in one hour: `git ls-remote --tags` returns the tag ANNOTATION object rather
+  than the commit (for `vivijure-core-v1.13.0` those are `dea7149f` and `9cd62f20`, both well-formed),
+  and a real-but-wrong commit naming the feature merge instead of the tagged one. A third arrived in
+  the `published` column, where npm's `time` object keyed by version yields `created` if you take its
+  first value -- a month early, ISO-shaped, green.
+- The new assertions test RELATIONSHIPS instead of formats: the recorded sha must be the commit
+  `git rev-list -n 1 <tag>` resolves to, and a published date may not precede the commit it claims to
+  publish nor sit in the future. Offline by construction, like the rest of the file; the registry read
+  stays a human step.
+- Refusals are not passes: a shallow clone, absent tags, or a filled row whose tag cannot be resolved
+  all FAIL rather than skipping, and the denominator (rows, filled cells, tags visible) prints on
+  every run so a resolver that found nothing cannot pass vacuously. `ci.yml` and `code-coverage.yml`
+  gain `fetch-depth: 0`, because tag OBJECTS and the history behind them are different facts.
+- **Found four wrong rows on its first run against real data** and they are corrected here:
+  `v1.2.12` `05ea36b` -> `c761e2c` and `v1.2.3` `fed694e` -> `d01ee29` recorded commits that are
+  ancestors of the tag but not the tagged commit; `v1.2.9` `f4084c6` -> `e734eb2` and `v1.2.8`
+  `5df0d4f` -> `d7d3ee2` recorded PR merge commits that are not in the tag's history at all, the
+  shape a squash merge leaves behind.
+- Driven red before shipping: a planted annotation object reddens it with a diagnostic naming the
+  annotation and the fix, a planted wrong-but-real commit reddens it without falsely claiming
+  annotation, a planted early date reddens on its own reason, and restoring the true values goes
+  green -- the control proving it does not simply always fail.
+
 ## [1.14.0] -- 2026-08-14
 
 MINOR. Per-render participation for the `finish` chain (cf#537), so a caller names which finish

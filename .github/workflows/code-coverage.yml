@@ -29,6 +29,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-tags: true
+          # core#209: same reason as ci.yml -- this job runs the same suite, and the ledger
+          # guard resolves tags to commits, which needs history rather than just tag objects.
+          fetch-depth: 0
 
       - name: Checkout vivijure (module manifest drift guard)
         uses: actions/checkout@v7
