@@ -22,6 +22,13 @@ import {
 import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook } from "./modules/render-pipeline.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
+import {
+  claimFilmSubmit,
+  naturalKeyForStartFilmJob,
+  naturalKeyForStartFromKeyframes,
+  releaseFilmSubmitClaim,
+  type FilmSubmitIdentity,
+} from "./film-submit-idempotency.js";
 import { coerceShotId } from "./storyboard-ids.js";
 import {
   filmJobDocKey as filmKey,
@@ -286,6 +293,61 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
   }, preModules);
   job.clip_job_id = clip.job_id;
   job.phase = "clips";
+}
+
+// --------------------------------------------------------------------------- cf#518 submit guard
+//
+// Both film mint sites consult this BEFORE doing anything that costs money. The claim is taken with
+// the id we are about to use, so a loser can be told which film it duplicated.
+//
+// It fails OPEN by construction: `claimFilmSubmit` never throws and returns `duplicateOf: null` for
+// every degraded case, so the worst outcome here is the behaviour that shipped before the guard
+// existed. A submit that 500s because the dedup guard could not run would be strictly worse than
+// the defect the guard exists to fix.
+
+interface GuardedFilmSubmit {
+  /** The existing film to return verbatim, marked. Null means proceed and start a real film. */
+  duplicate: FilmJob | null;
+  /** The claim we now hold, so a start that FAILS can hand it straight back. */
+  claimKey: string | null;
+}
+
+async function readFilmDoc(env: Env, filmId: string): Promise<FilmJob | null> {
+  try {
+    const obj = await env.R2_RENDERS.get(filmKey(filmId));
+    if (!obj) return null;
+    return JSON.parse(await obj.text()) as FilmJob;
+  } catch {
+    return null;
+  }
+}
+
+async function beginGuardedFilmSubmit(
+  env: Env,
+  identity: FilmSubmitIdentity,
+  filmId: string,
+): Promise<GuardedFilmSubmit> {
+  const claim = await claimFilmSubmit(env, identity, { filmId });
+  if (!claim.duplicateOf) {
+    // A degrade is never silent (the #249/#77 discipline): an unguarded submit says so, greppably.
+    if (!claim.guarded && claim.reason) {
+      console.warn(`film-submit-idempotency: ${claim.reason}`);
+    }
+    return { duplicate: null, claimKey: claim.claimKey };
+  }
+
+  const existing = await readFilmDoc(env, claim.duplicateOf);
+  if (existing) return { duplicate: { ...existing, deduplicated: true }, claimKey: claim.claimKey };
+
+  // The claim names a film whose doc is GONE (deleted, or a write that never landed). Returning
+  // that id would hand the caller a ghost -- an id for a film nothing can poll -- which is worse
+  // than the duplicate we were preventing. Drop the dead claim, take it over, and start fresh.
+  console.warn(
+    `film-submit-idempotency: claim ${claim.claimKey} named film ${claim.duplicateOf}, whose job doc is absent; taking the claim over and starting a new film`,
+  );
+  await releaseFilmSubmitClaim(env, claim.claimKey, claim.duplicateOf);
+  const retry = await claimFilmSubmit(env, identity, { filmId });
+  return { duplicate: null, claimKey: retry.claimKey };
 }
 
 const lastPersistedFilmPhase = new Map<string, FilmJob["phase"]>();
@@ -2087,9 +2149,20 @@ export async function startFilmFromKeyframes(
     // chain reads job.dialogue_lines (enterFinishPhase -> enterDialogueOrFinish), and a from-keyframes
     // job enters at phase "clips" and reaches both, so the field was read and never written.
     dialogue_lines?: DialogueLine[];
+    /** cf#518 option C: the client's declared idempotency key. Present -> it REPLACES the
+     *  natural key, so the same declared key is the same submit whatever the inputs. */
+    idempotency_key?: string;
   },
   preModules?: RegisteredModule[],
 ): Promise<FilmJob> {
+  // cf#518: claim BEFORE anything costs money -- before the presigns and before startClipJob.
+  const filmId = "film-" + crypto.randomUUID();
+  const guard = await beginGuardedFilmSubmit(
+    env,
+    { ...naturalKeyForStartFromKeyframes(args), idempotencyKey: args.idempotency_key },
+    filmId,
+  );
+  if (guard.duplicate) return guard.duplicate;
   const scenes = coerceSceneIds(args.scenes ?? []);
   // Join the lines onto the SAME coerced ids as the scenes, exactly as startFilmJob does (#563): a
   // caller supplying its own scene ids otherwise strands the TTS audio under keys no consumer reads.
@@ -2097,7 +2170,7 @@ export async function startFilmFromKeyframes(
   const stagedAudio = await resolveStagedAudioKey(env, args.audio_key);
   const { matched, missing } = joinKeyframesToScenes(scenes, args.keyframes || []);
   const job: FilmJob = {
-    film_id: "film-" + crypto.randomUUID(),
+    film_id: filmId,
     project: args.project,
     bundle_key: args.bundle_key,
     scenes,
@@ -2120,6 +2193,8 @@ export async function startFilmFromKeyframes(
   };
   if (!matched.length) {
     job.error = `no keyframes matched requested shots (missing: ${missing.join(", ")})`;
+    // A submit that spent nothing must not hold the window against a legitimate retry.
+    await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
     await putFilm(env, job);
     return job;
   }
@@ -2144,7 +2219,10 @@ export async function startFilmFromKeyframes(
   }, preModules);
   job.clip_job_id = clip.job_id;
   job.phase = summarizeJob(clip).failed === clip.shots.length ? "failed" : "clips";
-  if (job.phase === "failed") job.error = "every clip submission failed";
+  if (job.phase === "failed") {
+    job.error = "every clip submission failed";
+    await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
+  }
   await putFilm(env, job);
   return job;
 }
@@ -2167,9 +2245,21 @@ export async function startFilmJob(
     dialogue_lines?: DialogueLine[];
     cast_loras?: Record<string, number>;
     film_titles?: { title?: { text: string; subtitle?: string }; credits?: { lines: string[] } };
+    /** cf#518 option C: the client's declared idempotency key. Present -> it REPLACES the
+     *  natural key, so the same declared key is the same submit whatever the inputs. */
+    idempotency_key?: string;
   },
   preModules?: RegisteredModule[],
 ): Promise<FilmJob> {
+  // cf#518: claim BEFORE anything costs money -- before module discovery and before the
+  // keyframe invoke. A guard that runs after the GPU submit guards nothing.
+  const filmId = "film-" + crypto.randomUUID();
+  const guard = await beginGuardedFilmSubmit(
+    env,
+    { ...naturalKeyForStartFilmJob(args), idempotencyKey: args.idempotency_key },
+    filmId,
+  );
+  if (guard.duplicate) return guard.duplicate;
   const scenes = coerceSceneIds(args.scenes ?? []);
   // Dialogue lines must join on the SAME coerced ids as the scenes, or a caller-supplied id scheme
   // (`s1`/`s2`) strands the TTS audio under keys no consumer reads (silent + uncaptioned film, #563).
@@ -2196,7 +2286,7 @@ export async function startFilmJob(
     ? null
     : pickOneForHook(modules, "keyframe", keyframeChoice);
   const job: FilmJob = {
-    film_id: "film-" + crypto.randomUUID(),
+    film_id: filmId,
     project: args.project, bundle_key: args.bundle_key, scenes,
     motion_backend: motionBackend ?? null, motion_config: args.motion_config ?? {},
     // cf#393: module NAME (not binding) so the renders-row seed can audit which keyframe backend ran.
@@ -2246,6 +2336,10 @@ export async function startFilmJob(
     else if ("output" in r) { const v = hookOutputViolation(kf.name, "keyframe", r.output); if (v) { job.phase = "failed"; job.error = v; } else { await afterKeyframeOutput(env, job, r.output as KeyframeOutput, modules); } }
     else { job.phase = "failed"; job.error = "keyframe module returned neither output nor a poll token"; }
   }
+  // A submit that failed at start spent nothing, so re-running it is legitimate work: hand the
+  // claim back rather than making the user wait out a window for a film that never lived. The
+  // guard exists to stop a SECOND LIVE FILM, not a second attempt.
+  if (job.phase === "failed") await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
   await putFilm(env, job);
   return job;
 }
