@@ -269,3 +269,115 @@ describe("core#180 sweepUnresolvedJobs wiring", () => {
     expect(ids).toEqual(["job-a", "job-b"]); // the cf fake's contract still holds
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// THE TIEBREAKER. Added after two independent reviewers found that mutating `, id ASC` out of both
+// queries left all 8 tests above GREEN -- the suite never tied two rows, so it was structurally
+// incapable of observing the tiebreaker, while the commit message claimed every behaviour had its
+// own mutation. The false coverage claim was the worse half: a gap invites a second look, a claim
+// of coverage forecloses one.
+//
+// WHY A NAIVE TIE TEST DOES NOT KILL THE MUTATION, established by probe before writing this:
+// on a plain table scan SQLite returns ties in ROWID order, and `id` IS the rowid, so
+// `ORDER BY submitted_at ASC` and `ORDER BY submitted_at ASC, id ASC` agree. That is why a reviewer
+// could not reproduce the necessity in 300 attempts, and it is a fact about the current plan rather
+// than a guarantee. Measured, same tied rows, `ORDER BY submitted_at ASC` with no tiebreaker:
+//     as shipped                             -> film-000..005  (rowid order; idx_renders_parent)
+//     + index (submitted_at DESC)            -> film-000..005  (planner does NOT take it)
+//     + index (parent_id, submitted_at DESC) -> film-011..006  <-- REVERSED, and the planner DOES take it
+// The last of those is the index someone would add to make THIS sweep query faster: it covers the
+// WHERE's `parent_id IS NULL` and the ordering column. So the natural optimisation of this very
+// query is what exposes the unspecified order, which is what makes it worth guarding. The property
+// worth asserting is therefore PLAN INDEPENDENCE, and that is what the second test drives.
+describe("core#180 the tiebreaker: ties are real, and the order must not depend on the plan", () => {
+  /** Seed `n` rows that ALL share one submitted_at. INTEGER seconds means a bulk submit does this. */
+  function seedTied(n: number, at: number): string[] {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i += 1) {
+      const jobId = `film-tie-${String(i).padStart(3, "0")}`;
+      ids.push(jobId);
+      seed({ jobId, submittedAt: at });
+    }
+    return ids;
+  }
+
+  it("CONTROL: the rows really are tied, so this file is no longer blind to the tiebreaker", () => {
+    seedTied(63, NOW - 600);
+    const distinct = d1.raw
+      .prepare(`SELECT COUNT(DISTINCT submitted_at) AS d, COUNT(*) AS n FROM renders`)
+      .get() as { d: number; n: number };
+    // The 8 tests above never produced this state -- every one gave each row a distinct second.
+    expect(distinct.n).toBe(63);
+    expect(distinct.d).toBe(1);
+  });
+
+  it("MEASURED: under 63-way ties the rotation still covers every row, gap-free and duplicate-free, and repeats", async () => {
+    const N = 63; // 3 windows at page size 25: 25 + 25 + 13
+    const ids = seedTied(N, NOW - 600);
+    expect(await countUnresolvedNotifiableJobs(env, SWEEP_MAX_AGE_SECONDS)).toBe(N);
+    const windows = Math.ceil(N / SWEEP_PAGE_SIZE);
+    expect(windows).toBe(3);
+
+    const cycle = async () => {
+      const pages: string[][] = [];
+      for (let w = 0; w < windows; w += 1) pages.push(await pass1Tick(w));
+      return pages;
+    };
+    const first = await cycle();
+    const second = await cycle();
+
+    const flat = first.flat();
+    expect(flat.length).toBe(N); // gap-free AND duplicate-free: the pages partition the population
+    expect(new Set(flat).size).toBe(N);
+    expect([...flat].sort()).toEqual([...ids].sort());
+    // A second full cycle must reproduce the first page-for-page. An unstable order under ties
+    // would let a row be served twice in one cycle and skipped in the next.
+    expect(second).toEqual(first);
+    console.log(
+      `core#180 tie coverage: n=${N} windows=${windows} pages=[${first.map((p) => p.length).join(",")}] ` +
+        `unique=${new Set(flat).size} cycle2==cycle1=${JSON.stringify(second) === JSON.stringify(first)}`,
+    );
+  });
+
+  it("MEASURED: the page must not change when the planner picks a different index (this is what `, id ASC` buys)", async () => {
+    const N = 40;
+    seedTied(N, NOW - 600);
+
+    // Plan 1: whatever the planner picks with the schema as shipped.
+    const before = await pass1Tick(0);
+    expect(before.length).toBe(SWEEP_PAGE_SIZE); // control: the query returned a full page at all
+
+    // Plan 2: the index someone would add to make THIS sweep query faster -- it covers the WHERE's
+    // `parent_id IS NULL` and the ordering column, so the planner takes it over the shipped
+    // `idx_renders_parent`.
+    //
+    // The first draft of this test used a bare `(submitted_at DESC)` index and PASSED, because the
+    // planner never took it and the plan therefore never changed. The `usesIndex` control below is
+    // what caught that: without it, `same_page=true` would have read as proof of plan independence
+    // from a run in which nothing was independent of anything.
+    d1.raw.exec(`CREATE INDEX idx_tie_probe ON renders (parent_id, submitted_at DESC)`);
+    const after = await pass1Tick(0);
+
+    // CONTROL that the new index is actually being used, so a pass cannot come from the planner
+    // ignoring it: the query plan must name it.
+    const plan = d1.raw
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT job_id FROM renders
+           WHERE status NOT IN ('COMPLETED','FAILED','CANCELLED') AND notified_at IS NULL
+             AND COALESCE(mode,'full') != 'keyframes-only' AND parent_id IS NULL
+             AND submitted_at >= 0
+           ORDER BY submitted_at ASC, id ASC LIMIT 25 OFFSET 0`,
+      )
+      .all() as { detail: string }[];
+    const usesIndex = plan.some((r) => /idx_tie_probe/.test(r.detail));
+    console.log(
+      `core#180 plan independence: uses_new_index=${usesIndex} same_page=${JSON.stringify(after) === JSON.stringify(before)} ` +
+        `plan="${plan.map((r) => r.detail).join(" | ")}"`,
+    );
+    expect(usesIndex).toBe(true); // if false, this test proves nothing and must not read as a pass
+
+    // THE ASSERTION. Without `, id ASC` the DESC index is walked backwards and the tied rows come
+    // back reversed, so this page is a different 25 films.
+    expect(after).toEqual(before);
+  });
+});
