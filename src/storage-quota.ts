@@ -34,7 +34,7 @@
 // the reconcile to make the number true. That is stated in the docs and surfaced by the panel usage
 // route, never left as a quietly-wrong number.
 
-import type { Database, ObjectStore } from "./platform/types.js";
+import type { Database, ObjectStore, PreparedStatement } from "./platform/types.js";
 import type { R2Bucket } from "./platform/r2-types.js";
 
 // --------------------------------------------------------------------------- schema
@@ -655,30 +655,114 @@ interface ListedWithSize {
   size?: number;
 }
 
+/** Scratch table the rebuild STAGES into before it touches the live ledger (cf#516).
+ *
+ *  Created where it is written rather than in a migration, for the same reason
+ *  STORAGE_LEDGER_META_DDL is (see there): this is rebuild-only scratch, and putting it in front of
+ *  two panels' migration trains buys nothing. It is emptied on both sides of a rebuild, so a killed
+ *  invocation leaves at most one bucket-sized scratch table behind and the next run clears it. */
+export const STORAGE_REBUILD_DDL = `CREATE TABLE IF NOT EXISTS storage_usage_rebuild (
+  object_key TEXT PRIMARY KEY,
+  bytes INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+)`;
+
+/** Platform calls one reconcile may issue before it refuses (cf#516).
+ *
+ *  WHAT THE NUMBER MEANS, because a bare constant invites someone to "just raise it": on Workers a
+ *  request may make 1000 subrequests, and EVERY store call and EVERY D1 call is one. 900 leaves the
+ *  calling handler ~100 for its own work. It is not a performance tuning knob; it is the point past
+ *  which the invocation is killed by the platform MID-REBUILD, which is the condition cf#516 is
+ *  about. Raising it does not buy a bigger bucket, it buys a rebuild that dies later. */
+export const DEFAULT_RECONCILE_SUBREQUEST_BUDGET = 900;
+
+/** Thrown INSTEAD of starting a rebuild that cannot finish. Nothing has been deleted when this is
+ *  raised, and the message says so, because the operator's first question is what it cost them. */
+export class StorageReconcileTooLargeError extends Error {
+  constructor(
+    readonly objects: number,
+    readonly projectedCalls: number,
+    readonly budget: number,
+    detail: string,
+  ) {
+    super(
+      `storage-reconcile: refused before touching the ledger -- ${detail} needs ~${projectedCalls} ` +
+        `platform calls against a budget of ${budget}. NOTHING WAS DELETED. Narrow the rebuild with ` +
+        `a prefix, or raise subrequestBudget if this host has a higher ceiling.`,
+    );
+    this.name = "StorageReconcileTooLargeError";
+  }
+}
+
 /** Rebuild the ledger from the object store itself: the repair for accounting drift and the backfill for
  *  artifacts that predate accounting. Host-neutral, reading the store through the Platform ICD (list +
  *  head), never a CF-specific bucket-usage API.
  *
  *  Operator-invokable, never automatic: it is O(objects) list/head calls, so a boot-time sweep would tax
- *  every cold start of every studio to fix a number that is usually already right. */
+ *  every cold start of every studio to fix a number that is usually already right.
+ *
+ *  cf#516 -- THE ORDER OF OPERATIONS IS THE SAFETY PROPERTY, so read it before rearranging:
+ *
+ *    1. ENUMERATE, counting platform calls as we go.
+ *    2. REFUSE if the writes will not fit in what is left. Nothing has been destroyed at this point,
+ *       so the expensive failure is converted into a loud one.
+ *    3. STAGE every row into `storage_usage_rebuild`. This is the long, killable phase, and it
+ *       touches nothing anyone reads.
+ *    4. CLEAR the `ledger_true_since` stamp. The ledger is about to stop being true and the stamp
+ *       must not outlive that.
+ *    5. SWAP in ONE batch: drop the old rows, promote the staged ones, drop the scratch, re-stamp.
+ *
+ *  The earlier version did 5 as `DELETE` then a re-insert loop, and left the stamp from the PREVIOUS
+ *  rebuild in place throughout. So a killed invocation left a ledger that was neither the old state
+ *  nor the new one while `storageLedgerTrueSince` still certified it -- `complete: true` over an
+ *  under-reporting total, which is the one direction that bills nobody and prompts nobody to look.
+ *
+ *  TWO GUARANTEES, and they are deliberately not the same strength:
+ *
+ *    ATOMICITY, only where the host gives it. `db.batch` is one transaction on D1, so step 5 has no
+ *    observable middle. A host with no `batch` runs it sequentially and can be interrupted inside it.
+ *
+ *    DETECTABILITY, on every host, with no transaction required. Because the stamp is cleared at 4
+ *    and restored only at the end of 5, ANY interruption from 4 onward leaves the ledger unstamped,
+ *    and an unstamped ledger already reads as a metering GAP rather than as a total (cp#195). An
+ *    absence never renders as a value.
+ *
+ *  THE COST, stated because it is a real one: an interrupted rebuild leaves the ledger UNBILLABLE
+ *  even when the swap rolled back cleanly and the old rows are intact. We cannot tell that case from
+ *  a half-applied one without transactions we do not have on every host, so it lands on the
+ *  unbillable side, which is the side this file has always chosen. Re-running the reconcile restores
+ *  the stamp. */
 export async function reconcileStorageUsage(
   bucket: R2Bucket,
   db: Database,
-  opts?: { prefix?: string; chunkSize?: number },
+  opts?: { prefix?: string; chunkSize?: number; subrequestBudget?: number },
 ): Promise<StorageReconcileReport> {
   const prefix = opts?.prefix ?? "";
   const chunkSize = opts?.chunkSize ?? 100;
+  const budget = opts?.subrequestBudget ?? DEFAULT_RECONCILE_SUBREQUEST_BUDGET;
   const sized: Array<{ key: string; bytes: number }> = [];
   let unsized = 0;
 
+  // Every store call and every DB call is a subrequest on Workers, so they come out of one budget.
+  let spent = 0;
+  const scope = prefix ? `the rebuild under "${prefix}"` : "a whole-bucket rebuild";
+
   let cursor: string | undefined;
   do {
+    spent += 1;
+    if (spent > budget) {
+      throw new StorageReconcileTooLargeError(sized.length, spent, budget, `${scope} (still listing)`);
+    }
     const page = await bucket.list({ prefix, cursor });
     for (const obj of page.objects as ListedWithSize[]) {
       let bytes = typeof obj.size === "number" ? obj.size : null;
       if (bytes === null) {
         // A host whose list() omits size (ICD-optional): pay for one HEAD per object rather than
         // reporting a number we did not measure.
+        spent += 1;
+        if (spent > budget) {
+          throw new StorageReconcileTooLargeError(sized.length, spent, budget, `${scope} (still sizing objects)`);
+        }
         const head = await bucket.head(obj.key);
         bytes = head && typeof head.size === "number" ? head.size : null;
       }
@@ -688,27 +772,62 @@ export async function reconcileStorageUsage(
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
 
-  // Replace, do not merge: the store is the authority, so a ledger row for an object that no longer
-  // exists (lifecycle-expired, deleted out of band) must disappear rather than survive a reconcile.
-  const deleteStmt = prefix
-    ? db.prepare("DELETE FROM storage_usage WHERE object_key LIKE ? || '%'").bind(prefix)
-    : db.prepare("DELETE FROM storage_usage").bind();
-  await deleteStmt.run();
+  // A host with batch writes one call per chunk; without it, one per row. That is why an unsized
+  // host refuses so much earlier, and it is derived from what this host actually offers rather than
+  // assumed.
+  const fillCalls = db.batch ? Math.ceil(sized.length / chunkSize) : sized.length;
+  const swapCalls = db.batch ? 1 : 4;
+  const projected = spent + 2 /* create + clear scratch */ + fillCalls + 2 /* create meta + clear stamp */ + swapCalls;
+  if (projected > budget) {
+    throw new StorageReconcileTooLargeError(sized.length, projected, budget, `${scope} of ${sized.length} objects`);
+  }
 
   const now = nowSeconds();
-  const insert = db.prepare(
-    `INSERT INTO storage_usage (object_key, bytes, updated_at) VALUES (?, ?, ?)
+
+  // STAGE. Nothing below this comment is read by anyone until the swap, so an invocation killed
+  // during the fill -- the long phase, and the one that grows with the bucket -- destroys nothing.
+  await db.prepare(STORAGE_REBUILD_DDL).bind().run();
+  await db.prepare("DELETE FROM storage_usage_rebuild").bind().run();
+  const stage = db.prepare(
+    `INSERT INTO storage_usage_rebuild (object_key, bytes, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(object_key) DO UPDATE SET bytes = excluded.bytes, updated_at = excluded.updated_at`,
   );
   for (let i = 0; i < sized.length; i += chunkSize) {
-    const chunk = sized.slice(i, i + chunkSize).map((row) => insert.bind(row.key, row.bytes, now));
+    const chunk = sized.slice(i, i + chunkSize).map((row) => stage.bind(row.key, row.bytes, now));
     if (db.batch) await db.batch(chunk);
     else for (const stmt of chunk) await stmt.run();
   }
 
-  // The rebuild just made this ledger true; record that, because nothing else can observe it after
-  // the fact. A total and a floor are the same shape (cp#195).
-  await markStorageLedgerTrue(db, now);
+  // INVALIDATE. From here the ledger is about to stop being true, so the stamp goes first: it is
+  // restored at the end of the swap and nowhere else.
+  await db.prepare(STORAGE_LEDGER_META_DDL).bind().run();
+  await db.prepare("DELETE FROM storage_usage_meta WHERE key = ?").bind(LEDGER_TRUE_SINCE_KEY).run();
+
+  // SWAP. Replace, do not merge: the store is the authority, so a ledger row for an object that no
+  // longer exists (lifecycle-expired, deleted out of band) must disappear rather than survive a
+  // reconcile. One batch, so on D1 there is no observable state between the old ledger and the new.
+  const swap: PreparedStatement[] = [
+    prefix
+      ? db.prepare("DELETE FROM storage_usage WHERE object_key LIKE ? || '%'").bind(prefix)
+      : db.prepare("DELETE FROM storage_usage").bind(),
+    db
+      .prepare(
+        `INSERT INTO storage_usage (object_key, bytes, updated_at)
+         SELECT object_key, bytes, updated_at FROM storage_usage_rebuild`,
+      )
+      .bind(),
+    db.prepare("DELETE FROM storage_usage_rebuild").bind(),
+    // The rebuild just made this ledger true; record that, because nothing else can observe it after
+    // the fact. A total and a floor are the same shape (cp#195).
+    db
+      .prepare(
+        `INSERT INTO storage_usage_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(LEDGER_TRUE_SINCE_KEY, String(now)),
+  ];
+  if (db.batch) await db.batch(swap);
+  else for (const stmt of swap) await stmt.run();
 
   return {
     objects: sized.length,
