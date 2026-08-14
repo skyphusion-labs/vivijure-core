@@ -405,6 +405,38 @@ export interface FinishInput {
   // to the module -- forward it into the RunPod job unchanged; never parse/recompute it. Optional +
   // additive (no api bump); absent on a legacy core, in which case the producer writes NO sidecar.
   output_hash?: string;
+  // cf#312 credentialless satellite transport (additive, no MODULE_API bump). When the core can
+  // derive this step's output key (finish_artifacts / legacy suffix) it presigns GET/PUT and hands
+  // them here so finish-upscale / finish-lipsync can call the satellite's presigned branch instead
+  // of the shared-bucket credentialed one (pooling without endpoint R2 env). Absent on a legacy core
+  // or when presign is unbound, in which case the module sends keys and the satellite takes R2 mode.
+  //
+  // CONTRACT, AND IT IS A CONTRACT ABOUT WHAT THE MODULE OMITS, NOT ABOUT WHAT IT ADDS. All three
+  // satellites select their mode on the PRESENCE OF THE KEY, never on the presence of a URL:
+  // vivijure-upscale handler.py `if inp.get("clip_key"): return _upscale_r2(inp)`, and the same line
+  // in vivijure-musetalk; vivijure-audio-upscale does it with audio_key. So a job body that carries
+  // clip_key AND video_url/output_url takes the CREDENTIALED R2 BRANCH and the presigned fields are
+  // dead weight. A MODULE BUILDING THE PRESIGNED BODY MUST OMIT clip_key (and audio_key), not merely
+  // add the URLs.
+  //
+  // Why this is worth a paragraph rather than a line: getting it wrong FAILS GREEN. The render
+  // succeeds -- R2 mode is the fully working legacy path -- so a load test passes, the artifact
+  // lands, and nothing anywhere reports that the credentialless path was never exercised. The only
+  // symptom is the one the change existed to remove: the endpoint still needs shared-bucket R2 env,
+  // so it still cannot be pooled.
+  //
+  // These fields are OPTIONAL and clip_key is REQUIRED, so this contract is not expressible in the
+  // type. A module that still uses the backend finish_clip path (finish-rife) sends clip_key with no
+  // URLs and is correct; that is the R2 case, not a partial presigned one.
+  video_url?: string;   // presigned GET of clip_key
+  output_url?: string;  // presigned PUT for the step's expected output key
+  output_key?: string;  // R2 key behind output_url (echoed by the satellite)
+  audio_url?: string;   // presigned GET of audio_key. REQUIRED by musetalk's presigned branch when
+                        // that branch is taken: it returns a top-level `error` without one, which is
+                        // a hard job failure. The core therefore presigns all-or-nothing.
+  hash_url?: string;    // optional presigned PUT for `<output_key>.hash` (#583 sidecar in presigned
+                        // mode). NOT `<output_key minus .mp4>.hash` -- the adoption gate reads
+                        // `<output_key>.hash` and a mismatch makes the step permanently unadoptable.
 }
 
 /** What a `finish` module returns: the processed clip plus what it did. Duration is invariant
@@ -460,6 +492,17 @@ export interface DialogueOutput {
 export interface SpeechInput {
   shot_id: string;
   audio_key: string; // R2 key of the shot's dialogue audio (TTS), from job.dialogue_audio[shot_id]
+  // cf#312: same credentialless shape as FinishInput, INCLUDING the same omission contract, and for
+  // the same measured reason. vivijure-audio-upscale handler.py selects its mode on
+  // `if inp.get("audio_key")`, so a job body carrying audio_key AND audio_url/output_url takes the
+  // CREDENTIALED R2 BRANCH; the presigned fields are ignored, the render succeeds, and nothing
+  // reports that the credentialless path was never exercised. A module building the presigned body
+  // MUST OMIT audio_key, not merely add the URLs. See FinishInput above for the full statement.
+  // output_key uses the module's `_enh.wav` convention (mirrored by the core's speechEnhancedAudioKey
+  // when presigning; the two are pinned against each other by tests).
+  audio_url?: string;
+  output_url?: string;
+  output_key?: string;
 }
 
 /** What a `speech` module returns: the (maybe enhanced) dialogue audio plus what it did. On a real
