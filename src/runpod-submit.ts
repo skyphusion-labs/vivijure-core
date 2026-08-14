@@ -19,6 +19,17 @@
 import type { Env } from "./platform/orchestrator-context.js";
 import { secretValue, type SecretsStoreSecret } from "./secret-store.js";
 import { reconcileRunpodEndpointWorkersMax } from "./runpod-endpoint-reconcile.js";
+import {
+  RUNPOD_DIRECT_BASE,
+  planeRefusalError,
+  planeRefusalReason,
+  runpodCredentialName,
+  runpodEndpointUrl,
+  runpodHeaders,
+  runpodRoute,
+  type RunpodRoute,
+  type RunpodRouteEnv,
+} from "./runpod-route.js";
 
 // Quality tier normalizer / validator (v0.156.3). The render tiers are keyframe (a
 // separate keyframesOnly flag) plus three real generation tiers the pod's `for_tier`
@@ -199,7 +210,12 @@ export interface RunpodJobView {
   delayTimeMs?: number;
 }
 
-const RUNPOD_BASE = "https://api.runpod.ai";
+// The DIRECT route: RunPod itself, no credential resolved yet. Every URL builder below defaults to
+// it, so a caller that has not resolved a route gets byte-for-byte the URLs this file has always
+// produced (`https://api.runpod.ai/v2/<endpoint>/...`). The credential is empty here on purpose --
+// these builders produce URLs and must never carry a secret. See src/runpod-route.ts for why the
+// branch is on RUNPOD_PROXY_BASE being BOUND and is never a failover.
+const DIRECT_ROUTE: RunpodRoute = { base: RUNPOD_DIRECT_BASE, credential: "", proxied: false };
 
 // Bundle key shape (mirrors bundle-assembler.assembleBundle's output):
 //   bundles/<projectName>.tar.gz
@@ -358,16 +374,28 @@ export function buildRegenShotPayload(args: RegenShotArgs): { input: RegenShotJo
   return { input };
 }
 
-export function buildSubmitUrl(endpointId: string): string {
-  return `${RUNPOD_BASE}/v2/${endpointId}/run`;
+// The three verb URLs. `route` is OPTIONAL and defaults to the direct route, which keeps every
+// existing caller (including vivijure-cf's transport tests, which pass a hand-written direct URL)
+// byte-identical. The proxy is mounted at RunPod's own suffixes, so the only thing that changes
+// between the two routes is the base.
+export function buildSubmitUrl(endpointId: string, route: RunpodRoute = DIRECT_ROUTE): string {
+  return `${runpodEndpointUrl(route, endpointId)}/run`;
 }
 
-export function buildStatusUrl(endpointId: string, jobId: string): string {
-  return `${RUNPOD_BASE}/v2/${endpointId}/status/${jobId}`;
+export function buildStatusUrl(
+  endpointId: string,
+  jobId: string,
+  route: RunpodRoute = DIRECT_ROUTE,
+): string {
+  return `${runpodEndpointUrl(route, endpointId)}/status/${jobId}`;
 }
 
-export function buildCancelUrl(endpointId: string, jobId: string): string {
-  return `${RUNPOD_BASE}/v2/${endpointId}/cancel/${jobId}`;
+export function buildCancelUrl(
+  endpointId: string,
+  jobId: string,
+  route: RunpodRoute = DIRECT_ROUTE,
+): string {
+  return `${runpodEndpointUrl(route, endpointId)}/cancel/${jobId}`;
 }
 
 // Validate a job id at the route boundary so a malformed id does not
@@ -449,6 +477,16 @@ export type RunpodResult =
 interface RunpodRequestSpec {
   method: "GET" | "POST";
   url: string;
+  // The route this URL was built from. Callers inside this file resolve it ONCE and pass it here,
+  // so the base in `url` and the bearer in the headers can never come from two different reads of
+  // the environment. Omitted by external callers (vivijure-cf drives this transport directly), in
+  // which case it is resolved here and the URL is checked against it rather than trusted.
+  route?: RunpodRoute;
+  // Attribution only: becomes the plane's `x-vivijure-module` metering label on the proxied route
+  // and is dropped on the direct route. Core does not invent a value for its own studio-side
+  // submits -- the plane reads the header nullable -- so this exists for hosts and modules that
+  // genuinely have a module name to assert.
+  moduleName?: string;
   // JSON body for the POST submitters; omitted for cancel (POST, no body) and
   // poll (GET). Its presence also gates the content-type header.
   body?: string;
@@ -484,14 +522,11 @@ export async function runpodRequest(
   spec: RunpodRequestSpec,
   opts: RunpodTransportOpts = {},
 ): Promise<RunpodResult> {
-  const apiKey = await secretValue(env.RUNPOD_API_KEY as SecretsStoreSecret | string | undefined);
-  if (!apiKey) {
-    return {
-      ok: false,
-      error:
-        "RUNPOD_API_KEY must be set on the Worker (Secrets Store binding or npx wrangler secret put)",
-    };
-  }
+  const route = spec.route ?? (await runpodRoute(env as RunpodRouteEnv));
+  const credentialErr = runpodMissingCredential(route);
+  if (credentialErr) return credentialErr;
+  const originErr = runpodRouteOriginMismatch(route, spec.url);
+  if (originErr) return originErr;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
   const random = opts.random ?? Math.random;
@@ -499,9 +534,7 @@ export async function runpodRequest(
   const backoffBaseMs = opts.backoffBaseMs ?? RUNPOD_BACKOFF_BASE_MS;
   const timeoutMs = opts.timeoutMs ?? RUNPOD_TIMEOUT_MS;
 
-  const headers: Record<string, string> = {
-    authorization: `Bearer ${apiKey}`,
-  };
+  const headers: Record<string, string> = runpodHeaders(route, spec.moduleName);
   if (spec.body !== undefined) headers["content-type"] = "application/json";
 
   // Carried across attempts so a final transient HTTP failure surfaces the
@@ -553,6 +586,20 @@ export async function runpodRequest(
       };
     }
     if (!resp.ok) {
+      // OUR plane refusing is not RunPod failing, and only the header separates them (cp#288). A
+      // proxy 502 -- the plane could not REACH RunPod -- deliberately carries no header and so
+      // falls through to the vendor wording below, because relabelling a vendor hiccup as our
+      // outage is a different wrong answer rather than a fix. Gated on `route.proxied` inside
+      // planeRefusalReason, so a header arriving from api.runpod.ai can never change a
+      // self-hoster's outcome.
+      const refusal = planeRefusalReason(route, resp);
+      if (refusal) {
+        return {
+          ok: false,
+          error: planeRefusalError("vivijure-core", refusal, spec.label),
+          status: resp.status,
+        };
+      }
       const errStr =
         raw && typeof raw === "object" && "error" in raw
           ? String((raw as Record<string, unknown>).error)
@@ -577,6 +624,56 @@ function runpodMissingEndpoint(): RunpodResult {
   return {
     ok: false,
     error: "RUNPOD_ENDPOINT_ID must be set on the Worker (Secrets Store binding or npx wrangler secret put)",
+  };
+}
+
+/**
+ * A missing CREDENTIAL, named as the binding this route actually reads.
+ *
+ * On the direct route this returns the exact sentence this file has always returned, because a
+ * self-hoster's diagnostic must not change. On the proxied route naming RUNPOD_API_KEY would send
+ * an operator hunting a key that MUST NOT exist on that Worker -- the noun comes from
+ * runpodCredentialName so the two can never drift apart. Returns null when the credential is
+ * present, so the call site reads as a guard rather than as a boolean.
+ */
+function runpodMissingCredential(route: RunpodRoute): RunpodResult | null {
+  if (route.credential) return null;
+  if (route.proxied) {
+    return {
+      ok: false,
+      error:
+        `${runpodCredentialName(route)} must be set on the Worker (the control plane installs it ` +
+        `after upload; this Worker is proxied and must not hold a RunPod key)`,
+    };
+  }
+  return {
+    ok: false,
+    error:
+      `${runpodCredentialName(route)} must be set on the Worker (Secrets Store binding or npx wrangler secret put)`,
+  };
+}
+
+/**
+ * REFUSE a URL that does not belong to the route whose credential we are about to present.
+ *
+ * This is the one failure a route-carrying transport can have that nothing downstream would
+ * report: a caller that built its URL against api.runpod.ai on a Worker whose environment is
+ * proxied would send the PLANE token to RunPod. It fails closed and names the condition, rather
+ * than producing a 401 from a vendor that the caller then reads as a credential problem.
+ *
+ * It cannot fire on the direct route with a URL from the builders above (same base, byte for
+ * byte), which is why the existing external callers are unaffected -- and it is negative-tested
+ * with a proxied route against a direct URL, because a guard nobody has watched refuse is not a
+ * guard.
+ */
+function runpodRouteOriginMismatch(route: RunpodRoute, url: string): RunpodResult | null {
+  if (url.startsWith(`${route.base}/`)) return null;
+  return {
+    ok: false,
+    error:
+      `RunPod route mismatch: this Worker resolves to ${route.proxied ? "the control-plane proxy" : "RunPod directly"} ` +
+      `(${route.base}) and the request URL does not start there. Refusing rather than presenting ` +
+      `this route's credential to another origin.`,
   };
 }
 
@@ -623,18 +720,23 @@ async function submitToRunpodEndpoint(
   label: string,
   opts?: RunpodTransportOpts,
 ): Promise<RunpodResult> {
-  const apiKey = await secretValue(env.RUNPOD_API_KEY as SecretsStoreSecret | string | undefined);
-  if (!apiKey) {
-    return {
-      ok: false,
-      error: "RUNPOD_API_KEY must be set on the Worker (Secrets Store binding or npx wrangler secret put)",
-    };
+  const route = await runpodRoute(env as RunpodRouteEnv);
+  const credentialErr = runpodMissingCredential(route);
+  if (credentialErr) return credentialErr;
+  // The workers-max reconcile is an ACCOUNT-level call to rest.runpod.io (see
+  // runpod-endpoint-reconcile.ts), not one of the four verbs the plane proxy serves, and a
+  // proxied tenant holds no RunPod key by design. Presenting the plane token to rest.runpod.io
+  // would 401; routing it through the proxy is impossible because the proxy has no such verb --
+  // deliberately, since endpoint configuration on a SHARED pool endpoint is ours to own and not a
+  // tenant's to set. So it is SKIPPED, not attempted and swallowed, and the skip is silent
+  // because there is nothing for a tenant operator to do about it.
+  if (!route.proxied) {
+    const reconcileErr = await reconcileEndpointIfConfigured(env, route.credential, endpointId, opts);
+    if (reconcileErr) return reconcileErr;
   }
-  const reconcileErr = await reconcileEndpointIfConfigured(env, apiKey, endpointId, opts);
-  if (reconcileErr) return reconcileErr;
   return runpodRequest(
     env,
-    { method: "POST", url: buildSubmitUrl(endpointId), body, label },
+    { method: "POST", url: buildSubmitUrl(endpointId, route), body, label, route },
     opts,
   );
 }
@@ -694,22 +796,204 @@ export async function submitRegenShotJob(
   );
 }
 
-// v0.57.0: submit a standalone LoRA training job. Differs only in the payload
-// builder.
+// ---------- Local-door SDXL train (homelab; no RunPod) ----------
+//
+// vivijure-local-12gb / 16gb accept action:train_lora on the same /run + /status
+// surface as i2v_clip. Prefer LOCAL_BACKEND_URL when set so cast train stays on
+// own silicon; fall back to RUNPOD_ENDPOINT_ID only when the door is not wired.
+
+/** Strip trailing ASCII '/' without a regex (CodeQL: ReDoS on /\/+$/ over env input). */
+function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47) end -= 1;
+  return end === s.length ? s : s.slice(0, end);
+}
+
+/** Absolute http(s) door URL, no userinfo / metadata hosts. Null when unset/invalid. */
+export function normalizeLocalBackendUrl(raw: string): string | null {
+  const trimmed = stripTrailingSlashes(raw.trim());
+  if (!trimmed) return null;
+  let u: URL;
+  try {
+    u = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  if (u.username || u.password) return null;
+  let hostname = u.hostname.toLowerCase();
+  if (hostname.endsWith(".")) hostname = hostname.slice(0, -1);
+  if (hostname === "metadata.google.internal" || hostname.endsWith(".metadata.google.internal")) {
+    return null;
+  }
+  if (hostname === "169.254.169.254" || hostname.startsWith("169.254.")) return null;
+  if (u.pathname.includes("..")) return null;
+  const path = u.pathname === "/" ? "" : stripTrailingSlashes(u.pathname);
+  return `${u.protocol}//${u.host}${path}`;
+}
+
+export async function resolveLocalBackendUrl(env: Env): Promise<string | null> {
+  const raw = await secretValue(
+    (env as { LOCAL_BACKEND_URL?: unknown }).LOCAL_BACKEND_URL as
+      SecretsStoreSecret | string | undefined,
+  );
+  return normalizeLocalBackendUrl(raw);
+}
+
+export async function resolveLocalBackendToken(env: Env): Promise<string> {
+  return (
+    await secretValue(
+      (env as { LOCAL_BACKEND_TOKEN?: unknown }).LOCAL_BACKEND_TOKEN as
+        SecretsStoreSecret | string | undefined,
+    )
+  ).trim();
+}
+
+export async function localDoorConfigured(env: Env): Promise<boolean> {
+  return Boolean(await resolveLocalBackendUrl(env));
+}
+
+async function submitToLocalDoor(
+  env: Env,
+  body: string,
+  label: string,
+  opts?: RunpodTransportOpts,
+): Promise<RunpodResult> {
+  const baseUrl = await resolveLocalBackendUrl(env);
+  if (!baseUrl) {
+    return {
+      ok: false,
+      error:
+        "LOCAL_BACKEND_URL must be set (homelab door for SDXL cast train) or wire RUNPOD_ENDPOINT_ID",
+    };
+  }
+  const token = await resolveLocalBackendToken(env);
+  const fetchImpl = opts?.fetchImpl ?? fetch;
+  const timeoutMs = opts?.timeoutMs ?? RUNPOD_TIMEOUT_MS;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (token) headers.authorization = `Bearer ${token}`;
+  try {
+    const resp = await fetchImpl(`${baseUrl}/run`, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    let raw: unknown;
+    try {
+      raw = await resp.json();
+    } catch {
+      return {
+        ok: false,
+        error: `local-door ${label} returned non-JSON (HTTP ${resp.status})`,
+        status: resp.status,
+      };
+    }
+    if (!resp.ok) {
+      const err =
+        raw && typeof raw === "object" && typeof (raw as { error?: unknown }).error === "string"
+          ? (raw as { error: string }).error
+          : `local-door ${label} failed (HTTP ${resp.status})`;
+      return { ok: false, error: err, status: resp.status };
+    }
+    const id =
+      raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string"
+        ? (raw as { id: string }).id
+        : "";
+    if (!id || !isValidJobId(id)) {
+      return { ok: false, error: `local-door ${label} returned no job id` };
+    }
+    // Door /run only returns { id }; status is IN_QUEUE until the serial worker picks it up.
+    return {
+      ok: true,
+      view: { jobId: id, status: "IN_QUEUE", statusRaw: "IN_QUEUE" },
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `local-door ${label} transport failed: ${(e as Error).message}`,
+    };
+  }
+}
+
+export async function pollLocalDoorJob(
+  env: Env,
+  jobId: string,
+  opts?: RunpodTransportOpts,
+): Promise<RunpodResult> {
+  if (!isValidJobId(jobId)) {
+    return { ok: false, error: "invalid job id", status: 400 };
+  }
+  const baseUrl = await resolveLocalBackendUrl(env);
+  if (!baseUrl) {
+    return { ok: false, error: "LOCAL_BACKEND_URL not configured", status: 404 };
+  }
+  const token = await resolveLocalBackendToken(env);
+  const fetchImpl = opts?.fetchImpl ?? fetch;
+  const timeoutMs = opts?.timeoutMs ?? RUNPOD_TIMEOUT_MS;
+  const headers: Record<string, string> = {};
+  if (token) headers.authorization = `Bearer ${token}`;
+  try {
+    const resp = await fetchImpl(`${baseUrl}/status/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    let raw: unknown;
+    try {
+      raw = await resp.json();
+    } catch {
+      return {
+        ok: false,
+        error: `local-door poll returned non-JSON (HTTP ${resp.status})`,
+        status: resp.status,
+      };
+    }
+    if (resp.status === 404) {
+      return { ok: false, error: "local-door job not found", status: 404 };
+    }
+    if (!resp.ok) {
+      const err =
+        raw && typeof raw === "object" && typeof (raw as { error?: unknown }).error === "string"
+          ? (raw as { error: string }).error
+          : `local-door poll failed (HTTP ${resp.status})`;
+      return { ok: false, error: err, status: resp.status };
+    }
+    // Door status envelope is RunPod-compatible: { id, status, output?, error? }.
+    const view = normalizeRunpodResponse(raw);
+    if (!view) {
+      return { ok: false, error: "local-door poll returned unparseable status envelope" };
+    }
+    return { ok: true, view };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `local-door poll transport failed: ${(e as Error).message}`,
+    };
+  }
+}
+
+// v0.57.0: submit a standalone LoRA training job. Prefers the local door when
+// LOCAL_BACKEND_URL is set (homelab SDXL train on own silicon); otherwise the
+// RunPod render endpoint.
 export async function submitTrainLoraJob(
   env: Env,
   args: TrainLoraArgs,
   opts?: RunpodTransportOpts,
 ): Promise<RunpodResult> {
+  const body = JSON.stringify(buildTrainLoraPayload(args));
+  if (await localDoorConfigured(env)) {
+    return submitToLocalDoor(env, body, "train-lora submit", opts);
+  }
   const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
-  if (!endpointId) return runpodMissingEndpoint();
-  return submitToRunpodEndpoint(
-    env,
-    endpointId,
-    JSON.stringify(buildTrainLoraPayload(args)),
-    "train-lora submit",
-    opts,
-  );
+  if (!endpointId) {
+    return {
+      ok: false,
+      error:
+        "SDXL cast train needs LOCAL_BACKEND_URL (homelab door) or RUNPOD_ENDPOINT_ID (cloud render EP)",
+    };
+  }
+  return submitToRunpodEndpoint(env, endpointId, body, "train-lora submit", opts);
 }
 
 // Submit a Wan 2.2 A14B LoRA training job to the DEDICATED Wan-training endpoint (the lead's
@@ -755,12 +1039,14 @@ export async function cancelRenderJob(
 ): Promise<RunpodResult> {
   const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
   if (!endpointId) return runpodMissingEndpoint();
+  const route = await runpodRoute(env as RunpodRouteEnv);
   return runpodRequest(
     env,
     {
       method: "POST",
-      url: buildCancelUrl(endpointId, jobId),
+      url: buildCancelUrl(endpointId, jobId, route),
       label: "cancel",
+      route,
     },
     opts,
   );
@@ -773,12 +1059,14 @@ export async function pollRunpodJob(
   jobId: string,
   opts?: RunpodTransportOpts,
 ): Promise<RunpodResult> {
+  const route = await runpodRoute(env as RunpodRouteEnv);
   return runpodRequest(
     env,
     {
       method: "GET",
-      url: buildStatusUrl(endpointId, jobId),
+      url: buildStatusUrl(endpointId, jobId, route),
       label: "poll",
+      route,
     },
     opts,
   );
@@ -805,11 +1093,12 @@ export function mergeCastLoraPollResults(
   return renderPoll;
 }
 
-// Poll a cast LoRA training job. Wan trains submit to RUNPOD_WAN_TRAIN_ENDPOINT_ID; SDXL trains
-// submit to RUNPOD_ENDPOINT_ID. RunPod job ids are scoped per endpoint, so a Wan job 404s on the
-// render endpoint (the /lora-status 502 users saw). Try the Wan train endpoint first when configured;
-// a 404 there means "not this endpoint's job" and we fall through to the render endpoint. Any
-// non-404 from either endpoint is authoritative.
+// Poll a cast LoRA training job. Order:
+//   1. Wan train EP (when wired) -- dual-expert A14B jobs live only there
+//   2. Local door (when LOCAL_BACKEND_URL wired) -- homelab SDXL train
+//   3. RunPod render EP -- cloud SDXL train
+// Job ids are scoped per backend, so a 404 means "not this backend" and we fall through.
+// Any non-404 from a tried backend is authoritative.
 export async function pollCastLoraJob(
   env: Env,
   jobId: string,
@@ -825,8 +1114,23 @@ export async function pollCastLoraJob(
     if (wanPoll.ok) return wanPoll;
     if (wanPoll.status !== 404) return wanPoll;
   }
+
+  let localPoll: RunpodResult | undefined;
+  if (await localDoorConfigured(env)) {
+    localPoll = await pollLocalDoorJob(env, jobId, opts);
+    if (localPoll.ok) return localPoll;
+    if (localPoll.status !== 404) return localPoll;
+  }
+
+  const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
+  if (!endpointId) {
+    // No cloud render EP: surface local 404 (or wan) rather than "missing endpoint" if we tried door.
+    if (localPoll) return localPoll;
+    if (wanPoll) return wanPoll;
+    return runpodMissingEndpoint();
+  }
   const renderPoll = await pollRenderJob(env, jobId, opts);
-  return mergeCastLoraPollResults(wanPoll, renderPoll);
+  return mergeCastLoraPollResults(wanPoll ?? localPoll, renderPoll);
 }
 
 // ---------- Audio beat-sync (CPU Cloudflare Container) ----------

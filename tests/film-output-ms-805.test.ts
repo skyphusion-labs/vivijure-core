@@ -120,8 +120,9 @@ function makeEnv(opts: { job?: Record<string, unknown>; present?: string[]; titl
   return {
     env,
     read: () => JSON.parse(stored) as Record<string, unknown>,
-    // The LAST bind of markFinishDone's UPDATE is job_id and the one before it is output_ms.
-    outputMs: () => (finishBinds.length ? (finishBinds[finishBinds.length - 1].at(-2) as number | null) : undefined),
+    // markFinishDone binds: ..., output_ms, finish_elapsed_ms, job_id (last).
+    outputMs: () => (finishBinds.length ? (finishBinds[finishBinds.length - 1].at(-3) as number | null) : undefined),
+    finishElapsedMs: () => (finishBinds.length ? (finishBinds[finishBinds.length - 1].at(-2) as number | null) : undefined),
     finishCount: () => finishBinds.length,
   };
 }

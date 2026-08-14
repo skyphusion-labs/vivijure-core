@@ -36,6 +36,7 @@ import type {
   RegisteredModule,
 } from "./modules/types.js";
 import { validateClipArtifact } from "./clip-validate.js";
+import { contentValidateDoneClips } from "./clip-content-validate.js";
 import { clipProvenanceHash, chooseProvenanceMatch, headEtag, writeProv } from "./clip-provenance.js";
 import { BUCKET_KEYFRAME_MOTION_BACKENDS, ensureClipKeyframeInR2 } from "./stage-clip-keyframe.js";
 
@@ -370,6 +371,9 @@ export async function advanceClipJob(env: Env, jobId: string, preModules?: Regis
   // clip actually landed is already done and skipped. A module without /cancel logs an honest orphan.
   await cancelFailedShots(env, job, preModules);
   await validateDoneClips(env, job); // #523 Layer 1: structural gate before the caller advances to finish/upscale spend
+  // cf#297: Layer 2 keyframe-similarity on the clips path (film path already runs this in
+  // film-orchestrator). Same gate, same contract: corrupt fails the shot; suspect degrades.
+  await contentValidateDoneClips(env, job);
   await env.R2_RENDERS.put(jobKey(jobId), JSON.stringify(job), { httpMetadata: { contentType: "application/json" } });
   return job;
 }
@@ -486,6 +490,12 @@ export async function validateDoneClips(env: Env, job: ClipJob): Promise<boolean
     if (shot.status !== "done" || !shot.clip_key || shot.validated) continue;
     const res = await validateClipArtifact(env, shot.clip_key, shot.seconds);
     shot.validated = res.verdict;
+    // cf#507b: keep the dimensions this probe already measured. They were computed here and
+    // dropped into the event below while only the verdict survived, which is why the finish chain
+    // had to assume a resolution it could have known. Recorded regardless of verdict: a failed
+    // clip's real size is still evidence, and the shot is failed on its own merits below.
+    if (typeof res.checks?.width === "number" && res.checks.width > 0) shot.delivered_width = res.checks.width;
+    if (typeof res.checks?.height === "number" && res.checks.height > 0) shot.delivered_height = res.checks.height;
     emitStructuredEvent({
       ev: "clip.validate",
       job_id: job.job_id,

@@ -7,7 +7,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -25,23 +24,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # fetch-tags: core#119 changelog-version guard needs vivijure-core-v* tags visible
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-tags: true
 
       - name: Checkout vivijure (module manifest drift guard)
         uses: actions/checkout@v7
         with:
           repository: skyphusion-labs/vivijure-cf
           path: vivijure
-          # EVERY PATH THESE TWO MODULES IMPORT HAS TO BE IN THIS LIST, not just the module dirs.
-          # quality-tier-drift imports the module ENTRY POINTS to read MANIFEST, so it inherits
-          # their ENTIRE import graph. A missing path does not fail at checkout; it fails later
-          # inside the test as ERR_MODULE_NOT_FOUND, reading like our bug rather than a missing file.
-          # modules/_shared is imported by BOTH (../../_shared/runpod-job-log, cf#279). See local#295.
+          # Prefer data-only modules/*/src/manifest.ts (cf#285) -- vitest aliases to the leaf when
+          # present, so the guard does not inherit entrypoint import graphs. modules/_shared stays
+          # listed for checkouts that still only have MANIFEST on the entrypoint (pre-cf#285).
+          # A missing path does not fail at checkout; it fails later as ERR_MODULE_NOT_FOUND.
           sparse-checkout: |
             modules/keyframe
             modules/own-gpu
             modules/_shared
+            migrations
           sparse-checkout-cone-mode: false
 
       - name: Setup Node.js environment

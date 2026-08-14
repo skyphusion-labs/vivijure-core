@@ -22,6 +22,17 @@ export interface ClipShot extends ClipShotInput {
   content_degraded?: string;
   delivered_fps?: number;
   delivered_frames?: number;
+  /** cf#507b: the clip's ACTUAL pixel dimensions, as probed from its mp4 `tkhd` box.
+   *
+   *  Already computed on every done clip -- validateDoneClips calls validateClipArtifact, which
+   *  parses these into `checks.width/height` -- and, until now, DISCARDED one line later into a log
+   *  event while only the verdict was persisted. No new probe, no container change: these are two
+   *  numbers the system already measures and threw away.
+   *
+   *  A MEASUREMENT. Its only consumer is the upscale factor choice. The film's delivery target is
+   *  FilmJob.delivery_width/height, which is a decision and a different quantity. */
+  delivered_width?: number;
+  delivered_height?: number;
   distilled?: boolean;
   // #719: consecutive TRANSIENT poll-error count (see applyPoll). Reset on any successful poll;
   // the shot fails loud at CLIP_POLL_MAX_ATTEMPTS instead of on the first blip.

@@ -22,6 +22,13 @@ import {
 import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook } from "./modules/render-pipeline.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
+import {
+  claimFilmSubmit,
+  naturalKeyForStartFilmJob,
+  naturalKeyForStartFromKeyframes,
+  releaseFilmSubmitClaim,
+  type FilmSubmitIdentity,
+} from "./film-submit-idempotency.js";
 import { coerceShotId } from "./storyboard-ids.js";
 import {
   filmJobDocKey as filmKey,
@@ -70,6 +77,8 @@ import {
   resolvePlannedSeconds,
   findClipDurationShortfalls,
   captionDurations,
+  resolveDeliveryResolution,
+  DEFAULT_DELIVERY_FPS,
 } from "./film-model.js";
 import type {
   ConfigSchema,
@@ -222,7 +231,10 @@ async function recordTrainedLorasToCast(env: Env, job: FilmJob, kfOut: KeyframeO
 async function stampKeyframeProvenance(env: Env, job: FilmJob, kfOut: KeyframeOutput): Promise<void> {
   const kfs = kfOut.keyframes || [];
   if (!kfs.length) return;
-  const hash = await keyframeProvenanceHash({ keyframe_config: job.keyframe_config });
+  const hash = await keyframeProvenanceHash({
+    keyframe_config: job.keyframe_config,
+    bundle_key: job.bundle_key,
+  });
   for (const k of kfs) {
     if (k.keyframe_key) await writeProv(env, k.keyframe_key, hash);
   }
@@ -281,6 +293,61 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
   }, preModules);
   job.clip_job_id = clip.job_id;
   job.phase = "clips";
+}
+
+// --------------------------------------------------------------------------- cf#518 submit guard
+//
+// Both film mint sites consult this BEFORE doing anything that costs money. The claim is taken with
+// the id we are about to use, so a loser can be told which film it duplicated.
+//
+// It fails OPEN by construction: `claimFilmSubmit` never throws and returns `duplicateOf: null` for
+// every degraded case, so the worst outcome here is the behaviour that shipped before the guard
+// existed. A submit that 500s because the dedup guard could not run would be strictly worse than
+// the defect the guard exists to fix.
+
+interface GuardedFilmSubmit {
+  /** The existing film to return verbatim, marked. Null means proceed and start a real film. */
+  duplicate: FilmJob | null;
+  /** The claim we now hold, so a start that FAILS can hand it straight back. */
+  claimKey: string | null;
+}
+
+async function readFilmDoc(env: Env, filmId: string): Promise<FilmJob | null> {
+  try {
+    const obj = await env.R2_RENDERS.get(filmKey(filmId));
+    if (!obj) return null;
+    return JSON.parse(await obj.text()) as FilmJob;
+  } catch {
+    return null;
+  }
+}
+
+async function beginGuardedFilmSubmit(
+  env: Env,
+  identity: FilmSubmitIdentity,
+  filmId: string,
+): Promise<GuardedFilmSubmit> {
+  const claim = await claimFilmSubmit(env, identity, { filmId });
+  if (!claim.duplicateOf) {
+    // A degrade is never silent (the #249/#77 discipline): an unguarded submit says so, greppably.
+    if (!claim.guarded && claim.reason) {
+      console.warn(`film-submit-idempotency: ${claim.reason}`);
+    }
+    return { duplicate: null, claimKey: claim.claimKey };
+  }
+
+  const existing = await readFilmDoc(env, claim.duplicateOf);
+  if (existing) return { duplicate: { ...existing, deduplicated: true }, claimKey: claim.claimKey };
+
+  // The claim names a film whose doc is GONE (deleted, or a write that never landed). Returning
+  // that id would hand the caller a ghost -- an id for a film nothing can poll -- which is worse
+  // than the duplicate we were preventing. Drop the dead claim, take it over, and start fresh.
+  console.warn(
+    `film-submit-idempotency: claim ${claim.claimKey} named film ${claim.duplicateOf}, whose job doc is absent; taking the claim over and starting a new film`,
+  );
+  await releaseFilmSubmitClaim(env, claim.claimKey, claim.duplicateOf);
+  const retry = await claimFilmSubmit(env, identity, { filmId });
+  return { duplicate: null, claimKey: retry.claimKey };
 }
 
 const lastPersistedFilmPhase = new Map<string, FilmJob["phase"]>();
@@ -538,6 +605,8 @@ async function advanceSpeechPhase(env: Env, job: FilmJob): Promise<void> {
       context: { project: job.project, job_id: job.film_id },
     };
     if (!ss.poll) {
+      // cf#312: credentialless audio-upscale path when PRESIGNER is bound.
+      await attachSpeechPresigns(env, req.input as SpeechInput);
       const r = await invokeModule<SpeechInput, SpeechOutput>(fetcher, req);
       if (!r.ok) { blipOrDegrade(ss, r.error, false); }
       else if ((r as { pending?: boolean }).pending) { ss.poll = (r as { poll: string }).poll; }
@@ -614,10 +683,132 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: FinishShot, pre
   return true;
 }
 
+// cf#312: satellite finish/speech jobs queue + cold-start + GPU work. Same 30min envelope as
+// keyframe_url / film.finish / master (cast REF_TTL is also 1800).
+const FINISH_PRESIGN_TTL_SECONDS = 1800;
+
+/** Mirror of modules/speech-upscale enhancedAudioKey so the core can presign the speech step's PUT
+ *  without importing a module. Keep in lockstep with that helper (tests pin both sides). */
+export function speechEnhancedAudioKey(audioKey: string): string {
+  const slash = audioKey.lastIndexOf("/");
+  const dot = audioKey.lastIndexOf(".");
+  return dot > slash ? `${audioKey.slice(0, dot)}_enh.wav` : `${audioKey}_enh.wav`;
+}
+
+/** cf#312: attach presigned GET/PUT URLs onto a FinishInput so credentialless satellites (upscale,
+ *  lipsync) can run without shared-bucket R2 env. Best-effort: a missing presigner or unsafe key
+ *  leaves the input key-only and the module falls back to R2 mode. Never throws into the chain. */
+export async function attachFinishPresigns(
+  env: Env,
+  job: FilmJob,
+  fs: FinishShot,
+  input: FinishInput,
+  modules: RegisteredModule[],
+): Promise<void> {
+  const outKey = finishStepOutputKey(job.project, fs, modules);
+  if (!outKey) return;
+  try {
+    // `<output_key>.hash`, NOT `<output_key minus .mp4>.hash`. ONE key, three call sites that must
+    // agree: the #583 adoption gate reads `${artifactKey}.hash` (finishArtifactHashMatches), the
+    // satellites write f"{output_key}.hash" (vivijure-upscale / vivijure-musetalk handler.py), and
+    // finish-hash.ts calls itself the SINGLE source of the `<output_key>.hash` sidecar. Stripping the
+    // extension is the .srt / .meta.json sidecar convention (filmFinishSeed, metaKeyFor) and does not
+    // apply here. Getting it wrong is silent and expensive: the gate takes its no-sidecar refusal on
+    // every presigned step, so adoptFinishStepFromR2 (#166 GC/frozen-job recovery) and the final
+    // artifact adoption permanently refuse, and the step re-runs paid GPU work with nothing saying so.
+    const hashKey = `${outKey}.hash`;
+    // ALL-OR-NOTHING, matching the sibling attachSpeechPresigns: resolve EVERY leg before assigning
+    // ANY. Assigning as we go leaves presigned transport set with audio_url absent when a later leg
+    // throws, and musetalk's presigned branch REQUIRES audio_url -- it returns a top-level `error`,
+    // which is a hard job failure, not the key-only R2 fallback this function's contract promises.
+    // The catch below would then log finish.presign_skip for what was really a partial application.
+    const [videoUrl, outputUrl, audioUrl, hashUrl] = await Promise.all([
+      presignR2Get(env, fs.clip_key, FINISH_PRESIGN_TTL_SECONDS),
+      presignR2Put(env, outKey, FINISH_PRESIGN_TTL_SECONDS),
+      input.audio_key ? presignR2Get(env, input.audio_key, FINISH_PRESIGN_TTL_SECONDS) : undefined,
+      input.output_hash ? presignR2Put(env, hashKey, FINISH_PRESIGN_TTL_SECONDS) : undefined,
+    ]);
+    input.video_url = videoUrl;
+    input.output_url = outputUrl;
+    input.output_key = outKey;
+    if (audioUrl) input.audio_url = audioUrl;
+    if (hashUrl) input.hash_url = hashUrl;
+  } catch (e) {
+    console.warn(JSON.stringify({
+      ev: "finish.presign_skip",
+      shot: fs.shot_id,
+      reason: e instanceof Error ? e.message : String(e),
+    }));
+  }
+}
+
+/** cf#312: attach presigned URLs for a speech step. Same best-effort posture as attachFinishPresigns. */
+async function attachSpeechPresigns(env: Env, input: SpeechInput): Promise<void> {
+  try {
+    const outKey = speechEnhancedAudioKey(input.audio_key);
+    const [audioUrl, outputUrl] = await Promise.all([
+      presignR2Get(env, input.audio_key, FINISH_PRESIGN_TTL_SECONDS),
+      presignR2Put(env, outKey, FINISH_PRESIGN_TTL_SECONDS),
+    ]);
+    input.audio_url = audioUrl;
+    input.output_url = outputUrl;
+    input.output_key = outKey;
+  } catch (e) {
+    console.warn(JSON.stringify({
+      ev: "speech.presign_skip",
+      shot: input.shot_id,
+      reason: e instanceof Error ? e.message : String(e),
+    }));
+  }
+}
+
 /** Advance the finish chain: per shot, submit its current finish module or poll the in-flight one,
  *  chaining to the next module on completion. Phase -> assemble when every shot is terminal. */
+/** cf#507b: the MEASURED dimensions of each finished clip, read from the clip job at dispatch time.
+ *
+ *  LOOKUP rather than a copy onto FinishShot, deliberately. A copy taken when finish shots are built
+ *  is a snapshot of a measurement, and it goes stale the moment a clip is re-rendered mid-finish
+ *  with nothing to report it. The lookup cannot drift because it reads the record every time.
+ *
+ *  The cost is honest and worth stating: the clip shots live on a SEPARATE R2 document
+ *  (FilmJob carries `clip_job_id`, not the shots), so this is a GET plus a parse. It reuses the
+ *  exact path assemble already uses for the clips_only fallback rather than inventing one.
+ *
+ *  A MISS IS NOT A DEFAULT. Absent doc, unparseable doc, or no matching shot all yield NO ENTRY,
+ *  and the caller leaves the dimensions off the request entirely. That is honest by construction
+ *  here: FinishInput.width/height are documented as hints the backend probes for when absent, so an
+ *  absence triggers a real measurement rather than rendering as a guessed value. Falling back to a
+ *  assumed dimension would be `?? 1920` rebuilt inside the code removing it. */
+export async function measuredClipDimensions(
+  env: Env,
+  job: FilmJob,
+): Promise<Map<string, { width: number; height: number }>> {
+  const out = new Map<string, { width: number; height: number }>();
+  if (!job.clip_job_id) return out;
+  try {
+    const obj = await env.R2_RENDERS.get(clipDocKey(job.clip_job_id));
+    if (!obj) return out;
+    const clipJob = JSON.parse(await obj.text()) as ClipJob;
+    for (const sh of clipJob.shots || []) {
+      const w = Number(sh.delivered_width), h = Number(sh.delivered_height);
+      if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
+        out.set(sh.shot_id, { width: w, height: h });
+      }
+    }
+  } catch {
+    // Unreadable or unparseable clip doc. Return what we have (nothing) rather than a guess: the
+    // finish backend probes when dimensions are absent, so an empty map degrades to today's
+    // behaviour honestly instead of shipping a fabricated size.
+    return out;
+  }
+  return out;
+}
+
 async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
   const envRec = env as unknown as Record<string, unknown>;
+  // Read once per pass, not per shot: one GET serves every shot in this dispatch.
+  const clipDims = await measuredClipDimensions(env, job);
+  const delivery = resolveDeliveryResolution(job);
   const modules = preModules ?? await discoverModules(envRec);
   const finishModByBinding = new Map(modules.filter((m) => m.hooks.includes("finish")).map((m) => [m.binding, m]));
   // A transient invocation/poll blip re-dispatches the step (status stays `pending`) up to the cap
@@ -655,7 +846,17 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     if (!fetcher) { fs.status = "failed"; fs.error = `finish module ${binding} not bound`; continue; }
     const req = {
       hook: "finish" as const,
-      input: { shot_id: fs.shot_id, clip_key: fs.clip_key, audio_key: dialogueAudioKey } as FinishInput,
+      input: {
+        shot_id: fs.shot_id,
+        clip_key: fs.clip_key,
+        audio_key: dialogueAudioKey,
+        // SOURCE hints, omitted entirely when unmeasured so the backend probes (never guessed).
+        ...(clipDims.get(fs.shot_id) ?? {}),
+        // The DELIVERY TARGET, always supplied: the module compares the source against it to pick
+        // a scale that does not undershoot.
+        delivery_width: delivery.width,
+        delivery_height: delivery.height,
+      } as FinishInput,
       config: fs.configs?.[fs.idx] ?? {}, // validated per-module config (issue #75); {} only for legacy jobs
       context: { project: job.project, job_id: job.film_id },
     };
@@ -670,6 +871,9 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       ]);
       (req.input as FinishInput).output_hash = await finishStepInputHash(
         clipEtag, audioEtag, fs.configs?.[fs.idx] as Record<string, unknown> | undefined);
+      // cf#312: presign after output_hash so hash_url can ride with it. Modules that understand
+      // video_url/output_url use the credentialless satellite branch; others ignore the fields.
+      await attachFinishPresigns(env, job, fs, req.input as FinishInput, modules);
       const r = await invokeModule<FinishInput, FinishOutput>(fetcher, req);
       if (!r.ok) { failOrRetry(fs, r.error, false); }
       else if ((r as { pending?: boolean }).pending) { fs.poll = (r as { poll: string }).poll; }
@@ -755,6 +959,8 @@ interface FinishContainerResult {
   hasAudio?: boolean;
   // #697/#698: ACTUAL per-clip assembled seconds in submit order; absent on an older container build.
   clipDurations?: number[];
+  // cf#268: wall-clock ms for this container request. Absent on older container builds.
+  elapsedMs?: number;
 }
 
 /** Call the video-finish container's POST /finish, retrying on a transient gateway status -- 503 (a
@@ -810,6 +1016,8 @@ interface AudioMixResult {
   lufs?: number;
   ducked?: boolean;
   error?: string;
+  // cf#268: wall-clock ms for this container request. Absent on older container builds.
+  elapsedMs?: number;
 }
 
 /** POST to the always-on fleet audio-mix container (/mix), mirroring callVideoFinish: a private
@@ -891,6 +1099,7 @@ async function mixFilmAudio(env: Env, job: FilmJob, videoKey: string, bedKey: st
     console.warn(`film ${job.film_id}: audio-mix not ok (${body.error ?? "no key"}); degrading to single-track mux`);
     return null;
   }
+  accumulateFinishElapsed(job, body.elapsedMs);
   return mixKey; // mixed dialogue + ducked music + loudnorm; remux this in place of the bare bed
 }
 
@@ -992,7 +1201,15 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
     try {
       // The length of the artifact actually delivered: a lookup of the FINAL film key, so whichever
       // stage wrote last supplies the number (Conrad, 2026-08-02: "we bill on the last writer").
-      await markFinishDone(env, job.film_id, filmKey, JSON.stringify(out), outputMsFromSeconds(job.film_output_seconds?.[filmKey]));
+      // finish_elapsed_ms is the SUM of CPU finish container wall-clocks observed on this job (cf#268).
+      await markFinishDone(
+        env,
+        job.film_id,
+        filmKey,
+        JSON.stringify(out),
+        outputMsFromSeconds(job.film_output_seconds?.[filmKey]),
+        job.finish_elapsed_ms,
+      );
     } catch (e) {
       // Bookkeeping must not fail a delivered film; poll/sweep updateRenderFromView backfills.
       console.warn(
@@ -1024,6 +1241,12 @@ export interface RunFilmFinishInput {
   // #698: ACTUAL per-shot assembled seconds (video-finish probe at assemble). Times caption cues to the
   // real cut; absent falls back to the bundle plan (readShotDurationsFromBundle).
   actual_durations?: Record<string, number>;
+  // cf#507b: the film's DELIVERY TARGET, carried from FilmJob. Absent falls back to the ONE estate
+  // default via resolveDeliveryResolution, which also reports whether it was decided -- so a
+  // defaulted target is never mistaken for a chosen one at the point it is used.
+  delivery_width?: number;
+  delivery_height?: number;
+  delivery_fps?: number;
 }
 export interface RunFilmFinishResult {
   ran: boolean;      // false when no film.finish module is installed (caller leaves its state untouched)
@@ -1061,6 +1284,17 @@ export const FILM_FINISH_ASYNC_PRESIGN_TTL_SECONDS = 7200;
  *  FilmFinishInput seed. Shared by the synchronous dispatchChain path (ttl 1800) and the async submit
  *  path (a long ttl, since the PUT must outlive a multi-tick encode). The module is credentialless: it
  *  only ever sees these presigned URLs, never R2 creds. */
+/** cf#507b: what the CORE is allowed to emit as a film.finish seed.
+ *
+ *  Identical to FilmFinishInput except the delivery geometry is REQUIRED. That is where the
+ *  invariant belongs: the exported contract has to tolerate absence (consumers that construct their
+ *  own, a vendored copy on the panel side), while the producer must never be able to dispatch
+ *  without deciding. Making it required HERE keeps the structural guarantee -- the compiler refuses
+ *  a seed with no target -- without charging a breaking change to every consumer of the published
+ *  package for enforcement it would not provide anyway, since the panel modules read a vendored
+ *  copy of the contract rather than this one. */
+type FilmFinishSeed = FilmFinishInput & { width: number; height: number; fps: number };
+
 async function filmFinishSeed(
   env: Env,
   input: RunFilmFinishInput,
@@ -1068,7 +1302,7 @@ async function filmFinishSeed(
   outKey: string,
   captions: FilmFinishInput["captions"],
   ttl = 1800,
-): Promise<FilmFinishInput> {
+): Promise<FilmFinishSeed> {
   const sidecarKey = outKey.replace(/\.mp4$/i, "") + ".srt";
   // #130/#663: the measurement sidecar, presigned alongside the .srt one and for the same reason --
   // data that has to survive the step's OUTPUT never being read (see FilmFinishInput.meta_url).
@@ -1079,7 +1313,17 @@ async function filmFinishSeed(
     presignR2Put(env, sidecarKey, ttl),
     presignR2Put(env, metaKey, ttl),
   ]);
+  // cf#507b: ALWAYS populated, never conditionally. The panel modules fall back to `?? 1920` /
+  // `?? 1080`, and the whole defect is that those fallbacks were doing the deciding. Emitting the
+  // target on every seed makes those arms unreachable instead of load-bearing.
+  const delivery = resolveDeliveryResolution({
+    delivery_width: input.delivery_width,
+    delivery_height: input.delivery_height,
+  });
   return {
+    width: delivery.width,
+    height: delivery.height,
+    fps: input.delivery_fps ?? DEFAULT_DELIVERY_FPS,
     film_key: inKey,
     video_url: videoUrl,
     output_url: outputUrl,
@@ -1196,6 +1440,25 @@ export function outputMsFromSeconds(seconds: number | undefined): number | null 
   return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null;
 }
 
+/**
+ * Normalize a container `elapsedMs` (cf#268) to a non-negative integer, or null when unusable.
+ * Zero is allowed (sub-ms job still measured). Negative / non-finite rejected.
+ */
+export function normalizeFinishElapsedMs(elapsedMs: unknown): number | null {
+  if (typeof elapsedMs !== "number" || !Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
+  return Math.round(elapsedMs);
+}
+
+/** Add one container's wall-clock ms onto the job's running finish-elapsed sum (cf#268). */
+export function accumulateFinishElapsed(
+  job: { finish_elapsed_ms?: number },
+  elapsedMs: unknown,
+): void {
+  const n = normalizeFinishElapsedMs(elapsedMs);
+  if (n === null) return;
+  job.finish_elapsed_ms = (job.finish_elapsed_ms ?? 0) + n;
+}
+
 /** #663: after the film.finish chain, produce the FINAL .srt subtitle sidecar. The subtitle module
  *  (ui.order 5) writes its sidecar timed to the pre-card assembled film; a later film-titles step
  *  (ui.order 10) prepends a title card, shifting the FINAL film. This reads the raw per-step sidecar
@@ -1281,6 +1544,8 @@ export async function runFilmFinish(
     // in-memory only (single tick / non-persisting callers).
     durations?: Record<string, number>;
     persistDuration?: (key: string, seconds: number) => Promise<void>;
+    // cf#268: optional per-step CPU finish elapsed ms from FilmFinishOutput.elapsed_ms.
+    persistElapsed?: (elapsedMs: number) => Promise<void>;
     now?: number;
   },
 ): Promise<RunFilmFinishResult> {
@@ -1351,6 +1616,9 @@ export async function runFilmFinish(
     // differ and the length belongs to the artifact that exists.
     const ds = typeof out.duration_seconds === "number" && Number.isFinite(out.duration_seconds) && out.duration_seconds > 0 ? out.duration_seconds : 0;
     if (ds > 0) await recordDuration(curKey, ds);
+    // cf#268: module-forwarded container wall-clock (optional).
+    const em = normalizeFinishElapsedMs(out.elapsed_ms);
+    if (em !== null) await opts?.persistElapsed?.(em);
     return true;
   };
 
@@ -1477,6 +1745,9 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
   job.film_finish_prepend ??= {};
   job.film_output_seconds ??= {};
   const r = await runFilmFinish(env, {
+    delivery_width: job.delivery_width,
+    delivery_height: job.delivery_height,
+    delivery_fps: job.delivery_fps,
     film_key: job.film_key,
     scenes: job.scenes,
     dialogue_lines: job.dialogue_lines,
@@ -1505,6 +1776,8 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
     // Persisted per FILM ARTIFACT KEY so an adopted step still yields a length on a later tick.
     durations: job.film_output_seconds,
     persistDuration: async (key, seconds) => { job.film_output_seconds![key] = seconds; await putFilm(env, job); },
+    // cf#268: sum module-forwarded container elapsed onto the job for renders.finish_elapsed_ms.
+    persistElapsed: async (ms) => { accumulateFinishElapsed(job, ms); await putFilm(env, job); },
   });
   if (!r.ran) return true; // no film.finish module installed -> leave job untouched (identical to pre-refactor)
   if (r.errors.length > 0) {
@@ -1682,6 +1955,7 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
     job.film_output_seconds ??= {};
     job.film_output_seconds[outKey] = body.durationSeconds;
   }
+  accumulateFinishElapsed(job, body.elapsedMs);
   job.film_key = outKey;
   await transitionToDone(env, job, preModules);
 }
@@ -1839,9 +2113,23 @@ async function enterAssemblePhase(
   // stripping it (-an) -- otherwise the assembled film comes out silent despite the spoken clips.
   const keepClipAudio = !!job.dialogue_audio && Object.keys(job.dialogue_audio).length > 0;
 
-  // Resolution/fps are left to the container default (it normalizes the clips); the motion output
-  // does not carry width/height, so matching the source resolution is a later polish, not a gate.
-  const resp = await callVideoFinish(env, { clips, outputUrl, outputKey, keepClipAudio });
+  // cf#507b: the container defaults to 1920x1080 when told nothing (containers/video-finish
+  // app.py) and letterboxes every clip into whatever geometry it is handed. Telling it the film's
+  // DELIVERY TARGET makes that geometry a decision rather than a coincidence of two defaults
+  // agreeing.
+  //
+  // The prior comment here said "the motion output does not carry width/height, so matching the
+  // source resolution is a later polish". That premise does not hold: validateDoneClips probes
+  // every done clip's tkhd and now persists delivered_width/height. It is also the wrong quantity
+  // -- assembling at the CLIPS' size ships whatever the upscale produced (2560x1440) instead of
+  // the delivery resolution, which is the opposite of shipping 1080p. Source dimensions choose the
+  // upscale factor; the target is what assemble is told.
+  const delivery = resolveDeliveryResolution(job);
+  const resp = await callVideoFinish(env, {
+    clips, outputUrl, outputKey, keepClipAudio,
+    width: delivery.width,
+    height: delivery.height,
+  });
   // A transient gateway outcome (unreachable / 502 / 503 / 504) auto-recovers across polls instead of
   // going terminal: the clips are intact in R2 and re-PUTting the same film key is idempotent, so keep
   // phase="assemble" and let the next poll re-attempt against a (by then) warmer container -- bounded so
@@ -1887,6 +2175,7 @@ async function enterAssemblePhase(
     job.film_output_seconds ??= {};
     job.film_output_seconds[outputKey] = body.durationSeconds;
   }
+  accumulateFinishElapsed(job, body.elapsedMs);
   // #697/#698: capture the ACTUAL per-clip assembled seconds the container probed (submit order ==
   // finalClips order). Persisted so the later film.finish chain times captions to the real cut (#698).
   const actual = mapClipDurationsToShots(finalClips, body.clipDurations);
@@ -1944,9 +2233,20 @@ export async function startFilmFromKeyframes(
     // chain reads job.dialogue_lines (enterFinishPhase -> enterDialogueOrFinish), and a from-keyframes
     // job enters at phase "clips" and reaches both, so the field was read and never written.
     dialogue_lines?: DialogueLine[];
+    /** cf#518 option C: the client's declared idempotency key. Present -> it REPLACES the
+     *  natural key, so the same declared key is the same submit whatever the inputs. */
+    idempotency_key?: string;
   },
   preModules?: RegisteredModule[],
 ): Promise<FilmJob> {
+  // cf#518: claim BEFORE anything costs money -- before the presigns and before startClipJob.
+  const filmId = "film-" + crypto.randomUUID();
+  const guard = await beginGuardedFilmSubmit(
+    env,
+    { ...naturalKeyForStartFromKeyframes(args), idempotencyKey: args.idempotency_key },
+    filmId,
+  );
+  if (guard.duplicate) return guard.duplicate;
   const scenes = coerceSceneIds(args.scenes ?? []);
   // Join the lines onto the SAME coerced ids as the scenes, exactly as startFilmJob does (#563): a
   // caller supplying its own scene ids otherwise strands the TTS audio under keys no consumer reads.
@@ -1954,7 +2254,7 @@ export async function startFilmFromKeyframes(
   const stagedAudio = await resolveStagedAudioKey(env, args.audio_key);
   const { matched, missing } = joinKeyframesToScenes(scenes, args.keyframes || []);
   const job: FilmJob = {
-    film_id: "film-" + crypto.randomUUID(),
+    film_id: filmId,
     project: args.project,
     bundle_key: args.bundle_key,
     scenes,
@@ -1977,6 +2277,8 @@ export async function startFilmFromKeyframes(
   };
   if (!matched.length) {
     job.error = `no keyframes matched requested shots (missing: ${missing.join(", ")})`;
+    // A submit that spent nothing must not hold the window against a legitimate retry.
+    await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
     await putFilm(env, job);
     return job;
   }
@@ -2001,7 +2303,10 @@ export async function startFilmFromKeyframes(
   }, preModules);
   job.clip_job_id = clip.job_id;
   job.phase = summarizeJob(clip).failed === clip.shots.length ? "failed" : "clips";
-  if (job.phase === "failed") job.error = "every clip submission failed";
+  if (job.phase === "failed") {
+    job.error = "every clip submission failed";
+    await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
+  }
   await putFilm(env, job);
   return job;
 }
@@ -2024,9 +2329,21 @@ export async function startFilmJob(
     dialogue_lines?: DialogueLine[];
     cast_loras?: Record<string, number>;
     film_titles?: { title?: { text: string; subtitle?: string }; credits?: { lines: string[] } };
+    /** cf#518 option C: the client's declared idempotency key. Present -> it REPLACES the
+     *  natural key, so the same declared key is the same submit whatever the inputs. */
+    idempotency_key?: string;
   },
   preModules?: RegisteredModule[],
 ): Promise<FilmJob> {
+  // cf#518: claim BEFORE anything costs money -- before module discovery and before the
+  // keyframe invoke. A guard that runs after the GPU submit guards nothing.
+  const filmId = "film-" + crypto.randomUUID();
+  const guard = await beginGuardedFilmSubmit(
+    env,
+    { ...naturalKeyForStartFilmJob(args), idempotencyKey: args.idempotency_key },
+    filmId,
+  );
+  if (guard.duplicate) return guard.duplicate;
   const scenes = coerceSceneIds(args.scenes ?? []);
   // Dialogue lines must join on the SAME coerced ids as the scenes, or a caller-supplied id scheme
   // (`s1`/`s2`) strands the TTS audio under keys no consumer reads (silent + uncaptioned film, #563).
@@ -2053,9 +2370,11 @@ export async function startFilmJob(
     ? null
     : pickOneForHook(modules, "keyframe", keyframeChoice);
   const job: FilmJob = {
-    film_id: "film-" + crypto.randomUUID(),
+    film_id: filmId,
     project: args.project, bundle_key: args.bundle_key, scenes,
     motion_backend: motionBackend ?? null, motion_config: args.motion_config ?? {},
+    // cf#393: module NAME (not binding) so the renders-row seed can audit which keyframe backend ran.
+    keyframe_backend: kf ? kf.name : null,
     keyframe_config: args.keyframe_config ?? {},
     finish_config: args.finish_config ?? {},
     speech_config: args.speech_config ?? {},
@@ -2101,6 +2420,10 @@ export async function startFilmJob(
     else if ("output" in r) { const v = hookOutputViolation(kf.name, "keyframe", r.output); if (v) { job.phase = "failed"; job.error = v; } else { await afterKeyframeOutput(env, job, r.output as KeyframeOutput, modules); } }
     else { job.phase = "failed"; job.error = "keyframe module returned neither output nor a poll token"; }
   }
+  // A submit that failed at start spent nothing, so re-running it is legitimate work: hand the
+  // claim back rather than making the user wait out a window for a film that never lived. The
+  // guard exists to stop a SECOND LIVE FILM, not a second attempt.
+  if (job.phase === "failed") await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
   await putFilm(env, job);
   return job;
 }
@@ -2137,13 +2460,24 @@ export async function cancelFilmJob(env: Env, filmId: string): Promise<FilmJob |
  *  tick one -- cancelling the live producer and shipping wrong content silently (#661, the #245/#249 class).
  *  This run own orphans (the #129/#619/#143 recovery) always upload AFTER created_at, so legit recovery
  *  survives; a leftover from an older render becomes invisible. */
-export async function listProjectKeyframes(env: Env, project: string, scenes: FilmScene[], createdAtMs: number, keyframeConfig?: Record<string, unknown>): Promise<FilmKeyframeRef[]> {
+export async function listProjectKeyframes(
+  env: Env,
+  project: string,
+  scenes: FilmScene[],
+  createdAtMs: number,
+  keyframeConfig?: Record<string, unknown>,
+  /** cf#388: bundle identity in the expected provenance hash (not caller-supplied project alone). */
+  bundleKey?: string | null,
+): Promise<FilmKeyframeRef[]> {
   const prefix = `renders/${project}/keyframes/`;
   const wanted = new Set(scenes.map((s) => s.shot_id));
-  // #767: when the caller passes this run keyframe config, gate adoption on the keyframe provenance sidecar
-  // (<key>.prov). A keyframe whose sidecar proves a DIFFERENT keyframe config is skipped -> regenerate,
-  // never adopt another config keyframe. Absent sidecar (legacy / lost-poll) keeps the #661 freshness path.
-  const expected = keyframeConfig !== undefined ? await keyframeProvenanceHash({ keyframe_config: keyframeConfig }) : null;
+  // #767 / cf#388: gate adoption on the keyframe provenance sidecar. Expected hash includes
+  // keyframe_config AND bundle_key so two bundles cannot share adoption under one project name.
+  // Absent sidecar (legacy / lost-poll) keeps the #661 freshness path.
+  const expected =
+    keyframeConfig !== undefined
+      ? await keyframeProvenanceHash({ keyframe_config: keyframeConfig, bundle_key: bundleKey })
+      : null;
   const out: FilmKeyframeRef[] = [];
   let cursor: string | undefined;
   do {
@@ -2178,7 +2512,14 @@ export async function listProjectKeyframes(env: Env, project: string, scenes: Fi
  *  lenient on partials, treating absent shots as genuine non-renders at the ceiling.) */
 export async function keyframeSetCompleteInR2(env: Env, job: FilmJob): Promise<boolean> {
   if (!job.scenes.length) return false;
-  const present = await listProjectKeyframes(env, job.project, job.scenes, job.created_at, job.keyframe_config);
+  const present = await listProjectKeyframes(
+    env,
+    job.project,
+    job.scenes,
+    job.created_at,
+    job.keyframe_config,
+    job.bundle_key,
+  );
   const have = new Set(present.map((k) => k.shot_id));
   return job.scenes.every((s) => have.has(s.shot_id));
 }
@@ -2229,7 +2570,14 @@ export async function cancelInFlightKeyframe(env: Env, job: FilmJob): Promise<vo
  *  has passed PHASE_HARD_DEADLINE_SECONDS. Returns true iff it advanced the phase; a partial hold (or
  *  nothing in R2) returns false and leaves the phase in "keyframe". */
 async function recoverStalledKeyframePhase(env: Env, job: FilmJob, preModules: RegisteredModule[] | undefined, atCeiling: boolean): Promise<boolean> {
-  const adopted = await listProjectKeyframes(env, job.project, job.scenes, job.created_at, job.keyframe_config);
+  const adopted = await listProjectKeyframes(
+    env,
+    job.project,
+    job.scenes,
+    job.created_at,
+    job.keyframe_config,
+    job.bundle_key,
+  );
   if (!adopted.length) return false; // nothing in R2 to adopt -- not actually complete; let the ceiling hard-fail
   const covered = new Set(adopted.map((k) => k.shot_id));
   const dropped = job.scenes.filter((s) => !covered.has(s.shot_id)).map((s) => s.shot_id);

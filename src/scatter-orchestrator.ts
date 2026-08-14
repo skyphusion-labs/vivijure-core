@@ -18,6 +18,7 @@ import {
   resolvePlannedSeconds,
   findClipDurationShortfalls,
   outputMsFromSeconds,
+  accumulateFinishElapsed,
   type FilmJob,
   type FilmScene,
 } from "./film-orchestrator.js";
@@ -27,8 +28,9 @@ import { presignR2Get, presignR2Put } from "./presign.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
 import { defaultGpuDoorModule, discoverModules, servingForHook } from "./modules/registry.js";
 import { readBundleScenes } from "./bundle-storyboard.js";
+import type { ParsedBundleScene } from "./planner-yaml.js";
 import { getProjectById } from "./storyboard-projects-db.js";
-import { buildDialogueLines } from "./dialogue-lines.js";
+import { buildDialogueLines, dialogueLinesFromBundleScenes } from "./dialogue-lines.js";
 import type { DialogueLine } from "./modules/types.js";
 import {
   gatherDecision,
@@ -93,28 +95,34 @@ export interface StartScatterArgs {
   project_id?: number | null;
 }
 
-/** Read the stored storyboard (D1 last_storyboard) and build the per-shot dialogue batch (authored
- *  line + cast-resolved voice). Returns [] when there's no project_id, no stored storyboard, or no
- *  dialogue -- a silent film.
+/** Resolve per-shot dialogue for scatter (vivijure-core#122).
  *
- *  WHY D1 AND NOT THE BUNDLE (corrected, vivijure-core#122): D1 is the FRESHER source, not the only
- *  one. This comment used to say the bundle "can't carry this (lossy)", which has been untrue since
- *  #307 taught the storyboard.yaml serializer to emit the per-shot dialogue block and #313 taught the
- *  parser to read it back; 16 of 62 production bundles carry one today. The stale claim is worth
- *  correcting rather than deleting because acting on it would mean "repairing" a bundle format that
- *  is not broken. The real cost of the D1-only rule is the gate below: with no project_id there is no
- *  fallback, so a bundle-only scatter renders SILENT while holding a bundle that carries every line
- *  it needed. Adding that fallback changes an existing caller's behaviour and is tracked separately. */
-async function resolveDialogueLines(
+ *  Order: D1 last_storyboard when project_id is present (fresher than the bundle
+ *  snapshot). If that yields no lines -- no project_id, no storyboard, or empty
+ *  dialogue -- fall back to dialogue carried in the bundle's storyboard.yaml via
+ *  dialogueLinesFromBundleScenes (same helper as /api/render/film bundle-only voicing).
+ *
+ *  Bundle scenes must already be loaded by the caller (readBundleScenes); we do not
+ *  re-fetch. Filter to shotIds so a shard only keeps its own lines.
+ */
+export async function resolveDialogueLines(
   env: Env,
   args: StartScatterArgs,
   voices: Record<string, string>,
   shotIds: string[],
+  bundleScenes: ParsedBundleScene[],
 ): Promise<DialogueLine[]> {
-  if (args.project_id == null) return [];
-  const project = await getProjectById(env, args.project_id);
-  if (!project?.last_storyboard) return [];
-  return buildDialogueLines(project.last_storyboard, voices, shotIds);
+  if (args.project_id != null) {
+    const project = await getProjectById(env, args.project_id);
+    if (project?.last_storyboard) {
+      const fromD1 = buildDialogueLines(project.last_storyboard, voices, shotIds);
+      if (fromD1.length > 0) return fromD1;
+    }
+  }
+  const fromBundle = dialogueLinesFromBundleScenes(bundleScenes, voices);
+  if (shotIds.length === 0) return fromBundle;
+  const want = new Set(shotIds);
+  return fromBundle.filter((l) => want.has(l.shot_id));
 }
 
 export async function startScatterRender(env: Env, args: StartScatterArgs): Promise<ScatterJob> {
@@ -145,11 +153,9 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
   const expected = args.shot_ids.filter((s) => typeof s === "string" && s.length > 0);
   if (expected.length < 2) throw new Error("scatter requires >= 2 shots");
 
-  // Talking characters: read the storyboard from D1 (last_storyboard), which is FRESHER than the
-  // bundle snapshot, and resolve each speaking shot's voice from the cast (voices, off the same rows
-  // resolveCastLoras already read). Absent project_id / no dialogue -> a silent film; see the note on
-  // resolveDialogueLines for why absent project_id is a real gap rather than an impossibility.
-  const dialogueLines = await resolveDialogueLines(env, args, voices, expected);
+  // Talking characters: D1 last_storyboard when present (fresher), else bundle dialogue
+  // (core#122). Voices from resolveCastLoras. Empty both ways -> silent film.
+  const dialogueLines = await resolveDialogueLines(env, args, voices, expected, parsed);
 
   const shards = scatterShards({
     shotIds: expected,
@@ -249,6 +255,8 @@ export async function finalizeScatterSubmit(
           status: "IN_QUEUE",
           mode: "full",
           projectId: scatterJob.project_id ?? null,
+          // cf#393: scatter parent + shards share the resolved motion backend.
+          motionBackend: scatterJob.motion_backend ?? null,
         }),
       { label: "scatter.submit.parent" },
     );
@@ -265,6 +273,7 @@ export async function finalizeScatterSubmit(
           mode: "full",
           projectId: scatterJob.project_id ?? null,
           parentId: parentId ?? undefined,
+          motionBackend: scatterJob.motion_backend ?? null,
         }),
       );
       await withD1Retry(() => env.DB.batch!(stmts), { label: "scatter.submit.shards" });
@@ -304,7 +313,7 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
     job.error = `scatter audio mux failed: HTTP ${resp?.status ?? "?"}`;
     return;
   }
-  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number };
+  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number; elapsedMs?: number };
   try {
     body = (await resp.json()) as typeof body;
   } catch {
@@ -317,6 +326,11 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
     job.error = `scatter mux failed: ${body.error || "unknown"}`;
     return;
   }
+  if (typeof body.durationSeconds === "number" && body.durationSeconds > 0) {
+    job.film_output_seconds ??= {};
+    job.film_output_seconds[outKey] = body.durationSeconds;
+  }
+  accumulateFinishElapsed(job, body.elapsedMs);
   job.film_key = outKey;
   job.phase = "done";
 }
@@ -354,6 +368,14 @@ async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<boolean>
   job.film_finish_prepend ??= {};
   job.film_output_seconds ??= {};
   const r = await runFilmFinish(env, {
+    // cf#507b: scatter films decide their delivery target like every other path. Without this they
+    // silently take the default while the film path decides, which is how a permanent inconsistency
+    // gets in under "not a regression". ScatterJob has no delivery_* fields today, so this resolves
+    // to the estate default -- but it resolves it through the SAME single source, so giving scatter
+    // a per-film target later is a populate-it change rather than another call site to remember.
+    delivery_width: (job as { delivery_width?: number }).delivery_width,
+    delivery_height: (job as { delivery_height?: number }).delivery_height,
+    delivery_fps: (job as { delivery_fps?: number }).delivery_fps,
     film_key: job.film_key,
     // Caption scenes in the SAME order the gather assembles the clips (expected_shot_ids), NOT bundle
     // order, so buildCaptionCues' cumulative timeline matches the cut (the crux, #284/#285).
@@ -386,6 +408,8 @@ async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<boolean>
     // Persisted per FILM ARTIFACT KEY across gather ticks, for the same adoption reason as prepends.
     durations: job.film_output_seconds,
     persistDuration: async (key, seconds) => { job.film_output_seconds![key] = seconds; await saveScatterJob(env, job); },
+    // cf#268: sum module-forwarded container elapsed onto the scatter job for finalize.
+    persistElapsed: async (ms) => { accumulateFinishElapsed(job, ms); await saveScatterJob(env, job); },
   });
   if (!r.ran) { job.film_finish = { applied: [], errors: [] }; return true; } // no film.finish module -> mark + skip -> complete
   if (r.errors.length > 0) console.warn(`scatter film.finish errors for ${job.scatter_id}: ${r.errors.join("; ")}`);
@@ -440,7 +464,7 @@ async function assembleScatterClips(
     job.error = `video-finish gather returned ${resp?.status ?? "?"}`;
     return;
   }
-  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number; clipDurations?: number[] };
+  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number; clipDurations?: number[]; elapsedMs?: number };
   try {
     body = (await resp.json()) as typeof body;
   } catch {
@@ -453,6 +477,7 @@ async function assembleScatterClips(
     job.error = `video-finish gather failed: ${body.error || "unknown"}`;
     return;
   }
+  accumulateFinishElapsed(job, body.elapsedMs);
   // #697/#698: capture the ACTUAL per-clip assembled seconds (submit order == gather clips order) and
   // gate each shot against its plan, the same per-shot honesty gate as the single-film assemble. The
   // film-level ratio check below still catches a gross whole-film drop; this catches ONE truncated shot
@@ -515,11 +540,18 @@ async function assembleScatterClips(
 
 async function finalizeScatterDone(env: Env, job: ScatterJob): Promise<void> {
   if (!job.film_key) return;
-  await markFinishDone(env, job.scatter_id, job.film_key, JSON.stringify({
-    output_key: job.film_key,
-    project: job.project,
-    mode: "full",
-  }), outputMsFromSeconds(job.film_output_seconds?.[job.film_key]));
+  await markFinishDone(
+    env,
+    job.scatter_id,
+    job.film_key,
+    JSON.stringify({
+      output_key: job.film_key,
+      project: job.project,
+      mode: "full",
+    }),
+    outputMsFromSeconds(job.film_output_seconds?.[job.film_key]),
+    job.finish_elapsed_ms,
+  );
   await fireNotifyForScatter(env, job);
 }
 
@@ -602,6 +634,7 @@ export async function ensureScatterRenderRow(
         status: view.status,
         mode: "full",
         projectId: job.project_id ?? null,
+        motionBackend: job.motion_backend ?? null,
       });
       if (view.status !== "IN_PROGRESS") await updateRenderFromView(env, view, ctx);
       console.log(JSON.stringify({ ev: "scatter.selfheal.row", scatter_id: job.scatter_id, status: view.status }));
@@ -627,6 +660,7 @@ export async function ensureScatterRenderRow(
           mode: "full",
           projectId: job.project_id ?? null,
           parentId,
+          motionBackend: job.motion_backend ?? null,
         });
         console.log(JSON.stringify({ ev: "scatter.selfheal.shard", scatter_id: job.scatter_id, shard: shardFilmId }));
       }

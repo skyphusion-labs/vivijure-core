@@ -33,6 +33,10 @@ export interface FilmRenderRowSeed {
   status: string;
   mode?: "full" | "keyframes-only" | "finalized" | "cloud-finalized";
   parentId?: number | null;
+  // cf#393: resolved backends known on the film job at submit. NULL when absent (keyframes-only
+  // motion, from-keyframes path with no keyframe module name on the job, legacy job docs).
+  motionBackend?: string | null;
+  keyframeBackend?: string | null;
 }
 
 export function filmRenderRowSeedFromJob(job: FilmJob): FilmRenderRowSeed {
@@ -45,6 +49,8 @@ export function filmRenderRowSeedFromJob(job: FilmJob): FilmRenderRowSeed {
     status: filmJobToPollView(job, null).status,
     mode,
     parentId: job.parent_render_id ?? null,
+    motionBackend: job.motion_backend ?? null,
+    keyframeBackend: job.keyframe_backend ?? null,
   };
 }
 

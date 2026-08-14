@@ -41,6 +41,23 @@ export interface OrchestratorEnv {
   R2_S3_ACCESS_KEY_ID?: unknown;
   R2_S3_SECRET_ACCESS_KEY?: unknown;
   R2_S3_BUCKET?: unknown;
+  /**
+   * The control-plane RunPod proxy pair (cp#321). DECLARED for exactly the reason the comment
+   * above gives: the index signature would type-check either way, and an undeclared binding is
+   * invisible to every reader and to the compiler -- which is how `RUNPOD_ENDPOINT_ID` ended up
+   * on an Env nothing reads.
+   *
+   * `RUNPOD_PROXY_BASE` is the plane's public origin plus `/api/runpod/v2`, bound plain_text and
+   * ONLY for `runpod_mode = 'shared'`. `RUNPOD_PROXY_TOKEN` is the per-tenant plane credential,
+   * bound as a secret. BOUND-ness of the base is the whole branch: bound means every RunPod call
+   * goes through the plane and this Worker holds no RunPod key; unbound is the untouched direct
+   * path, which is the self-host door and is permanently supported. It is never a failover.
+   *
+   * `unknown` for the same reason as the R2 quartet above: either may be a plain string or a
+   * Secrets Store handle, and both are resolved through `runpodRoute` in src/runpod-route.ts.
+   */
+  RUNPOD_PROXY_BASE?: unknown;
+  RUNPOD_PROXY_TOKEN?: unknown;
   /** Plain config vars (FILM_CLIP_DURATION_FLOOR, VPC bindings, etc.). */
   [key: string]: unknown;
 }
