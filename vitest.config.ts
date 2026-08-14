@@ -13,7 +13,13 @@ function vivijureModulesDir(): string {
     resolve(root, "../vivijure/modules"), // legacy alias when a sibling is named plain "vivijure"
     resolve(root, "../../vivijure/modules"), // vivijure-local CI: workspace/{core,vivijure}
   ];
-  const hit = candidates.find((c) => existsSync(resolve(c, "keyframe/src/index.ts")));
+  // Prefer data-only manifest.ts leaves (cf#285 / core quality-tier-drift); fall back to
+  // entrypoints for checkouts that predate the leaf extract.
+  const hit = candidates.find(
+    (c) =>
+      existsSync(resolve(c, "keyframe/src/manifest.ts")) ||
+      existsSync(resolve(c, "keyframe/src/index.ts")),
+  );
   if (!hit) {
     throw new Error(
       "vivijure module manifests not found. Clone skyphusion-labs/vivijure-cf " +
@@ -25,15 +31,22 @@ function vivijureModulesDir(): string {
 
 const modules = vivijureModulesDir();
 
+/** Prefer leaf MANIFEST files (cf#285) so the guard does not import module entrypoints. */
+function manifestEntry(mod: string): string {
+  const leaf = resolve(modules, `${mod}/src/manifest.ts`);
+  if (existsSync(leaf)) return leaf;
+  return resolve(modules, `${mod}/src/index.ts`);
+}
+
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
   },
   resolve: {
-    // Sparse-checkout of vivijure-cf modules has no node_modules. Module entrypoints
-    // import `@skyphusion-labs/vivijure-core/...` subpaths; without an alias those
-    // resolve from the module file and fail (local/main CI after cf#184). Point them
-    // at this package's src so quality-tier-drift can load MANIFEST without a cf install.
+    // Sparse-checkout of vivijure-cf modules has no node_modules. Older entrypoints
+    // imported `@skyphusion-labs/vivijure-core/...` subpaths; without an alias those
+    // resolve from the module file and fail. Point them at this package's src.
+    // After cf#285 the preferred path is data-only manifest.ts (no runtime graph).
     alias: [
       {
         find: /^@skyphusion-labs\/vivijure-core\/(.+)$/,
@@ -41,11 +54,11 @@ export default defineConfig({
       },
       {
         find: "vivijure-modules/keyframe",
-        replacement: resolve(modules, "keyframe/src/index.ts"),
+        replacement: manifestEntry("keyframe"),
       },
       {
         find: "vivijure-modules/own-gpu",
-        replacement: resolve(modules, "own-gpu/src/index.ts"),
+        replacement: manifestEntry("own-gpu"),
       },
     ],
   },

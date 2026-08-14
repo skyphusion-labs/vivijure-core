@@ -136,7 +136,7 @@ export async function handleAdoptRender(
     }
 
     // INSERT is the uniqueness authority (ON CONFLICT DO NOTHING). Only the insert
-    // winner may markFinishDone — a concurrent loser must never complete/overwrite
+    // winner may markFinishDone -- a concurrent loser must never complete/overwrite
     // the winner's row (TOCTOU on the pre-insert SELECT).
     const inserted = await insertRender(env, {
       jobId,

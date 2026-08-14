@@ -36,7 +36,9 @@ export function canonicalJson(o: unknown): string {
   throw new Error(`finish-hash: unserializable type ${t}`);
 }
 
-async function sha256Hex(input: string): Promise<string> {
+/** SHA-256 of a UTF-8 string as 64 lowercase hex chars. Exported so film-submit-idempotency can
+ *  hash its claim key with the SAME primitive rather than carrying a second copy of it. */
+export async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }

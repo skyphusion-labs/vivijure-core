@@ -83,6 +83,7 @@ export * from "./scatter-notify.js";
 export * from "./lora-bundle.js";
 export * from "./cast-loras.js";
 export * from "./cast-lora-train.js";
+export * from "./runpod-route.js";
 export * from "./runpod-submit.js";
 export * from "./beat-analyze.js";
 export * from "./render-sweep.js";

@@ -3,7 +3,9 @@ import {
   installSubschema,
   hasInstallConfig,
   installFieldKeys,
+  droppedInstallKeys,
   clampInstallPatch,
+  clampInstallPatchDetailed,
 } from "../src/operator-config.js";
 import type { ConfigSchema } from "../src/modules/types.js";
 
@@ -43,7 +45,7 @@ describe("clampInstallPatch (the write clamp = store->invoke round-trip)", () =>
 
   it("REJECTS a render-scope key (not writable via the install store)", () => {
     const out = clampInstallPatch(MIXED, {}, { quality_tier: "final", retries: 9 });
-    // render keys never enter the install store; only the (defaulted) install field is present.
+    // Pure clamp still drops; host PATCH routes should 400 via droppedInstallKeys before write.
     expect(out).toEqual({ notify_email: "" });
     expect(out).not.toHaveProperty("quality_tier");
     expect(out).not.toHaveProperty("retries");
@@ -66,5 +68,52 @@ describe("clampInstallPatch (the write clamp = store->invoke round-trip)", () =>
   it("an all-render / no-install schema yields {} (the store is a clean no-op)", () => {
     const renderOnly: ConfigSchema = { quality_tier: { type: "enum", values: ["a", "b"], default: "a" } };
     expect(clampInstallPatch(renderOnly, {}, { quality_tier: "b" })).toEqual({});
+  });
+});
+
+describe("droppedInstallKeys / clampInstallPatchDetailed (strict operator PATCH)", () => {
+  it("reports nothing when every key is install-scope (or the patch is empty)", () => {
+    expect(droppedInstallKeys(MIXED, { notify_email: "ops@example.org" })).toEqual([]);
+    expect(droppedInstallKeys(MIXED, {})).toEqual([]);
+    expect(droppedInstallKeys(MIXED, undefined)).toEqual([]);
+    const { next, dropped } = clampInstallPatchDetailed(MIXED, {}, { notify_email: "ops@example.org" });
+    expect(dropped).toEqual([]);
+    expect(next).toEqual({ notify_email: "ops@example.org" });
+  });
+
+  it("names unknown AND render-scope keys (the silent-discard bug, cf#387)", () => {
+    // Nested body shape operators often guess: { config: { notify_email: "..." } } drops `config`.
+    expect(droppedInstallKeys(MIXED, { config: { notify_email: "x@y.z" } })).toEqual(["config"]);
+    expect(droppedInstallKeys(MIXED, { quality_tier: "final", retries: 9, bogus: "x" })).toEqual([
+      "quality_tier",
+      "retries",
+      "bogus",
+    ]);
+    const { next, dropped } = clampInstallPatchDetailed(
+      MIXED,
+      { notify_email: "old@example.org" },
+      { config: { notify_email: "new@example.org" }, quality_tier: "final" },
+    );
+    // next is unchanged (patch had no install keys); dropped lists what the clamp discarded.
+    expect(next).toEqual({ notify_email: "old@example.org" });
+    expect(dropped).toEqual(["config", "quality_tier"]);
+  });
+
+  it("a mixed patch: valid install key applied, invalid keys still listed in dropped", () => {
+    const { next, dropped } = clampInstallPatchDetailed(
+      MIXED,
+      {},
+      { notify_email: "ops@example.org", bogus: 1 },
+    );
+    expect(next).toEqual({ notify_email: "ops@example.org" });
+    expect(dropped).toEqual(["bogus"]);
+  });
+
+  it("an all-render schema reports every patch key as dropped", () => {
+    const renderOnly: ConfigSchema = { quality_tier: { type: "enum", values: ["a", "b"], default: "a" } };
+    expect(droppedInstallKeys(renderOnly, { quality_tier: "b" })).toEqual(["quality_tier"]);
+    const { next, dropped } = clampInstallPatchDetailed(renderOnly, {}, { quality_tier: "b" });
+    expect(next).toEqual({});
+    expect(dropped).toEqual(["quality_tier"]);
   });
 });

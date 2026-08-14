@@ -24,7 +24,15 @@ export interface TarFile {
   name: string;     // path inside the tarball (e.g. "characters/registry.json")
   content: Uint8Array;
   mode?: number;    // file mode (default 0o644)
-  mtime?: number;   // Unix seconds (default Date.now()/1000)
+  /**
+   * Unix seconds written into the ustar header.
+   * Default is 0 (epoch), NOT wall-clock: tar header bytes are hashed into
+   * content-addressed bundle keys (assembleBundle / bundleKeyFor). A
+   * Date.now() default made two byte-identical assemblies disagree whenever
+   * they straddled a second boundary (cf#460). Pass an explicit mtime only
+   * when a consumer deliberately needs wall-clock semantics.
+   */
+  mtime?: number;
 }
 
 function writeOctal(bytes: Uint8Array, offset: number, width: number, value: number): void {
@@ -86,8 +94,8 @@ function buildHeader(file: TarFile): Uint8Array {
   // size @ 124, width 12
   writeOctal(header, 124, 12, file.content.length);
 
-  // mtime @ 136, width 12 (Unix seconds)
-  const mtime = file.mtime ?? Math.floor(Date.now() / 1000);
+  // mtime @ 136, width 12 (Unix seconds). Default epoch -- see TarFile.mtime.
+  const mtime = file.mtime ?? 0;
   writeOctal(header, 136, 12, mtime);
 
   // typeflag @ 156: "0" for regular file
