@@ -701,6 +701,19 @@ export async function advanceScatterJob(
   const shardStatuses: ShardStatus[] = [];
   const present = new Set<string>();
 
+  // cf#515 Mode C: discover the module registry ONCE for the whole request and hand it to every
+  // shard. Each shard advance used to fan out one `/module.json` subrequest per bound module, so the
+  // cost was SHARDS x MODULES -- measured with the suite's counter at 54 for S=2 and 162 for S=6 on
+  // a 27-module catalogue, against a 1000-subrequest request ceiling. #521 already fixed the
+  // per-leg case INSIDE one film and its comment records why (per-leg discovery once blew the
+  // free-plan 50-subrequest cap); its bound is per-FILM, and this loop runs S films per request, so
+  // it multiplied the very thing #521 bounded.
+  //
+  // Discovered HERE rather than at the top of the function so the early-return paths (cancelled,
+  // done, failed, finishing) still pay nothing: a fan-out on a path that advances no shard would be
+  // a new cost introduced by a change whose whole purpose is removing one.
+  const modules = await discoverModules(env as unknown as Record<string, unknown>);
+
   for (let i = 0; i < job.shard_film_ids.length; i++) {
     const filmId = job.shard_film_ids[i];
     const shots = job.shard_shots[i] ?? [];
@@ -713,7 +726,7 @@ export async function advanceScatterJob(
     // backstopped by the film job's own hard-deadline (it eventually reports phase=failed).
     let status: string;
     try {
-      const r = await advanceFilmJob(env, filmId);
+      const r = await advanceFilmJob(env, filmId, modules);
       if (r) {
         await updateRenderFromView(env, filmJobToPollView(r.job, r.clipJob), ctx);
         status = shardStatusForOutcome({ ok: true, job: r.job });

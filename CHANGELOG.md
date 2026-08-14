@@ -116,6 +116,48 @@ GREEN -- which is precisely the blindness being fixed -- and mutating it to retu
 reddens both. Restore verified byte-identical by sha256.
 
 No production code changed.
+### fix(scatter): discover the module registry once per request, not once per shard (vivijure-cf#515)
+
+`advanceScatterJob` drives every shard inside ONE HTTP request, and each shard called
+`advanceFilmJob`, which discovered the module registry bare. A discovery is one subrequest per bound
+module, so the cost was **SHARDS x MODULES**.
+
+Measured with the suite's own fetch counter, before and after, same instrument:
+
+```
+shards        1     2     3     6    12
+before       27    54    81   162   324      manifest fetches per request
+after        27    27    27    27    27
+```
+
+At the live catalogue of 27 modules and the UI's shard floor of 2, that is 54 fetches for the
+smallest scatter render and 162 for a 6-shard board, against a 1000-subrequest request ceiling --
+before any per-shot work, and repeated on the panel's 8-second poll.
+
+**#521 already fixed this shape one level down, and its bound could not reach here.** That change
+discovers once per FILM tick and threads the registry through every phase leg; its comment records
+why (per-leg discovery once blew the free-plan 50-subrequest cap on a 25-module install). Scatter
+runs S film ticks per request, so it multiplied precisely the thing #521 bounded. The fix is the same
+mechanism extended one level up: `advanceFilmJob` and `advanceFilmJobLocked` take an optional
+`preModules`, and the shard loop discovers once and hands the same registry to every shard. Manifests
+are static within a request for the same reason #521 says they are static within a tick.
+
+**Discovery sits just above the shard loop, not at the top of the function**, so the early-return
+paths (cancelled, done, failed, finishing) still pay nothing. Hoisting it would add a fan-out to
+every poll of an already-finished render -- a new cost introduced by a change whose purpose is
+removing one -- so that placement carries its own assertion rather than only a comment.
+
+**Scoped to the scatter fan-out deliberately.** Jitter, a `cacheTtlMs` default, a visibility pause
+and error backoff are all real and all separate arguments; bundling any of them here would make this
+result unmeasurable. Worth recording alongside: **`d1-retry.ts:78` jitters its retries while the
+panel poll does not** -- the server jitters and the client does not, in the same estate.
+
+**Why this mattered more than the issue as filed.** cf#515 models two poll modes, a lease winner and
+a lease loser, and warns that a mean hides the winner's cost. The lease is released in `finally`
+every tick and is keyed on `job_id`, so different films never contend and "more concurrent films"
+does not shift the mode mix at all -- the two defects in that issue are orthogonal, not compounding.
+The mode a mean actually hides is this third one, which the issue does not model: **an acceptance
+test written from cf#515 as filed would have passed while this stayed exactly where it was.**
 
 ### fix(storage): stage-and-swap the reconcile, so a killed rebuild cannot certify a partial ledger (cf#516)
 
