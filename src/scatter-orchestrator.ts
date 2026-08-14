@@ -209,6 +209,11 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
       keyframe_config: mapped.keyframe_config,
       motion_config: mapped.motion_config,
       finish_config: mapped.finish_config,
+      // cf#537: every shard runs its OWN finish chain, so the participation selection has to reach
+      // each one. Scatter resolves and mints entirely inside core, so this is the site -- omit it and
+      // a scattered render silently reverts to the default-participation set for every shard while
+      // the single-film path honours the caller, which is the two-panel parity split in miniature.
+      finish_select: mapped.finish_select,
       speech_config: mapped.speech_config,
       master_config: mapped.master_config,
       clips_only: true,

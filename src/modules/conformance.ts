@@ -11,7 +11,7 @@
 // .test.ts) drives them against a deployed module URL. This is the conformance half of the module
 // SDK: the contract is the law, and this is how a contributor proves they obey it.
 
-import { SUPPORTED_MODULE_APIS, type HookName } from "./types.js";
+import { SELECTABLE_HOOKS, SUPPORTED_MODULE_APIS, type HookName } from "./types.js";
 import { validateManifest } from "./manifest-validate.js";
 
 export interface ConformanceCheck {
@@ -65,6 +65,18 @@ export function checkManifest(raw: unknown): ConformanceCheck[] {
     ? ok("api-version", String(m.api))
     : bad("api-version", String(m.api) + " not in " + [...SUPPORTED_MODULE_APIS].join("/")));
   checks.push(ok("hooks", m.hooks.join(", ")));
+  // cf#537: a module serving a SELECTABLE chain hook must state its participation EXPLICITLY.
+  // ModuleManifest.participation defaults PERMISSIVE, so absence at the manifest layer is a signal --
+  // a module that ought to be opt-in and does not say so runs on every render and nothing reports it.
+  // This gate is where that is caught. It fails CONFORMANCE, not LOAD: validateManifest still accepts
+  // an absent value, so a third-party manifest keeps working while ours have to be explicit.
+  const selectable = m.hooks.filter((h) => (SELECTABLE_HOOKS as ReadonlySet<string>).has(h));
+  if (selectable.length) {
+    const p = (m as { participation?: unknown }).participation;
+    checks.push(p === "default" || p === "opt_in"
+      ? ok("participation", String(p))
+      : bad("participation", `a module serving ${selectable.join(", ")} must declare participation: "default" | "opt_in" (cf#537); got ${JSON.stringify(p)}`));
+  }
   if (m.config_schema) {
     for (const [k, f] of Object.entries(m.config_schema)) checks.push(checkConfigField(k, f));
   }

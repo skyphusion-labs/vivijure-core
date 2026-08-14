@@ -4,7 +4,7 @@
 // master-chain state helpers, and the stall math. The orchestrator (film-orchestrator.ts) owns
 // every await; it re-exports this module, so importers and tests keep their one entry point.
 
-import type { ConfigSchema, DialogueLine, FinishOutput, MasterOutput, RegisteredModule, SpeechOutput } from "./modules/types.js";
+import type { ConfigSchema, DialogueLine, FinishOutput, HookSelection, MasterOutput, RegisteredModule, SpeechOutput } from "./modules/types.js";
 import { validateConfig } from "./modules/registry.js";
 import { summarizeJob, type ClipJob, type JobSummary } from "./clip-job-model.js";
 import { classifyTransientFailure } from "./render-orchestrator.js";
@@ -119,6 +119,11 @@ export interface FilmJob {
   // two renders that differ only in motion backend legitimately share keyframes. Absent on legacy job docs.
   keyframe_config?: Record<string, unknown>;
   finish_config: Record<string, Record<string, unknown>>; // per finish module (keyed by module name), validated at enterFinishPhase
+  // cf#537: the caller's per-render finish participation. ABSENT on every legacy job doc and on any
+  // caller that sends none, which resolves to the default-participation set (every serving finish
+  // module that does not declare participation:"opt_in"). Its own field, NEVER derived from
+  // finish_config -- a Record cannot tell "no config" from "not requested" after a JSON round trip.
+  finish_select?: HookSelection;
   speech_config?: Record<string, Record<string, unknown>>; // per speech module (keyed by module name), validated at enterSpeechOrFinish
   film_finish_config?: Record<string, Record<string, unknown>>; // per film.finish module (by name), validated in applyFilmFinish
   master_config?: Record<string, Record<string, unknown>>; // per master module (by name), validated at enterMasterOrMux

@@ -19,7 +19,7 @@ import {
   validateConfig,
   dispatchChain,
 } from "./modules/registry.js";
-import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook } from "./modules/render-pipeline.js";
+import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook, selectForChain } from "./modules/render-pipeline.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
 import {
@@ -100,6 +100,7 @@ import type {
   FilmFinishInput,
   FilmFinishOutput,
   FilmFinishCaption,
+  HookSelection,
 } from "./modules/types.js";
 import { retimeSrt } from "./srt.js";
 import { loadInstallConfig } from "./operator-config.js";
@@ -459,7 +460,7 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
     await env.R2_RENDERS.put(clipDocKey(job.clip_job_id), JSON.stringify(clipJob), { httpMetadata: { contentType: "application/json" } });
   }
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
-  const serving = servingForHook(modules, "finish"); // ui.order; the full finish chain
+  const servingAll = servingForHook(modules, "finish"); // ui.order; every BOUND finish module
   const doneClips = clipJob.shots.filter((s) => s.status === "done" && s.clip_key);
   if (!doneClips.length) {
     // #754: surface the per-shot failure reasons instead of only the bare generic.
@@ -468,6 +469,24 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
     job.error = reasons ? `no clips rendered to assemble -- ${reasons}` : "no clips rendered to assemble";
     return;
   }
+  // cf#537: THE participation gate. This is the ONLY site that mints the per-shot finish chain --
+  // `servingForHook(modules, "finish")` appears exactly once in this repo and it is the line above --
+  // so it is the only place the gate can be enforced. It reads the LIVE registry rather than the
+  // resolved plan, which is why job.finish_select has to be its own persisted field.
+  //
+  // ABSENT selection keeps every pre-cf#537 caller byte-identical except that a module declaring
+  // participation:"opt_in" no longer runs unasked. A NAMED selection is exactly those modules.
+  const picked = selectForChain(servingAll, "finish", job.finish_select);
+  if (picked.missing.length) {
+    // A caller that explicitly named a finish module and cannot have it is TOLD. pickOneForHook can
+    // resolve an unknown choice to null because motion.backend has a built-in fallback; there is no
+    // fallback here, and silently delivering a film without the step someone asked for is the cf#500
+    // failure from the other side.
+    job.phase = "failed";
+    job.error = `finish module(s) requested but not serving: ${picked.missing.join(", ")}`;
+    return;
+  }
+  const serving = picked.modules;
   if (!serving.length) {
     job.phase = job.clips_only ? "done" : "assemble";
     return;
@@ -2220,6 +2239,8 @@ export async function startFilmFromKeyframes(
     motion_config?: Record<string, unknown>;
     motion_configs?: Record<string, Record<string, unknown>>;
     finish_config?: Record<string, Record<string, unknown>>;
+    /** cf#537: which finish modules this render wants. Omitted = the default-participation set. */
+    finish_select?: HookSelection;
     speech_config?: Record<string, Record<string, unknown>>;
     film_finish_config?: Record<string, Record<string, unknown>>;
     master_config?: Record<string, Record<string, unknown>>;
@@ -2261,6 +2282,8 @@ export async function startFilmFromKeyframes(
     motion_backend: args.motion_backend ?? null,
     motion_config: args.motion_config ?? {},
     finish_config: args.finish_config ?? {},
+    // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
+    finish_select: args.finish_select,
     speech_config: args.speech_config ?? {},
     film_finish_config: args.film_finish_config ?? {},
     master_config: args.master_config ?? {},
@@ -2318,6 +2341,8 @@ export async function startFilmJob(
     project: string; bundle_key: string; scenes: FilmScene[];
     motion_backend?: string; keyframe_backend?: string; keyframe_config?: Record<string, unknown>; motion_config?: Record<string, unknown>;
     finish_config?: Record<string, Record<string, unknown>>;
+    /** cf#537: which finish modules this render wants. Omitted = the default-participation set. */
+    finish_select?: HookSelection;
     speech_config?: Record<string, Record<string, unknown>>;
     film_finish_config?: Record<string, Record<string, unknown>>;
     master_config?: Record<string, Record<string, unknown>>;
@@ -2377,6 +2402,8 @@ export async function startFilmJob(
     keyframe_backend: kf ? kf.name : null,
     keyframe_config: args.keyframe_config ?? {},
     finish_config: args.finish_config ?? {},
+    // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
+    finish_select: args.finish_select,
     speech_config: args.speech_config ?? {},
     film_finish_config: args.film_finish_config ?? {},
     master_config: args.master_config ?? {},
