@@ -856,6 +856,12 @@ export async function reconcileStorageUsage(
   // STAGE. Nothing below this comment is read by anyone until the swap, so an invocation killed
   // during the fill -- the long phase, and the one that grows with the bucket -- destroys nothing.
   await db.prepare(STORAGE_REBUILD_DDL).bind().run();
+  // The meta table is created HERE rather than in the invalidate step below (core#196). It is not
+  // needed until then, but leaving it there made the invalidate step's coverage incidental: removing
+  // that step also removed this CREATE TABLE, so four happy-path controls went red for a reason that
+  // had nothing to do with invalidation, and a refactor that hoisted the DDL would have dropped the
+  // invalidate silently while those controls went green again.
+  await db.prepare(STORAGE_LEDGER_META_DDL).bind().run();
   await db.prepare("DELETE FROM storage_usage_rebuild").bind().run();
   const stage = db.prepare(
     `INSERT INTO storage_usage_rebuild (object_key, bytes, updated_at) VALUES (?, ?, ?)
@@ -875,7 +881,6 @@ export async function reconcileStorageUsage(
   // beside an old exactness claim -- which is this defect one field over rather than a fix for it.
   // The two facts are only meaningful together, so they are invalidated together and restored
   // together.
-  await db.prepare(STORAGE_LEDGER_META_DDL).bind().run();
   await db
     .prepare("DELETE FROM storage_usage_meta WHERE key IN (?, ?)")
     .bind(LEDGER_TRUE_SINCE_KEY, LEDGER_UNSIZED_KEY)

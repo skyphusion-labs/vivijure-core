@@ -89,6 +89,15 @@ report unbillable. The two fields are orthogonal on purpose: `complete` answers 
 ledger at all*, `unsizedObjects` answers *is what we read exact*. Reporting the state is this
 module's job; adjudicating it is not.
 
+**Also addresses core#196 while in here.** The `storage_usage_meta` CREATE TABLE ran inside the
+INVALIDATE step, so that step's coverage was incidental: mutating it away also removed the DDL, and
+four happy-path controls went red for a reason unrelated to invalidation. Measured before: dropping
+the whole step reddened 8 tests, 4 of them happy-path controls; dropping only the DELETE reddened 3,
+all detectability. Hoisting the DDL to the staging step -- beside the CREATE TABLE already there --
+makes the two identical: dropping the invalidate now reddens exactly those 3, and nothing else. The
+risk it removes is a future refactor hoisting the DDL, dropping the invalidate silently, and those
+four controls going green again.
+
 Also exported: `markStorageLedgerUnsized` and `storageLedgerUnsizedObjects`, mirroring the
 `markStorageLedgerTrue` / `storageLedgerTrueSince` pair. The writer creates the meta table itself
 rather than depending on the stamp writer having run first, because an ordering coupling between two
