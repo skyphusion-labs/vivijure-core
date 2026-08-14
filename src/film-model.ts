@@ -879,17 +879,57 @@ export function ceilingAgeSeconds(job: FilmJob, now: number = Date.now()): numbe
   return Math.max(0, Math.floor((now - since) / 1000));
 }
 
-/** Progress fingerprint for the stall signal (#136): the current phase plus how many of its per-shot
- *  units are done. Monotonic within a phase (shots only go pending->done) and it changes on every phase
- *  transition, so ANY change is genuine forward progress -- which is what re-stamps last_progress_at.
- *  Phases with no per-shot fan-out (keyframe/dialogue/assemble/master/mux) report :0, so their stall
- *  window runs from when the phase began, exactly as before. */
+/** Progress fingerprint for the stall signal (#136): the current phase, how many of its per-shot units
+ *  are done, and how many CHAIN STEPS have resolved inside those units. Monotonic within a phase (shots
+ *  only go pending->done, `idx` only advances) and it changes on every phase transition, so ANY change is
+ *  genuine forward progress -- which is what re-stamps last_progress_at. Phases with no per-shot fan-out
+ *  (keyframe/dialogue/assemble/master/mux) report :0:0, so their stall window runs from when the phase
+ *  began, exactly as before.
+ *
+ *  WHY STEPS AND NOT ONLY SHOTS (#182). Counting finished SHOTS made the marker blind to a shot that is
+ *  working correctly through a multi-step chain: a film whose LAST remaining shot is mid-chain, or a
+ *  single-shot film, produced NO marker change between the phase starting and the shot finishing, so the
+ *  90min ceiling (which measures from last_progress_at) fired on work that was proceeding exactly as
+ *  configured. `idx` advances only when a step actually resolves -- run (applyFinishOutput) or reused
+ *  (adoptFinishStepOutput) -- and `attempts` is deliberately NOT counted, because a step retrying is not
+ *  a step progressing and folding it in would let a failing shot re-stamp the clock forever.
+ *
+ *  WHAT THIS DOES NOT FIX, stated here because a green suite would otherwise imply it did: a chain with
+ *  exactly ONE step has no intra-shot progress to observe, so a single-shot film whose finish chain is
+ *  just `finish-upscale` still gets its one marker change at the very end -- which is precisely the
+ *  configuration #182 describes. Four modules declare the `finish` hook (finish-upscale, finish-lipsync,
+ *  finish-rife, finish-blender), so chains of 2..4 steps are ordinary and this covers them; the
+ *  single-step case needs a ceiling sized to the work, not a finer marker. `tests/film-progress-marker-182`
+ *  asserts that limit explicitly rather than leaving it to be discovered. */
 export function filmProgressMarker(job: FilmJob, clipJob: ClipJob | null): string {
   let done = 0;
-  if (job.phase === "clips") done = (clipJob?.shots || []).filter((s) => s.status === "done").length;
-  else if (job.phase === "finish") done = (job.finish_shots || []).filter((fs) => fs.status === "done").length;
-  else if (job.phase === "speech") done = (job.speech_shots || []).filter((ss) => ss.status === "done").length;
-  return `${job.phase}:${done}`;
+  let steps = 0;
+  if (job.phase === "clips") {
+    done = (clipJob?.shots || []).filter((s) => s.status === "done").length;
+  } else if (job.phase === "finish") {
+    const shots = job.finish_shots || [];
+    done = shots.filter((fs) => fs.status === "done").length;
+    steps = shots.reduce((n, fs) => n + Math.max(0, Math.trunc(fs.idx) || 0), 0);
+  } else if (job.phase === "speech") {
+    const shots = job.speech_shots || [];
+    done = shots.filter((ss) => ss.status === "done").length;
+    steps = shots.reduce((n, ss) => n + Math.max(0, Math.trunc(ss.idx) || 0), 0);
+  }
+  return `${job.phase}:${done}:${steps}`;
+}
+
+/** Compare-and-stamp the stall clock (#136/#704/#182). Returns true iff the marker MOVED, i.e. real
+ *  forward progress happened this pass, in which case `progress_marker` and `last_progress_at` are
+ *  updated in place. Extracted from advanceFilmJob so the marker's effect on the ceiling is reachable
+ *  from a test: inline, the only way to exercise it was to restate these lines in the test, and a test
+ *  that restates its subject's contract agrees with the subject forever whatever the subject does.
+ *  `now` is injectable so tests do not depend on the wall clock. */
+export function stampFilmProgress(job: FilmJob, clipJob: ClipJob | null, now: number = Date.now()): boolean {
+  const marker = filmProgressMarker(job, clipJob);
+  if (marker === job.progress_marker) return false;
+  job.progress_marker = marker;
+  job.last_progress_at = now;
+  return true;
 }
 
 // --------------------------------------------------------------------------- duration honesty (#697/#698)
