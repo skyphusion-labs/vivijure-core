@@ -122,7 +122,7 @@ registry returns is `Z`-suffixed, so that slice is a UTC date unconditionally. T
 what the procedure already does, so that a row filled by hand cannot disagree with a row filled by
 the command.
 
-**Measured against the whole ledger, not just the newest rows:** re-deriving all 30 rows' dates from
+**Measured against the whole ledger, not just the newest rows:** re-deriving all 31 rows' dates from
 the npm publish epochs, UTC matches **31 of 31**. US Central matches 21, CEST matches 28, and a
 UTC+14 control matches 11. So 13 rows discriminate between zones -- Central falsifies 10 of them and
 CEST falsifies 3. The convention is not a coincidence that has held twice; it is the only zone
