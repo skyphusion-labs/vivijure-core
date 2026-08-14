@@ -31,6 +31,14 @@ function envWith(objects: Record<string, Uint8Array>) {
   } as never;
 }
 
+// A DIFFERENT portrait, for the negative control below. One byte of the IHDR width differs, so it
+// is a valid distinct payload rather than a length change -- a different LENGTH would also move the
+// tar header, and then the control would pass for a reason that has nothing to do with content.
+const PNG_OTHER = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+  0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
+]);
+
 const storyboard = {
   title: "Mtime Determinism",
   projectName: "mtime_det",
@@ -89,29 +97,56 @@ describe("assembleBundle key is stable across a second boundary (cf#460)", () =>
     vi.useRealTimers();
   });
 
-  it("CONTROL: same portrait bytes -> same bundleKey even when wall clock advances a second", async () => {
-    const objects = { "character-refs/a.png": PNG };
-    const args = {
-      storyboard,
-      characterRefs: {
-        A: {
-          name: "Ada",
-          prompt: "a tall woman",
-          trainingImages: [{ key: "character-refs/a.png" }],
-        },
+  const ARGS = {
+    storyboard,
+    characterRefs: {
+      A: {
+        name: "Ada",
+        prompt: "a tall woman",
+        trainingImages: [{ key: "character-refs/a.png" }],
       },
-    } as never;
+    },
+  } as never;
+
+  /** Assemble once and return the key, asserting UNCONDITIONALLY that there IS one.
+   *
+   *  This helper is the point of the review fix, not a tidy-up. The previous shape was
+   *  `if (first.ok && second.ok) expect(second.bundleKey).toBe(first.bundleKey)`, and
+   *  `undefined === undefined` passes: it could not tell STABLE from ABSENT, nor from CONSTANT,
+   *  and stability is the whole property under test. Asserting truthiness here rather than inside
+   *  a narrowing `if` means the check cannot vanish with the branch (an if-wrapped assertion is
+   *  invisible when its guard is false). */
+  async function bundleKeyOf(objects: Record<string, Uint8Array>): Promise<string> {
+    const r = await assembleBundle(envWith(objects), ARGS);
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (!r.ok) throw new Error("unreachable: asserted ok on the line above");
+    expect(
+      r.bundleKey,
+      "assembleBundle returned ok with no bundleKey -- a stability assertion over two ABSENT keys passes vacuously",
+    ).toBeTruthy();
+    return r.bundleKey;
+  }
+
+  it("same portrait bytes -> same bundleKey even when wall clock advances a second", async () => {
+    const objects = { "character-refs/a.png": PNG };
 
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-05T18:03:59.950Z"));
-    const first = await assembleBundle(envWith(objects), args);
+    const first = await bundleKeyOf(objects);
     vi.setSystemTime(new Date("2026-08-05T18:04:00.050Z"));
-    const second = await assembleBundle(envWith(objects), args);
+    const second = await bundleKeyOf(objects);
 
-    expect(first.ok, JSON.stringify(first)).toBe(true);
-    expect(second.ok, JSON.stringify(second)).toBe(true);
-    if (first.ok && second.ok) {
-      expect(second.bundleKey).toBe(first.bundleKey);
-    }
+    expect(second).toBe(first);
+  });
+
+  it("NEGATIVE CONTROL: different portrait bytes MUST produce a different bundleKey", async () => {
+    // Without this row every case in the file is a same-input case, so the suite is green under an
+    // implementation that returns a CONSTANT key -- which is a strictly worse defect than the
+    // wall-clock one this file was written for, and this file is the only thing guarding it.
+    // A content address that is not a function of the content has stopped being an address.
+    const first = await bundleKeyOf({ "character-refs/a.png": PNG });
+    const other = await bundleKeyOf({ "character-refs/a.png": PNG_OTHER });
+
+    expect(other).not.toBe(first);
   });
 });
