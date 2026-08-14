@@ -6,7 +6,37 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 ## Unreleased / v1.13.0
 
 MINOR. Presigned satellite inputs for the finish and speech chains, so a satellite can fetch its
-input and write its output without holding an R2 credential.
+input and write its output without holding an R2 credential. Plus a stall-clock fix for shots that
+are working correctly through a multi-step finish chain.
+
+### fix(stall): count per-STEP progress in the film progress marker (#182)
+
+The 90 minute phase ceiling measures from `last_progress_at`, which is re-stamped only when the
+progress marker CHANGES, and the marker counted finished SHOTS. So a film whose last remaining shot
+was working through its finish chain produced no marker change at all between the phase starting and
+the shot finishing, and the ceiling failed a render that was proceeding exactly as configured. A
+guard that fires on correct work is the guard people switch off, and when it is widened the real
+stuck-phase detection goes with it.
+
+`filmProgressMarker` now also counts resolved chain steps (`idx`, which advances only when a step
+actually resolves -- run or reused from R2). `attempts` is deliberately excluded: a step retrying is
+not a step progressing, and folding it in would let a failing shot hold the clock open forever.
+
+`stampFilmProgress` is extracted from `advanceFilmJob` so the marker's effect on the ceiling is
+reachable from a test. Inline, a test could only have restated the compare-and-stamp, and a test
+that restates its subject agrees with it forever.
+
+**What this does NOT fix, stated because a green suite would otherwise imply it did.** A finish chain
+with exactly ONE step has no intra-shot progress to observe, so a single-shot film whose chain is
+just `finish-upscale` still gets one marker change, at the end. That is the configuration #182
+describes. It needs a ceiling sized to the work rather than a finer marker, and the test suite
+asserts the limit explicitly rather than leaving it to be discovered. Four modules declare the
+`finish` hook (`finish-upscale`, `finish-lipsync`, `finish-rife`, `finish-blender`), so 2..4-step
+chains are ordinary and are covered.
+
+One-time effect on deploy: the marker gains a third field, so the first advance after this ships sees
+a changed marker and re-stamps once. Harmless, and stated so it is not read as a defect.
+
 
 ### feat(finish): presign satellite finish/speech inputs (cf#312, #154)
 
