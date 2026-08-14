@@ -197,6 +197,7 @@ export const STORAGE_LEDGER_META_DDL = `CREATE TABLE IF NOT EXISTS storage_usage
 )`;
 
 const LEDGER_TRUE_SINCE_KEY = "ledger_true_since";
+const LEDGER_UNSIZED_KEY = "ledger_unsized_objects";
 
 /**
  * Record that the ledger is true as of `atSeconds` (default now).
@@ -215,6 +216,56 @@ export async function markStorageLedgerTrue(db: Database, atSeconds?: number): P
     )
     .bind(LEDGER_TRUE_SINCE_KEY, String(atSeconds ?? nowSeconds()))
     .run();
+}
+
+/**
+ * Record how many objects the last reconcile could NOT size (core#183 family).
+ *
+ * WHY THIS IS PERSISTED AT ALL: `reconcileStorageUsage` already returns `unsized` in its report,
+ * and every caller discards it. So the fact that a total is a FLOOR rather than a TOTAL survived
+ * exactly as long as the HTTP response, and afterwards a ledger built from objects the store
+ * refused to size was byte-identical to an exact one -- same bytes, same object count, same
+ * `complete`. An object accounted at 0 because it is empty and an object accounted at 0 because
+ * nobody could measure it are different facts, and this is what keeps them different.
+ *
+ * ZERO IS A MEASUREMENT AND ABSENCE IS NOT. Writing 0 asserts "a reconcile looked and everything
+ * sized cleanly"; an absent key means nobody has ever established it, which is the state every
+ * studio stamped by a host at creation is in. Collapsing those two would assert an exactness no one
+ * measured, which is the defect this exists to close rather than to re-create one field over.
+ */
+export async function markStorageLedgerUnsized(db: Database, unsized: number): Promise<void> {
+  // Creates the table itself rather than depending on markStorageLedgerTrue having run first: an
+  // ordering coupling between two writers of the same table is a trap for whoever calls one alone.
+  await db.prepare(STORAGE_LEDGER_META_DDL).bind().run();
+  await db
+    .prepare(
+      `INSERT INTO storage_usage_meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    )
+    .bind(LEDGER_UNSIZED_KEY, String(Math.max(0, Math.floor(unsized))))
+    .run();
+}
+
+/**
+ * Objects the last reconcile could not size, or null when that has never been established.
+ *
+ * Read the pair, never one field: `0` means the accounted total is EXACT, a positive number means
+ * it is a FLOOR by at least that many objects, and `null` means UNKNOWN. Any failure reads as null
+ * for the same reason `storageLedgerTrueSince` does -- every failure mode here means "we cannot
+ * establish this", and guessing 0 would be the one direction that claims an exactness we did not
+ * measure.
+ */
+export async function storageLedgerUnsizedObjects(db: Database): Promise<number | null> {
+  try {
+    const row = await db
+      .prepare("SELECT value FROM storage_usage_meta WHERE key = ?")
+      .bind(LEDGER_UNSIZED_KEY)
+      .first<{ value: string | null }>();
+    const n = Number(row?.value);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -414,6 +465,20 @@ export interface StorageQuotaState {
   /** Same contract as the verdict: false = METERING GAP, unbillable, never zero overage. */
   complete: boolean;
   reason: string | null;
+  /**
+   * Objects the last reconcile could not size, accounted as 0 bytes (core#183 family).
+   *
+   *   0     the accounted total is EXACT
+   *   n > 0 the total is a FLOOR: n objects are in it at 0 bytes because the store would not
+   *         report their size (the Node/MinIO door omits sizes by design)
+   *   null  UNKNOWN -- no reconcile has ever recorded it
+   *
+   * DELIBERATELY ORTHOGONAL TO `complete`. `complete` answers "could we read the ledger at all";
+   * this answers "is what we read exact". A floor does NOT set `complete: false`, because whether a
+   * floor is billable is a product decision about the Node/MinIO door and not one this module makes
+   * on an operator's behalf. Reporting the state is the job; adjudicating it is not.
+   */
+  unsizedObjects: number | null;
 }
 
 export async function storageQuotaState(env: StorageQuotaEnv): Promise<StorageQuotaState> {
@@ -429,12 +494,14 @@ export async function storageQuotaState(env: StorageQuotaEnv): Promise<StorageQu
       overageBytes: null,
       complete: false,
       reason: "the studio database is unavailable, so storage usage cannot be read",
+      unsizedObjects: null,
     };
   }
 
   try {
     const { usedBytes, objects } = await storageUsage(env.DB);
     const trueSince = await storageLedgerTrueSince(env.DB);
+    const unsizedObjects = await storageLedgerUnsizedObjects(env.DB);
     return {
       mode,
       quotaBytes,
@@ -449,6 +516,7 @@ export async function storageQuotaState(env: StorageQuotaEnv): Promise<StorageQu
           ? null
           : "this studio storage ledger has never been established as true (no reconcile has run " +
             "and no host has stamped it), so the accounted total is a FLOOR rather than a total",
+      unsizedObjects,
     };
   } catch (e) {
     return {
@@ -459,6 +527,7 @@ export async function storageQuotaState(env: StorageQuotaEnv): Promise<StorageQu
       overageBytes: null,
       complete: false,
       reason: `the storage usage read failed (${(e as Error).message})`,
+      unsizedObjects: null,
     };
   }
 }
@@ -776,7 +845,7 @@ export async function reconcileStorageUsage(
   // host refuses so much earlier, and it is derived from what this host actually offers rather than
   // assumed.
   const fillCalls = db.batch ? Math.ceil(sized.length / chunkSize) : sized.length;
-  const swapCalls = db.batch ? 1 : 4;
+  const swapCalls = db.batch ? 1 : 5;
   const projected = spent + 2 /* create + clear scratch */ + fillCalls + 2 /* create meta + clear stamp */ + swapCalls;
   if (projected > budget) {
     throw new StorageReconcileTooLargeError(sized.length, projected, budget, `${scope} of ${sized.length} objects`);
@@ -787,6 +856,12 @@ export async function reconcileStorageUsage(
   // STAGE. Nothing below this comment is read by anyone until the swap, so an invocation killed
   // during the fill -- the long phase, and the one that grows with the bucket -- destroys nothing.
   await db.prepare(STORAGE_REBUILD_DDL).bind().run();
+  // The meta table is created HERE rather than in the invalidate step below (core#196). It is not
+  // needed until then, but leaving it there made the invalidate step's coverage incidental: removing
+  // that step also removed this CREATE TABLE, so four happy-path controls went red for a reason that
+  // had nothing to do with invalidation, and a refactor that hoisted the DDL would have dropped the
+  // invalidate silently while those controls went green again.
+  await db.prepare(STORAGE_LEDGER_META_DDL).bind().run();
   await db.prepare("DELETE FROM storage_usage_rebuild").bind().run();
   const stage = db.prepare(
     `INSERT INTO storage_usage_rebuild (object_key, bytes, updated_at) VALUES (?, ?, ?)
@@ -800,8 +875,16 @@ export async function reconcileStorageUsage(
 
   // INVALIDATE. From here the ledger is about to stop being true, so the stamp goes first: it is
   // restored at the end of the swap and nowhere else.
-  await db.prepare(STORAGE_LEDGER_META_DDL).bind().run();
-  await db.prepare("DELETE FROM storage_usage_meta WHERE key = ?").bind(LEDGER_TRUE_SINCE_KEY).run();
+  //
+  // The unsized COUNT is cleared in the SAME statement, deliberately. A count left behind from the
+  // PREVIOUS rebuild would describe data this one is about to replace, so a new stamp could land
+  // beside an old exactness claim -- which is this defect one field over rather than a fix for it.
+  // The two facts are only meaningful together, so they are invalidated together and restored
+  // together.
+  await db
+    .prepare("DELETE FROM storage_usage_meta WHERE key IN (?, ?)")
+    .bind(LEDGER_TRUE_SINCE_KEY, LEDGER_UNSIZED_KEY)
+    .run();
 
   // SWAP. Replace, do not merge: the store is the authority, so a ledger row for an object that no
   // longer exists (lifecycle-expired, deleted out of band) must disappear rather than survive a
@@ -825,6 +908,16 @@ export async function reconcileStorageUsage(
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       )
       .bind(LEDGER_TRUE_SINCE_KEY, String(now)),
+    // ...and HOW MANY objects went in unmeasured, in the same batch as the stamp so the pair cannot
+    // be torn apart. The report below carries `unsized` and every caller drops it, so without this
+    // the floor-ness of the total dies with the HTTP response. Written unconditionally, INCLUDING
+    // 0, because 0 is a measurement and absence is not.
+    db
+      .prepare(
+        `INSERT INTO storage_usage_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .bind(LEDGER_UNSIZED_KEY, String(Math.max(0, Math.floor(unsized)))),
   ];
   if (db.batch) await db.batch(swap);
   else for (const stmt of swap) await stmt.run();

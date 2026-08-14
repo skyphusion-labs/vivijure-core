@@ -3,11 +3,40 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.13.0
+## [1.13.0] -- 2026-08-14
 
 MINOR. Presigned satellite inputs for the finish and speech chains, so a satellite can fetch its
-input and write its output without holding an R2 credential. Plus a starvation fix and a coverage
-metric for the cron sweep.
+input and write its output without holding an R2 credential. Plus a stall-clock fix for shots
+working correctly through a multi-step finish chain, and a starvation fix and coverage metric for
+the cron sweep.
+
+### fix(stall): count per-STEP progress in the film progress marker (#182)
+
+The 90 minute phase ceiling measures from `last_progress_at`, which is re-stamped only when the
+progress marker CHANGES, and the marker counted finished SHOTS. So a film whose last remaining shot
+was working through its finish chain produced no marker change at all between the phase starting and
+the shot finishing, and the ceiling failed a render that was proceeding exactly as configured. A
+guard that fires on correct work is the guard people switch off, and when it is widened the real
+stuck-phase detection goes with it.
+
+`filmProgressMarker` now also counts resolved chain steps (`idx`, which advances only when a step
+actually resolves -- run or reused from R2). `attempts` is deliberately excluded: a step retrying is
+not a step progressing, and folding it in would let a failing shot hold the clock open forever.
+
+`stampFilmProgress` is extracted from `advanceFilmJob` so the marker's effect on the ceiling is
+reachable from a test. Inline, a test could only have restated the compare-and-stamp, and a test
+that restates its subject agrees with it forever.
+
+**What this does NOT fix, stated because a green suite would otherwise imply it did.** A finish chain
+with exactly ONE step has no intra-shot progress to observe, so a single-shot film whose chain is
+just `finish-upscale` still gets one marker change, at the end. That is the configuration #182
+describes. It needs a ceiling sized to the work rather than a finer marker, and the test suite
+asserts the limit explicitly rather than leaving it to be discovered. Four modules declare the
+`finish` hook (`finish-upscale`, `finish-lipsync`, `finish-rife`, `finish-blender`), so 2..4-step
+chains are ordinary and are covered.
+
+One-time effect on deploy: the marker gains a third field, so the first advance after this ships sees
+a changed marker and re-stamps once. Harmless, and stated so it is not read as a defect.
 
 ### feat(modules): PollResponse can say accepted vs running (cf#307)
 
@@ -70,6 +99,24 @@ against a local build of this branch, with controls proving the swapped build ca
 the stock one did not.
 
 
+### test(tar): the bundle-key determinism suite could not observe a constant key (cf#460 residual)
+
+`tests/tar-deterministic-mtime.test.ts` shipped with every case a SAME-INPUT case, and its
+`assembleBundle` assertion was `if (first.ok && second.ok) expect(second.bundleKey).toBe(first.bundleKey)`.
+That cannot distinguish STABLE from ABSENT from CONSTANT: `undefined === undefined` passes, and an
+implementation returning one hardcoded key passes too. Stability is the whole property the file
+exists to guard, and a content address that is not a function of the content has stopped being an
+address -- a strictly worse defect than the wall-clock one the file was written for.
+
+Adds the missing negative control (different portrait bytes MUST yield a different key) and routes
+both cases through a helper that asserts a key EXISTS unconditionally, rather than inside a
+narrowing `if` where the assertion vanishes with its branch. Driven, not asserted: mutating
+`assembleBundle` to return a constant key reddens the new control while the stability case stays
+GREEN -- which is precisely the blindness being fixed -- and mutating it to return no key at all
+reddens both. Restore verified byte-identical by sha256.
+
+No production code changed.
+
 ### fix(storage): stage-and-swap the reconcile, so a killed rebuild cannot certify a partial ledger (cf#516)
 
 `reconcileStorageUsage` used to `DELETE FROM storage_usage` and then re-insert the rebuilt rows in
@@ -121,6 +168,50 @@ the store will not size is accounted as 0, so that total is a floor stamped as a
 family as this bug. Fixing it would make every reconcile on a host whose `list()` omits sizes report
 unbillable, which is a product decision about the Node/MinIO door rather than a data-loss fix, so it
 is flagged rather than folded in.
+
+### fix(storage): record how many objects a reconcile could not size, so a FLOOR stops reading as a TOTAL (core#183 family)
+
+`reconcileStorageUsage` accounts an object the store will not size as **0 bytes**, and then stamps
+the ledger true anyway. The count of such objects was returned in `StorageReconcileReport.unsized`
+and dropped by every caller, so the fact that a total was a floor survived exactly as long as the
+HTTP response.
+
+**The collision this leaves behind is exact.** A genuinely zero-byte object and an object the store
+REFUSED to size produce byte-identical ledgers: same `usedBytes`, same `objects`, same `complete`.
+One total is exact and the other is a floor, and nothing anywhere could tell them apart. That is
+"we read zero" and "we could not read" arriving as the same value, which is the precise thing the
+cp#195 completeness contract was written to forbid -- one field over from where it was enforced.
+
+`storageQuotaState` now reports `unsizedObjects`, persisted beside the stamp in `storage_usage_meta`:
+
+- `0` -- a reconcile looked and everything sized cleanly; the total is **exact**
+- `n > 0` -- the total is a **floor** by at least n objects
+- `null` -- **unknown**; no reconcile has ever recorded it
+
+**Zero is a measurement and absence is not**, and the two are kept apart deliberately: every studio
+whose ledger a host stamped at creation is in the `null` state, and rendering that as `0` would
+assert an exactness nobody established -- re-creating the defect one field further along.
+
+**What this deliberately does NOT do: decide whether a floor is billable.** `complete` is untouched,
+so a floor still reports as billable. Whether it should is a product call about the Node/MinIO door,
+whose `list()` omits sizes by design, and refusing to bill it would make every reconcile on that host
+report unbillable. The two fields are orthogonal on purpose: `complete` answers *could we read the
+ledger at all*, `unsizedObjects` answers *is what we read exact*. Reporting the state is this
+module's job; adjudicating it is not.
+
+**Also addresses core#196 while in here.** The `storage_usage_meta` CREATE TABLE ran inside the
+INVALIDATE step, so that step's coverage was incidental: mutating it away also removed the DDL, and
+four happy-path controls went red for a reason unrelated to invalidation. Measured before: dropping
+the whole step reddened 8 tests, 4 of them happy-path controls; dropping only the DELETE reddened 3,
+all detectability. Hoisting the DDL to the staging step -- beside the CREATE TABLE already there --
+makes the two identical: dropping the invalidate now reddens exactly those 3, and nothing else. The
+risk it removes is a future refactor hoisting the DDL, dropping the invalidate silently, and those
+four controls going green again.
+
+Also exported: `markStorageLedgerUnsized` and `storageLedgerUnsizedObjects`, mirroring the
+`markStorageLedgerTrue` / `storageLedgerTrueSince` pair. The writer creates the meta table itself
+rather than depending on the stamp writer having run first, because an ordering coupling between two
+writers of one table is a trap for whoever calls one alone.
 
 ### feat(finish): presign satellite finish/speech inputs (cf#312, #154)
 

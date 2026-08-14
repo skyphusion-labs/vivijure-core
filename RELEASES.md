@@ -109,8 +109,28 @@ The test does not call the registry -- step 5 above is still a human act after `
 
 ## Release ledger
 
+**`published` is the npm publish date in UTC.** Take it from `npm view <pkg> time` and read the
+date off the `Z` timestamp, not off a local clock. This is not pedantry: v1.12.0 published at
+`2026-08-14T03:39:03.710Z`, which is `2026-08-13` in US Central and `2026-08-14` in CEST. A row
+filled from a local clock reads plausibly in isolation and is wrong, and nothing in this file would
+catch it -- `tests/releases-ledger.test.ts` asserts only `/^\d{4}-\d{2}-\d{2}$/`, so a well-formed
+wrong date passes green.
+
+**The convention was already implemented; only its name was missing.** Step 5 of the closing
+procedure above runs `npm view <pkg> time --json` and slices `[:10]`, and every timestamp the
+registry returns is `Z`-suffixed, so that slice is a UTC date unconditionally. This paragraph names
+what the procedure already does, so that a row filled by hand cannot disagree with a row filled by
+the command.
+
+**Measured against the whole ledger, not just the newest rows:** re-deriving all 31 rows' dates from
+the npm publish epochs, UTC matches **31 of 31**. US Central matches 21, CEST matches 28, and a
+UTC+14 control matches 11. So 13 rows discriminate between zones -- Central falsifies 10 of them and
+CEST falsifies 3. The convention is not a coincidence that has held twice; it is the only zone
+consistent with the file.
+
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.13.0` | 1.13.0 | 9cd62f2 | 2026-08-14 | **MINOR.** Presigned satellite inputs for the finish and speech chains (cf#312, #154): the core presigns GET/PUT and hands them on `FinishInput` / `SpeechInput`, so `finish-upscale` / `finish-lipsync` / `speech-upscale` can call a satellite's credentialless branch instead of the shared-bucket one, which is what unblocks endpoint pooling. **The satellites select R2-vs-presigned on the PRESENCE of `clip_key` / `audio_key`, never on URL presence, so a module building the presigned body must OMIT the key -- sending both takes the R2 branch, the render SUCCEEDS, and nothing reports that the credentialless path was never exercised.** The `.hash` provenance sidecar is presigned at `<output_key>.hash`, the key the #583 adoption gate reads. Also: the cron sweep rotates its window so the newest films are reached rather than starved (#180), and reports coverage; the storage reconcile is stage-and-swap so a killed rebuild cannot certify a partial ledger (cf#516); and a reconcile now records how many objects it could not size, so a FLOOR stops reading as a TOTAL (core#183 family). **Consumers pin `^1.11.0` and must repin to pick any of this up.** |
 | `vivijure-core-v1.12.0` | 1.12.0 | d31c269 | 2026-08-14 | **MINOR.** Film submit gets an idempotency guard (cf#518, #184): a client-supplied `idempotency_key` on both entry points, plus a natural-key backstop over a 60-second window for paths that cannot be changed (MCP, scatter). Both mint sites are in core, so a cf-side guard would knowingly leave `vivijure-local` and the scatter path exposed against the two-panel parity invariant. Also: the changelog-version guard now refuses Unreleased work on an already-tagged version (core#119, #146) -- it needs `fetch-tags: true` in CI to be non-vacuous, which ships with it. |
 | `vivijure-core-v1.11.0` | 1.11.0 | 233ff1b | 2026-08-13 | **MINOR.** An explicit `model_family` is HONOURED rather than silently substituted (core#174). `resolveCastTrainFamily`'s explicit-`"wan"` branch and its fallthrough were the identical expression, so `model_family: "wan"` was byte-identical to sending nothing; on an unwired host the server returned **200 having trained SDXL** after the panel quoted the user a Wan job at a different duration and price. Explicit `"wan"` now returns `"wan"` and `executeCastTrain`'s shipped 501 refuses. **Consumer-visible:** `POST /train-lora` with explicit `"wan"` on an unwired host goes 200 -> **501, no job submitted**; neither panel handles 501 on that button yet (vivijure-cf#420, vivijure-local#346, vivijure-local#329). Default path, explicit `"sdxl"`, and explicit `"wan"` on a wired host are unchanged. |
 | `vivijure-core-v1.10.0` | 1.10.0 | f6ebdcd | 2026-08-07 | **MINOR.** RunPod reached through the control-plane proxy when `RUNPOD_PROXY_BASE` is bound; direct `RUNPOD_API_KEY` route retained permanently as the self-host door (cp#321 step 1, #169). `src/runpod-route.ts` MOVED from `vivijure-cf`'s `modules/_shared/` so both hosts CAN import one implementation -- **no host imports it in this release**; cf adoption is cp#321 step 2 and is not shipped here. Also opens the version and repairs a lockfile left at 1.8.1 by the v1.9.0 cut. |

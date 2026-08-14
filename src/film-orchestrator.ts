@@ -71,7 +71,7 @@ import {
   POLLABLE_PHASES,
   phaseAgeSeconds,
   ceilingAgeSeconds,
-  filmProgressMarker,
+  stampFilmProgress,
   resolveClipDurationFloor,
   mapClipDurationsToShots,
   resolvePlannedSeconds,
@@ -2929,12 +2929,7 @@ async function advanceFilmJobLocked(env: Env, filmId: string): Promise<{ job: Fi
   // ALSO load-bearing for recovery: the 90min ceiling measures the per-shot phases (clips/speech/finish)
   // against last_progress_at, so a slow-but-landing local-gpu film never dies mid-progress; the
   // same-phase recovery triggers and the batch keyframe ceiling still measure from phase_started_at.
-  const marker = filmProgressMarker(job, clipJob);
-  const progressed = marker !== job.progress_marker;
-  if (progressed) {
-    job.progress_marker = marker;
-    job.last_progress_at = Date.now();
-  }
+  const progressed = stampFilmProgress(job, clipJob);
   // On any phase transition this tick, stamp when the new phase began (the stall recovery measures
   // against it) and persist. The phase legs above already persisted on the paths they took; this also
   // covers a recovery that failed the job at the ceiling (no leg ran after it), so that verdict lands
