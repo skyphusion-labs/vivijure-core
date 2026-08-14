@@ -361,3 +361,56 @@ describe("cf#537 idempotency: finish_select is render-affecting on BOTH natural 
     expect(await keyKf({ ...baseKf, finish_select: sel })).toBe(await keyKf({ ...baseKf, finish_select: sel }));
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// CONSUMER SWEEP.
+//
+// This block exists because enumerating the consumers of the new field -- rather than assuming the
+// door plumbing was the whole surface -- found one my own change had missed: scatter resolves the
+// overrides AND mints its shard films entirely inside core, so a selection that stopped at the two
+// single-film start functions would have left every scattered render on the default set while the
+// single-film path honoured the caller. That is the two-panel parity split in miniature, arriving
+// through a path neither panel touches.
+//
+// The assertion is deliberately SOURCE-level and it is the weaker kind of test, so it says so: it
+// pins that each core-internal mint site FORWARDS the field, which is what an omission looks like.
+// The behavioural half lives in the wiring suite, which drives the consumption point for real.
+
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..", "src");
+
+describe("cf#537 consumer sweep: every core-internal site that mints a film forwards finish_select", () => {
+  // DERIVED, not transcribed: any core file that hands a resolved finish_config into a start
+  // function is a site that must also hand over the selection.
+  const CANDIDATES = ["film-orchestrator.ts", "scatter-orchestrator.ts"];
+
+  it("CONTROL: the matcher finds the thing it is looking for", () => {
+    // Run first. Every assertion below is "this file contains X"; if the matcher cannot find a
+    // known-present token in a known-present file, a later zero is a broken read, not a finding.
+    const src = readFileSync(resolve(SRC, "film-orchestrator.ts"), "utf8");
+    expect(src.split("finish_config").length - 1, "finish_config occurrences in film-orchestrator").toBeGreaterThan(0);
+    // ...and the matcher must be able to come back EMPTY on a file that genuinely lacks it.
+    const other = readFileSync(resolve(SRC, "srt.ts"), "utf8");
+    expect(other.includes("finish_select"), "srt.ts must NOT mention finish_select").toBe(false);
+  });
+
+  it("every candidate that passes finish_config into a mint ALSO passes finish_select", () => {
+    let checked = 0;
+    for (const f of CANDIDATES) {
+      const src = readFileSync(resolve(SRC, f), "utf8");
+      const mints = src.split("finish_config: ").length - 1;
+      if (!mints) continue;
+      checked++;
+      expect(
+        src.includes("finish_select:"),
+        `${f} passes finish_config into a mint but never forwards finish_select (cf#537)`,
+      ).toBe(true);
+    }
+    // DENOMINATOR. If this ever reads 0, the sweep matched nothing and the row above is vacuous --
+    // which is exactly how a guard quietly stops guarding after a rename.
+    expect(checked, `${checked} of ${CANDIDATES.length} candidate files carry a mint`).toBe(2);
+  });
+});
