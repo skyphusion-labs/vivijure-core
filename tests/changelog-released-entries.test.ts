@@ -212,9 +212,17 @@ describe("every entry under a released heading is IN that release (core#202)", (
   it("CONTROL: isAncestor can return BOTH answers on this repo", () => {
     const head = git("rev-parse HEAD");
     expect(isAncestor(head, head), "a commit must be an ancestor of itself").toBe(true);
-    const root = git("rev-list --max-parents=0 HEAD", true).split("\n").filter(Boolean).pop();
-    expect(root, "no root commit found -- the control cannot run").toBeTruthy();
-    // HEAD is not an ancestor of the root: the predicate can say NO.
-    expect(isAncestor(head, root as string)).toBe(false);
+    // The NO answer needs an ancestor of HEAD that is not HEAD. An earlier version of this control
+    // used the ROOT commit, which is wrong in exactly the environment that matters: in a truncated
+    // checkout HEAD *is* the root, so the control asserted something false about a working
+    // predicate and read as a defect in the subject. Found by this file's own PR CI on the coverage
+    // job. Use HEAD's parent, and REFUSE when there is none rather than passing -- no parent means
+    // the history this whole file depends on is absent, which is the shallow case by another route.
+    const parent = git("rev-parse --verify -q HEAD^", true);
+    expect(
+      parent,
+      "HEAD has no parent, so the history this check needs is absent -- see the shallow-clone refusal",
+    ).toBeTruthy();
+    expect(isAncestor(head, parent), "HEAD must NOT be an ancestor of its own parent").toBe(false);
   });
 });
