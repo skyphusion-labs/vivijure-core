@@ -38,6 +38,58 @@ One-time effect on deploy: the marker gains a third field, so the first advance 
 a changed marker and re-stamps once. Harmless, and stated so it is not read as a defect.
 
 
+### fix(storage): stage-and-swap the reconcile, so a killed rebuild cannot certify a partial ledger (cf#516)
+
+`reconcileStorageUsage` used to `DELETE FROM storage_usage` and then re-insert the rebuilt rows in
+chunks. The invocation can die between those two steps -- on Workers it is killed at the subrequest
+ceiling, and the issue's own arithmetic puts a 100k-object bucket ~100 calls past it, INSIDE the
+re-insert loop. The ledger was then left neither the old state nor the new one.
+
+**The part that made it more than a data-loss bug: nothing said so, and one thing actively said the
+opposite.** `ledger_true_since` still carried the stamp from the PREVIOUS successful rebuild, so
+`storageQuotaState` and `checkStorageQuota` both reported `complete: true` over a ledger that was
+under-reporting. The cp#195 completeness contract exists precisely to keep "we read zero" and "we
+could not read" apart, and the one operation that can corrupt the ledger was certifying its own
+wreckage as billable. Measured on the pre-fix code across 40 injection points: **39 left the ledger
+stamped at a total that was never true, including 0 bytes** -- a studio reporting nothing stored,
+marked complete, in `meter` mode.
+
+The rebuild is now ENUMERATE -> REFUSE-IF-IT-WILL-NOT-FIT -> STAGE -> INVALIDATE -> SWAP:
+
+- **Staging into `storage_usage_rebuild`** moves the long, killable phase off the live ledger
+  entirely. A death while staging now destroys nothing, where before it destroyed everything.
+- **The stamp is cleared BEFORE the destructive step and restored only at the end of the swap.** This
+  is the half that needs no transaction, so it holds on every host: any interruption from that point
+  on leaves the ledger unstamped, and an unstamped ledger already reads as a metering GAP rather
+  than as a total. An absence never renders as a value.
+- **The swap is ONE `db.batch`** (drop the old rows, promote the staged ones, clear the scratch,
+  re-stamp), so on D1 -- where a batch is a transaction -- there is no observable state between the
+  old ledger and the new one. Its size is pinned by a test, because the swap being a single batch IS
+  the atomicity guarantee.
+- **A rebuild that cannot finish now refuses before touching anything**, with
+  `StorageReconcileTooLargeError` carrying the object count, the projected call count and the budget,
+  and saying in terms that nothing was deleted. An operation that cannot complete was the same defect
+  by another route.
+
+The two guarantees are deliberately not the same strength, and the code says which is which:
+ATOMICITY only where the host's `batch` provides it, DETECTABILITY everywhere.
+
+**The cost, stated because it is real:** an interrupted rebuild leaves the ledger unbillable even
+when the swap rolled back cleanly and the old rows are intact. We cannot tell that from a
+half-applied swap without transactions we do not have on every host, so it lands on the unbillable
+side -- the side this file has always chosen. Re-running the reconcile restores the stamp.
+
+Tests sweep every injection point across the whole write sequence and assert the invariant *a
+stamped ledger holds a total that was actually true*, separately for a host with `batch` and one
+without, each with denominators proving the sweep really reached the dangerous phase. Every guard
+was mutated and watched go red for its own named reason.
+
+**Known and deliberately NOT changed here:** `unsized > 0` still stamps the ledger true. An object
+the store will not size is accounted as 0, so that total is a floor stamped as a total -- the same
+family as this bug. Fixing it would make every reconcile on a host whose `list()` omits sizes report
+unbillable, which is a product decision about the Node/MinIO door rather than a data-loss fix, so it
+is flagged rather than folded in.
+
 ### feat(finish): presign satellite finish/speech inputs (cf#312, #154)
 
 `attachFinishPresigns` and `attachSpeechPresigns` mint short-lived GET/PUT URLs for a finish or
