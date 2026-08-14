@@ -83,6 +83,25 @@ rotation rather than producing a wrong window. Verified by running cf's whole su
 against a local build of this branch, with controls proving the swapped build carried the change and
 the stock one did not.
 
+
+### test(tar): the bundle-key determinism suite could not observe a constant key (cf#460 residual)
+
+`tests/tar-deterministic-mtime.test.ts` shipped with every case a SAME-INPUT case, and its
+`assembleBundle` assertion was `if (first.ok && second.ok) expect(second.bundleKey).toBe(first.bundleKey)`.
+That cannot distinguish STABLE from ABSENT from CONSTANT: `undefined === undefined` passes, and an
+implementation returning one hardcoded key passes too. Stability is the whole property the file
+exists to guard, and a content address that is not a function of the content has stopped being an
+address -- a strictly worse defect than the wall-clock one the file was written for.
+
+Adds the missing negative control (different portrait bytes MUST yield a different key) and routes
+both cases through a helper that asserts a key EXISTS unconditionally, rather than inside a
+narrowing `if` where the assertion vanishes with its branch. Driven, not asserted: mutating
+`assembleBundle` to return a constant key reddens the new control while the stability case stays
+GREEN -- which is precisely the blindness being fixed -- and mutating it to return no key at all
+reddens both. Restore verified byte-identical by sha256.
+
+No production code changed.
+
 ### fix(storage): stage-and-swap the reconcile, so a killed rebuild cannot certify a partial ledger (cf#516)
 
 `reconcileStorageUsage` used to `DELETE FROM storage_usage` and then re-insert the rebuilt rows in
