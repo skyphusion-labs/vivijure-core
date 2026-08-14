@@ -631,7 +631,7 @@ export function speechEnhancedAudioKey(audioKey: string): string {
 /** cf#312: attach presigned GET/PUT URLs onto a FinishInput so credentialless satellites (upscale,
  *  lipsync) can run without shared-bucket R2 env. Best-effort: a missing presigner or unsafe key
  *  leaves the input key-only and the module falls back to R2 mode. Never throws into the chain. */
-async function attachFinishPresigns(
+export async function attachFinishPresigns(
   env: Env,
   job: FilmJob,
   fs: FinishShot,
@@ -641,18 +641,31 @@ async function attachFinishPresigns(
   const outKey = finishStepOutputKey(job.project, fs, modules);
   if (!outKey) return;
   try {
-    const hashKey = outKey.endsWith(".mp4") ? `${outKey.slice(0, -4)}.hash` : `${outKey}.hash`;
-    const videoUrl = await presignR2Get(env, fs.clip_key, FINISH_PRESIGN_TTL_SECONDS);
-    const outputUrl = await presignR2Put(env, outKey, FINISH_PRESIGN_TTL_SECONDS);
+    // `<output_key>.hash`, NOT `<output_key minus .mp4>.hash`. ONE key, three call sites that must
+    // agree: the #583 adoption gate reads `${artifactKey}.hash` (finishArtifactHashMatches), the
+    // satellites write f"{output_key}.hash" (vivijure-upscale / vivijure-musetalk handler.py), and
+    // finish-hash.ts calls itself the SINGLE source of the `<output_key>.hash` sidecar. Stripping the
+    // extension is the .srt / .meta.json sidecar convention (filmFinishSeed, metaKeyFor) and does not
+    // apply here. Getting it wrong is silent and expensive: the gate takes its no-sidecar refusal on
+    // every presigned step, so adoptFinishStepFromR2 (#166 GC/frozen-job recovery) and the final
+    // artifact adoption permanently refuse, and the step re-runs paid GPU work with nothing saying so.
+    const hashKey = `${outKey}.hash`;
+    // ALL-OR-NOTHING, matching the sibling attachSpeechPresigns: resolve EVERY leg before assigning
+    // ANY. Assigning as we go leaves presigned transport set with audio_url absent when a later leg
+    // throws, and musetalk's presigned branch REQUIRES audio_url -- it returns a top-level `error`,
+    // which is a hard job failure, not the key-only R2 fallback this function's contract promises.
+    // The catch below would then log finish.presign_skip for what was really a partial application.
+    const [videoUrl, outputUrl, audioUrl, hashUrl] = await Promise.all([
+      presignR2Get(env, fs.clip_key, FINISH_PRESIGN_TTL_SECONDS),
+      presignR2Put(env, outKey, FINISH_PRESIGN_TTL_SECONDS),
+      input.audio_key ? presignR2Get(env, input.audio_key, FINISH_PRESIGN_TTL_SECONDS) : undefined,
+      input.output_hash ? presignR2Put(env, hashKey, FINISH_PRESIGN_TTL_SECONDS) : undefined,
+    ]);
     input.video_url = videoUrl;
     input.output_url = outputUrl;
     input.output_key = outKey;
-    if (input.audio_key) {
-      input.audio_url = await presignR2Get(env, input.audio_key, FINISH_PRESIGN_TTL_SECONDS);
-    }
-    if (input.output_hash) {
-      input.hash_url = await presignR2Put(env, hashKey, FINISH_PRESIGN_TTL_SECONDS);
-    }
+    if (audioUrl) input.audio_url = audioUrl;
+    if (hashUrl) input.hash_url = hashUrl;
   } catch (e) {
     console.warn(JSON.stringify({
       ev: "finish.presign_skip",
