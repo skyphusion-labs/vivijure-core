@@ -50,3 +50,32 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
+      # core#183: comments in src/ that name a consumer-side file which exists in no live consumer.
+      # The consumer repos are checked out HERE rather than assumed: the script REFUSES (exit 2) when
+      # no root resolves, so a checkout that silently stops working cannot read as a clean repo.
+      # vivijure-cf is already checked out above (into ./vivijure) for the manifest drift guard.
+      - name: Checkout consumers (stale-reference detector)
+        uses: actions/checkout@v7
+        with:
+          repository: skyphusion-labs/vivijure-backend
+          path: consumers/vivijure-backend
+      - uses: actions/checkout@v7
+        with:
+          repository: skyphusion-labs/vivijure-musetalk
+          path: consumers/vivijure-musetalk
+      - uses: actions/checkout@v7
+        with:
+          repository: skyphusion-labs/vivijure-upscale
+          path: consumers/vivijure-upscale
+      - uses: actions/checkout@v7
+        with:
+          repository: skyphusion-labs/vivijure-audio-upscale
+          path: consumers/vivijure-audio-upscale
+      - uses: actions/checkout@v7
+        with:
+          repository: skyphusion-labs/vivijure-wan-train
+          path: consumers/vivijure-wan-train
+      - name: Stale consumer references (core#183)
+        env:
+          VIVIJURE_CONSUMER_ROOTS: consumers/vivijure-backend:consumers/vivijure-musetalk:consumers/vivijure-upscale:consumers/vivijure-audio-upscale:consumers/vivijure-wan-train:vivijure
+        run: node scripts/comment-symbol-refs.mjs
