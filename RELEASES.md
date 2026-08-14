@@ -41,14 +41,6 @@ npm view @skyphusion-labs/vivijure-core@1.2.2 version
 > **This does NOT reintroduce the per-PR version pin that broke #144.** A version opens ONCE per
 > cycle. Every subsequent PR adds an entry under the already-open heading and touches no version
 > file, so the spent-version assertion never fires again until the next release.
->
-> **STATUS: core#146 is still OPEN and its test is not on `main`.** The split above was made in
-> ANTICIPATION of that guard, so until it merges this blockquote describes intended behaviour rather
-> than an enforced check. **When #146 merges, delete this STATUS paragraph in its entirety** -- from
-> the bold `STATUS:` marker down to the end of this paragraph -- **and leave the rest of the
-> blockquote standing.** Do NOT delete the blockquote itself: the seed-split it documents is the
-> steady state and outlives this status note. (The previous wording said "delete this sentence",
-> which named neither which sentence nor what to keep.)
 
 ## Closing the row (step 5, and the one that gets skipped)
 
