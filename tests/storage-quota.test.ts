@@ -86,8 +86,10 @@ function fakeDb(): FakeDb {
         db.rebuildTableExists = true;
       } else if (norm.startsWith("INSERT INTO storage_usage_meta")) {
         db.meta.set(String(bound[0]), String(bound[1]));
-      } else if (norm.startsWith("DELETE FROM storage_usage_meta WHERE key = ?")) {
-        db.meta.delete(String(bound[0]));
+      } else if (norm.startsWith("DELETE FROM storage_usage_meta WHERE key IN")) {
+        // Both keys go together: a stamp without its unsized count, or a count without its stamp,
+        // is a half-invalidated pair and the production code never produces one.
+        for (const k of bound) db.meta.delete(String(k));
       } else if (norm.startsWith("INSERT INTO storage_usage_rebuild")) {
         if (!db.rebuildTableExists) throw new Error("no such table: storage_usage_rebuild");
         db.rebuild.set(String(bound[0]), Number(bound[1]));
@@ -456,6 +458,9 @@ describe("storageQuotaState (the observer surface)", () => {
       overageBytes: 600,
       complete: true,
       reason: null,
+      // Stamped by a host, never reconciled, so how many objects are unsizable is UNKNOWN rather
+      // than zero. Absence must not render as EXACT (core#183 family).
+      unsizedObjects: null,
     });
   });
 
@@ -893,10 +898,12 @@ describe("reconcileStorageUsage (backfill + drift repair)", () => {
     for (let i = 0; i < 250; i += 1) bucket.objects.set(`k${i}`, 1);
     const report = await reconcileStorageUsage(bucket, db, { chunkSize: 100 });
     expect(report.objects).toBe(250);
-    // Three staging chunks, then the cf#516 swap as ONE batch of four statements (drop the old
-    // rows, promote the staged ones, clear the scratch, re-stamp). The swap being a single batch is
-    // the atomicity guarantee, so its size is pinned rather than left to drift.
-    expect(batches).toEqual([100, 100, 50, 4]);
+    // Three staging chunks, then the cf#516 swap as ONE batch of FIVE statements (drop the old
+    // rows, promote the staged ones, clear the scratch, re-stamp, record the unsized count). The
+    // swap being a single batch is the atomicity guarantee, so its size is pinned rather than left
+    // to drift -- and the stamp and the count being IN that batch is what stops them being torn
+    // apart into a new stamp beside a previous rebuild's exactness claim.
+    expect(batches).toEqual([100, 100, 50, 5]);
     expect(await storageUsedBytes(db)).toBe(250);
   });
 });
@@ -1160,5 +1167,110 @@ describe("cf#516: a rebuild that cannot finish REFUSES instead of half-running",
     const report = await reconcileStorageUsage(bucket, db, { chunkSize: 100 });
     expect(report.objects).toBe(250);
     expect(await storageLedgerTrueSince(db)).not.toBeNull();
+  });
+});
+
+// ------------------------------------------------- core#183 family: a floor stamped as a total
+//
+// `reconcileStorageUsage` accounts an object the store will not size as **0 bytes** and then stamps
+// the ledger true anyway. So the accounted total is a FLOOR presented as a TOTAL, which is the same
+// defect cp#195 exists to prevent, one field over from where it was fixed.
+//
+// THE COLLISION, and it is exact: a genuinely ZERO-BYTE object and an object the store REFUSED to
+// size produce byte-identical ledgers. Same `usedBytes`, same `objects`, same `complete`. One total
+// is exact and the other is a floor, and before this block nothing anywhere could tell them apart --
+// not the report (which returns `unsized` and is then discarded), not the ledger, not the observer
+// surface. "We read zero" and "we could not read" arriving as the same value is the exact thing this
+// file's completeness contract was written to forbid.
+//
+// DELIBERATELY NOT DECIDED HERE: whether a floor is billable. That is a product call about the
+// Node/MinIO door, whose `list()` omits sizes by design. This makes the state VISIBLE and leaves
+// `complete` alone.
+
+describe("core#183 family: an unsized object leaves a FLOOR, and it must be visible", () => {
+  /** Two studios with identical byte totals and identical object counts. The only difference is
+   *  whether the second object is really 0 bytes or merely unmeasurable. */
+  async function twoStudios() {
+    const exact = { db: fakeDb(), bucket: fakeBucket() };
+    exact.bucket.objects.set("renders/big.mp4", 1000);
+    exact.bucket.objects.set("renders/empty.txt", 0); // genuinely zero bytes
+
+    const floor = { db: fakeDb(), bucket: fakeBucket() };
+    floor.bucket.objects.set("renders/big.mp4", 1000);
+    // A store that will neither list a size for the second object nor HEAD it: the ICD-optional
+    // case, which is the Node/MinIO door's normal behaviour.
+    floor.bucket.list = async () => ({
+      objects: [{ key: "renders/big.mp4", size: 1000 }, { key: "renders/opaque.mp4" }],
+      truncated: false,
+    });
+
+    await reconcileStorageUsage(exact.bucket, exact.db);
+    const floorReport = await reconcileStorageUsage(floor.bucket, floor.db);
+    return { exact, floor, floorReport };
+  }
+
+  it("CONTROL: the two studios really are identical in every previously-exposed field", async () => {
+    const { exact, floor, floorReport } = await twoStudios();
+    // The fixture is doing what it claims: one object really was unsizable.
+    expect(floorReport.unsized).toBe(1);
+    // ...and the collision is real, which is what makes the new field necessary rather than tidy.
+    expect(await storageUsedBytes(exact.db)).toBe(await storageUsedBytes(floor.db));
+    const env = { R2_STORAGE_QUOTA_BYTES: "999999999", R2_STORAGE_QUOTA_MODE: "meter" };
+    const a = await storageQuotaState({ ...env, DB: exact.db });
+    const b = await storageQuotaState({ ...env, DB: floor.db });
+    expect(a.usedBytes).toBe(b.usedBytes);
+    expect(a.objects).toBe(b.objects);
+    expect(a.complete).toBe(b.complete);
+  });
+
+  it("the observer surface distinguishes an EXACT total from a FLOOR", async () => {
+    const { exact, floor } = await twoStudios();
+    const env = { R2_STORAGE_QUOTA_BYTES: "999999999", R2_STORAGE_QUOTA_MODE: "meter" };
+    const a = await storageQuotaState({ ...env, DB: exact.db });
+    const b = await storageQuotaState({ ...env, DB: floor.db });
+    expect(a.unsizedObjects).toBe(0); // nothing refused to size: the total is exact
+    expect(b.unsizedObjects).toBe(1); // one object accounted at 0: the total is a floor
+  });
+
+  it("does NOT decide billability: a floor is still complete, because that is a product call", async () => {
+    const { floor } = await twoStudios();
+    const state = await storageQuotaState({
+      DB: floor.db,
+      R2_STORAGE_QUOTA_BYTES: "999999999",
+      R2_STORAGE_QUOTA_MODE: "meter",
+    });
+    // The Node/MinIO door omits sizes by design, so refusing to bill it would be a decision this
+    // change is deliberately not making. Visible, not adjudicated.
+    expect(state.complete).toBe(true);
+    expect(state.reason).toBeNull();
+  });
+
+  it("an unrecorded count reads null, NOT zero: absence must not render as EXACT", async () => {
+    const db = fakeDb();
+    // A studio whose ledger a HOST stamped at creation (the documented second caller), with no
+    // reconcile having ever run. Nothing has measured how many objects are unsizable.
+    await markStorageLedgerTrue(db);
+    const state = await storageQuotaState({ DB: db, R2_STORAGE_QUOTA_BYTES: "999999999" });
+    expect(await storageLedgerTrueSince(db)).not.toBeNull();
+    // null is a THIRD state. Rendering it as 0 would assert an exactness nobody established, which
+    // is the whole defect this block exists to close.
+    expect(state.unsizedObjects).toBeNull();
+  });
+
+  it("re-reconciling a store that CAN size everything clears a previous floor", async () => {
+    const db = fakeDb();
+    const bucket = fakeBucket();
+    bucket.objects.set("renders/big.mp4", 1000);
+    bucket.list = async () => ({
+      objects: [{ key: "renders/big.mp4", size: 1000 }, { key: "renders/opaque.mp4" }],
+      truncated: false,
+    });
+    await reconcileStorageUsage(bucket, db);
+    expect((await storageQuotaState({ DB: db })).unsizedObjects).toBe(1);
+    // The store starts reporting sizes (or the opaque object is deleted): the floor must not be
+    // sticky, or it becomes a permanent smear nobody can clear.
+    bucket.list = async () => ({ objects: [{ key: "renders/big.mp4", size: 1000 }], truncated: false });
+    await reconcileStorageUsage(bucket, db);
+    expect((await storageQuotaState({ DB: db })).unsizedObjects).toBe(0);
   });
 });
