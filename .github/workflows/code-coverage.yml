@@ -29,6 +29,11 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-tags: true
+          # core#202: same reason as ci.yml. This job runs the SAME suite, and
+          # tests/changelog-released-entries.test.ts asks an ancestry question that merge-base
+          # cannot answer on a shallow clone. Measured on that guard PR own first run: 38 tags
+          # were visible here and the history was not, so the guard refused rather than passing.
+          # Tags present and history present are separate facts; fetch-tags supplies only the first.
           # core#209: same reason as ci.yml -- this job runs the same suite, and the ledger
           # guard resolves tags to commits, which needs history rather than just tag objects.
           fetch-depth: 0

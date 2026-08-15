@@ -24,6 +24,7 @@ import {
 } from "./film-orchestrator.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
 import { filmJobToPollView, filterScenesByShotIds, orderScenesByShotIds, mapRenderOverridesToModuleConfigs } from "./film-render-bridge.js";
+import { scatterDonePayload } from "./render-output-payload.js";
 import { presignR2Get, presignR2Put } from "./presign.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
 import { defaultGpuDoorModule, discoverModules, servingForHook } from "./modules/registry.js";
@@ -53,6 +54,7 @@ import {
   updateRenderFromView,
   prepareRenderUpdate,
   runPreparedRenderUpdates,
+  runPreparedWrites,
 } from "./renders-db.js";
 import type { PreparedRenderUpdate } from "./renders-db.js";
 import { resolveCastLoras, untrainedCastMessage } from "./cast-loras.js";
@@ -240,8 +242,13 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
  *  The runnable R2 doc is written FIRST: the poll/advance path runs entirely off it
  *  (loadScatterJob), so once it lands the render is runnable and a later transient cannot strand
  *  it. The D1 render rows are a UI-list projection, written AFTER, best-effort: the parent (so the
- *  shards can FK it), then the shard rows as one all-or-nothing env.DB.batch, each wrapped in
- *  withD1Retry. A persistent D1 failure is logged as a structured d1.error and SWALLOWED -- the
+ *  shards can FK it), then the shard rows through runPreparedWrites: one all-or-nothing batch on a
+ *  host that offers `Database.batch`, one round trip per statement on a host that does not, both
+ *  wrapped in withD1Retry. That guard is not decoration (core#215). `batch` is OPTIONAL in the
+ *  platform contract, so the `env.DB.batch!(stmts)` this used to call threw a TypeError on a
+ *  batch-less host -- and the catch below swallowed it as a d1.error, so the submit reported
+ *  success having written NONE of its shard rows, leaving every one of them to the poll-path
+ *  self-heal. A persistent D1 failure is logged as a structured d1.error and SWALLOWED -- the
  *  submit still succeeds (render is runnable) and the missing rows self-heal on the first poll
  *  (ensureScatterRenderRow). This is the cure for the orphan-row 422: a mid-submit blip can no
  *  longer leave a row with no job, nor fail the whole submit. The submit spans two stores (D1 rows
@@ -287,7 +294,7 @@ export async function finalizeScatterSubmit(
           motionBackend: scatterJob.motion_backend ?? null,
         }),
       );
-      await withD1Retry(() => env.DB.batch!(stmts), { label: "scatter.submit.shards" });
+      await runPreparedWrites(env, stmts, "scatter.submit.shards");
     }
   } catch (e) {
     // Render is already runnable off the R2 doc; the rows self-heal on first poll. Log, don't throw.
@@ -551,15 +558,14 @@ async function assembleScatterClips(
 
 async function finalizeScatterDone(env: Env, job: ScatterJob): Promise<void> {
   if (!job.film_key) return;
+  // core#205: DERIVED, shared with scatterJobToPollView. This write runs FIRST in the scatter tick
+  // and updateRenderFromView(scatterJobToPollView(job)) runs after it, so the VIEW is the last writer
+  // here -- the opposite order from the single-film path. Identical bytes is what makes that safe.
   await markFinishDone(
     env,
     job.scatter_id,
     job.film_key,
-    JSON.stringify({
-      output_key: job.film_key,
-      project: job.project,
-      mode: "full",
-    }),
+    JSON.stringify(scatterDonePayload(job)),
     outputMsFromSeconds(job.film_output_seconds?.[job.film_key]),
     job.finish_elapsed_ms,
   );
@@ -846,7 +852,8 @@ export function scatterJobToPollView(job: ScatterJob): RunpodJobView {
     status = "CANCELLED";
   } else if (job.phase === "done") {
     status = "COMPLETED";
-    output = { output_key: job.film_key, project: job.project, mode: "full" };
+    output = scatterDonePayload(job); // core#205: same builder finalizeScatterDone uses
+
   } else if (job.phase === "failed") {
     status = "FAILED";
   } else {

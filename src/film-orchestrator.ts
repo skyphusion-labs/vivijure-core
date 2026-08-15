@@ -68,9 +68,9 @@ import {
   coerceDialogueLineIds,
   KEYFRAME_STALL_SECONDS,
   PHASE_HARD_DEADLINE_SECONDS,
+  phaseCeilingVerdict,
   POLLABLE_PHASES,
   phaseAgeSeconds,
-  ceilingAgeSeconds,
   stampFilmProgress,
   resolveClipDurationFloor,
   mapClipDurationsToShots,
@@ -120,6 +120,7 @@ import {
   type JobSummary,
 } from "./render-orchestrator.js";
 import { markFinishDone, markRenderFailedByJobId } from "./renders-db.js";
+import { filmDonePayload } from "./render-output-payload.js";
 import {
   adoptFilmOutputKeyFromStore,
   defaultFilmOutputKey,
@@ -1207,16 +1208,15 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
     }
   }
   if (filmKey) {
-    const mode = job.derive_mode ?? (job.keyframes_only ? "keyframes-only" : "full");
-    const out: Record<string, unknown> = { output_key: filmKey, project: job.project, mode };
-    if (job.film_finish?.sidecar_key) out.sidecar_key = job.film_finish.sidecar_key;
-    if (job.finish_unavailable) {
-      out.finish_unavailable = {
-        at: job.finish_unavailable.at,
-        reason: job.finish_unavailable.reason,
-        delivered: job.finish_unavailable.delivered,
-      };
-    }
+    // core#205: DERIVED, not restated. filmDonePayload is the single source for this payload and the
+    // poll view builds the same object from the same job doc, so a field added there arrives here for
+    // free. The adoption above already wrote the recovered key back onto job.film_key, and
+    // resolveFilmOutputKey prefers film_key, so the builder resolves to this same filmKey.
+    // clipJob is null here BY CONSTRUCTION: transitionToDone runs below the frame that read the clip
+    // doc. The two clip-doc-derived keys (clips/model on a derive_mode render, clip_deliveries) are
+    // therefore absent from THIS write and a later poll/sweep updateRenderFromView backfills them.
+    // This write is the LAST output_json writer of the single-film tick.
+    const out = filmDonePayload(job, null);
     try {
       // The length of the artifact actually delivered: a lookup of the FINAL film key, so whichever
       // stage wrote last supplies the number (Conrad, 2026-08-02: "we bill on the last writer").
@@ -2719,11 +2719,33 @@ async function recoverStalledPhase(env: Env, job: FilmJob, preModules?: Register
   // phases the ceiling tracks last_progress_at (#704): a slow local-gpu card landing one clip every few
   // minutes is healthy however long the phase runs, so only 90min with NO new shot fails; the batch
   // keyframe phase keeps the phase_started_at clock (age above).
-  const ceilingAge = ceilingAgeSeconds(job, now);
-  if (ceilingAge >= PHASE_HARD_DEADLINE_SECONDS) {
-    const stuckPhase = job.phase;
+  // core#182: the ceiling is sized to the WORK, not to a constant. `phaseCeilingVerdict` raises the
+  // 90min floor to FINISH_STEP_MAX_ATTEMPTS * the longest per-invocation ceiling the modules in THIS
+  // job's chain DECLARE, because a retrying step moves `attempts` and not `idx` and the progress
+  // marker cannot see it. Steps whose module declares nothing get NO substituted number: the floor
+  // holds and they are named, on the job and in a structured event, so an unbounded ordering is
+  // visible instead of arriving later as a dead render with a misleading "no progress" message.
+  // The whole decision is a pure function so a test drives the real seam rather than restating it.
+  const verdict = phaseCeilingVerdict(job, preModules, now);
+  const unbounded = verdict.ceiling.undeclared.concat(verdict.ceiling.unresolved);
+  if (unbounded.join(",") !== (job.ceiling_undeclared || []).join(",")) {
+    job.ceiling_undeclared = unbounded;
+    if (unbounded.length) {
+      emitStructuredEvent({
+        ev: "film.ceiling_undeclared",
+        film_id: job.film_id,
+        phase: job.phase,
+        undeclared: verdict.ceiling.undeclared,
+        unresolved: verdict.ceiling.unresolved,
+        holding_floor_seconds: PHASE_HARD_DEADLINE_SECONDS,
+      });
+      console.warn(`film ${job.film_id}: phase "${job.phase}" stall ceiling is UNBOUNDED against ${unbounded.join(", ")} (no max_invocation_seconds declared); holding the ${PHASE_HARD_DEADLINE_SECONDS}s floor (core#182)`);
+    }
+  }
+
+  if (verdict.expired) {
     job.phase = "failed";
-    job.error = `render stalled in phase "${stuckPhase}" for ${Math.floor(ceilingAge / 60)}min with no progress; failing so it does not hang (resubmit to retry) (#129/#704)`;
+    job.error = verdict.error as string;
     return true;
   }
   return false;

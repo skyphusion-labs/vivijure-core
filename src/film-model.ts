@@ -295,6 +295,12 @@ export interface FilmJob {
   // multi-shot clips/finish phase (10 i2v shots at ~3min each = 30+min in ONE phase) no longer
   // false-trips "stalled". The driver's recovery still measures from phase_started_at (unchanged).
   last_progress_at?: number;
+  /** core#182 honesty: chain steps in the CURRENT phase whose module declares no
+   *  `max_invocation_seconds`, so the core could not size the stall ceiling to them and is holding
+   *  the floor. Carried on the job (not merely logged) because an operator reading a stalled render
+   *  needs to see which module the ceiling is unbounded against; an absence that is only in a log
+   *  line is an absence nobody finds. Empty/absent means every step in play declared one. */
+  ceiling_undeclared?: string[];
   // The progress fingerprint last seen ("<phase>:<doneCount>"); any change is genuine forward progress.
   progress_marker?: string;
   error?: string;
@@ -886,6 +892,162 @@ export function ceilingAgeSeconds(job: FilmJob, now: number = Date.now()): numbe
   if (!PER_SHOT_PHASES.has(job.phase)) return phaseAgeSeconds(job, now);
   const since = Math.max(job.phase_started_at ?? job.created_at, job.last_progress_at ?? 0);
   return Math.max(0, Math.floor((now - since) / 1000));
+}
+
+/** What the phase ceiling resolved to for ONE job, and on what basis (core#182).
+ *
+ *  `seconds` is the ceiling actually enforced; `basis` says whether the modules' own declarations
+ *  raised it above the floor. The rest is the evidence, carried rather than logged-and-lost so the
+ *  failure message can state WHY a render died and the poll view can disclose what the core could
+ *  not bound. */
+export interface PhaseCeiling {
+  seconds: number;
+  basis: "floor" | "derived";
+  /** FINISH_STEP_MAX_ATTEMPTS * the longest declared ceiling among the steps that could run next.
+   *  0 when nothing in play declared one. */
+  requiredSeconds: number;
+  /** The step that set `requiredSeconds`, for the failure message. */
+  longest: { binding: string; module: string; seconds: number } | null;
+  /** Bindings whose module declared no `max_invocation_seconds`. The core does NOT invent a number
+   *  for these; it holds the floor and says so. */
+  undeclared: string[];
+  /** Bindings in the live chain that resolve to no registered module at all. Distinguished from
+   *  `undeclared` because they are a different defect (a chain referencing a module the registry no
+   *  longer serves), and collapsing them would hide it. */
+  unresolved: string[];
+}
+
+/** The chain steps that could run NEXT in a ceiling-derived phase: `chain[idx]` for every shot not
+ *  already done. Not the whole chain -- a step further down the chain cannot run until the one before
+ *  it resolves, and a step resolving MOVES the marker and re-stamps the clock, so it starts a fresh
+ *  window rather than extending this one. */
+function pendingChainSteps(job: FilmJob): string[] {
+  const shots: Array<{ chain: string[]; idx: number; status: string }> =
+    job.phase === "finish" ? (job.finish_shots || []) : job.phase === "speech" ? (job.speech_shots || []) : [];
+  const out: string[] = [];
+  for (const sh of shots) {
+    if (sh.status === "done") continue;
+    const step = (sh.chain || [])[Math.max(0, Math.trunc(sh.idx) || 0)];
+    if (typeof step === "string" && step) out.push(step);
+  }
+  return out;
+}
+
+/** Size the stall ceiling to the WORK IN THIS JOB rather than to a constant (core#182).
+ *
+ *  THE MECHANISM THIS FIXES. `PHASE_HARD_DEADLINE_SECONDS` fails a phase that has shown no progress
+ *  for 90 minutes. `filmProgressMarker` deliberately does not count `attempts` -- a step retrying is
+ *  not a step progressing -- so a chain step that keeps timing out at its own door burns up to
+ *  FINISH_STEP_MAX_ATTEMPTS full invocations while the marker never moves. Whether that fits inside
+ *  90 minutes is a fact about the MODULE, and the ordering between a door`s guard and this ceiling
+ *  spans separate repositories with nothing asserting it. Modules whose guards exceed the ceiling on
+ *  a SINGLE attempt already exist, so the 90 minutes is not conservative; it is unrelated.
+ *
+ *  THE DERIVATION, and note it introduces NO new constant: both terms already exist.
+ *
+ *      required  = FINISH_STEP_MAX_ATTEMPTS * max(declared ceiling over the steps that could run next)
+ *      effective = max(PHASE_HARD_DEADLINE_SECONDS, required)
+ *
+ *  The 90-minute constant becomes a FLOOR rather than a guess. It can only ever be raised here, so a
+ *  wedged phase with nothing declared still fails exactly when it does today.
+ *
+ *  WHY `max` AND NOT `min` ACROSS SHOTS. Any shot advancing re-stamps the clock, so the no-progress
+ *  window strictly ends when the FIRST shot moves, and `min` would be the tighter reading. It is
+ *  also the reading that kills correct work: the ceiling must not fire while ANY correctly-running
+ *  invocation is still inside its own door`s guard. Between a late loud failure and an early false
+ *  one, this picks late.
+ *
+ *  WHAT IT REFUSES TO DO. A step whose module declares nothing is NOT given a substituted number. It
+ *  is named in `undeclared`, the floor holds, and the caller reports it -- because a fabricated
+ *  ceiling would be indistinguishable from a declared one, which is the exact defect class this
+ *  whole change exists to remove. Conformance fails such a module at the gate.
+ *
+ *  Phases outside CEILING_DERIVED_HOOKS return the floor untouched. */
+export function phaseCeiling(job: FilmJob, modules?: RegisteredModule[]): PhaseCeiling {
+  const floor: PhaseCeiling = {
+    seconds: PHASE_HARD_DEADLINE_SECONDS,
+    basis: "floor",
+    requiredSeconds: 0,
+    longest: null,
+    undeclared: [],
+    unresolved: [],
+  };
+  if (job.phase !== "finish" && job.phase !== "speech") return floor;
+
+  const steps = pendingChainSteps(job);
+  if (!steps.length) return floor;
+
+  const byBinding = new Map<string, RegisteredModule>();
+  for (const m of modules || []) byBinding.set(m.binding, m);
+
+  const undeclared: string[] = [];
+  const unresolved: string[] = [];
+  let longest: PhaseCeiling["longest"] = null;
+  for (const binding of new Set(steps)) {
+    const mod = byBinding.get(binding);
+    if (!mod) {
+      unresolved.push(binding);
+      continue;
+    }
+    const declared = mod.max_invocation_seconds;
+    if (typeof declared !== "number" || !Number.isFinite(declared) || declared <= 0) {
+      undeclared.push(binding);
+      continue;
+    }
+    if (!longest || declared > longest.seconds) longest = { binding, module: mod.name, seconds: declared };
+  }
+  undeclared.sort();
+  unresolved.sort();
+
+  const requiredSeconds = longest ? FINISH_STEP_MAX_ATTEMPTS * longest.seconds : 0;
+  const seconds = Math.max(PHASE_HARD_DEADLINE_SECONDS, requiredSeconds);
+  return {
+    seconds,
+    basis: seconds > PHASE_HARD_DEADLINE_SECONDS ? "derived" : "floor",
+    requiredSeconds,
+    longest,
+    undeclared,
+    unresolved,
+  };
+}
+
+/** The complete stall-ceiling decision for one tick, as a PURE value (core#182).
+ *
+ *  Extracted from `recoverStalledPhase` for the same reason `stampFilmProgress` was extracted from
+ *  `advanceFilmJob` in #182: inline, the only way to exercise this was to restate the comparison and
+ *  the message in a test, and a test that restates its subject agrees with the subject forever
+ *  whatever the subject does. The orchestrator now APPLIES this verdict and decides nothing itself.
+ *
+ *  `error` is the message the render dies with, and it names the BASIS -- so a kill at a derived
+ *  ceiling (the module's own declared budget, exhausted) is distinguishable from a kill at the floor
+ *  with nothing declared, without reading the code. */
+export interface PhaseCeilingVerdict {
+  ceiling: PhaseCeiling;
+  ceilingAge: number;
+  expired: boolean;
+  error: string | null;
+}
+
+export function phaseCeilingVerdict(
+  job: FilmJob,
+  modules?: RegisteredModule[],
+  now: number = Date.now(),
+): PhaseCeilingVerdict {
+  const ceiling = phaseCeiling(job, modules);
+  const ceilingAge = ceilingAgeSeconds(job, now);
+  const expired = ceilingAge >= ceiling.seconds;
+  if (!expired) return { ceiling, ceilingAge, expired, error: null };
+  const unbounded = ceiling.undeclared.length + ceiling.unresolved.length;
+  const basis =
+    ceiling.basis === "derived" && ceiling.longest
+      ? `ceiling ${ceiling.seconds}s derived from ${ceiling.longest.module} (${FINISH_STEP_MAX_ATTEMPTS} attempts x ${ceiling.longest.seconds}s declared)`
+      : `ceiling ${ceiling.seconds}s (the floor; ${unbounded} step(s) in this chain declare no per-invocation ceiling)`;
+  return {
+    ceiling,
+    ceilingAge,
+    expired,
+    error: `render stalled in phase "${job.phase}" for ${Math.floor(ceilingAge / 60)}min with no progress, ${basis}; failing so it does not hang (resubmit to retry) (#129/#704/core#182)`,
+  };
 }
 
 /** Progress fingerprint for the stall signal (#136): the current phase, how many of its per-shot units
