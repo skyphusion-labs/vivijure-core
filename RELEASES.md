@@ -11,6 +11,8 @@ Shared orchestration library for [`vivijure-cf`](https://github.com/skyphusion-l
 
 Tag prefix `vivijure-core-v` must match `package.json` version (workflow verifies on tag push).
 
+Step 1 also closes the changelog cycle: as of core#202, running `node scripts/changelog-assemble.mjs <version> <date>` folds every `changelog.d/` fragment (plus whatever is still open under the Unreleased-shaped heading) into the released section, in place of hand-editing that heading. See CONTRIBUTING.md.
+
 ## Cutting a release
 
 ```bash
