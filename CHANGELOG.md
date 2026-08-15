@@ -3,6 +3,44 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.16.0] -- 2026-08-15
+
+### docs(modules): the scan-cache key comment claimed a guarantee the key does not give (core#232)
+
+The service-scan cache is keyed on the binding NAME SET. The comment said a cache taken against
+another env can never answer the question, which is false whenever two envs bind the SAME names to
+DIFFERENT modules. What makes it safe in production is the deployment model, not the key: a Worker
+isolate serves one env whose service bindings are fixed at deploy time, and a redeploy is a new
+isolate. Comment corrected to state that guarantee exactly, to name where the premise breaks (any
+context evaluating two envs in one isolate, e.g. a vitest file), and to point at the existing reset
+hook. No behaviour change.
+
+### feat(cast-train): cast LoRA training records a runpod_job_log row (vivijure-cf#475)
+
+Cast LoRA training was the one GPU path in the estate with no job record at all. Measured from the
+money, not inferred: the `vivijure-wan-train` endpoint billed 14.5% of GPU spend on 2026-08-01 and
+21.9% on 2026-08-02 with ZERO rows in `runpod_job_log` on either day. Absent rather than
+mis-attributed, and absent in the flattering direction, since every row that IS in the table is
+correct, so any total built on it reads clean and is simply low by the training share.
+
+The cause was architectural. `recordRunpodJob` lived in `vivijure-cf/modules/_shared/`, written when
+only module workers submitted to RunPod; cast training submits from core, which sits UPSTREAM of that
+file and could not reach it. The recorder therefore moves into core as `src/runpod-job-log.ts`, which
+is the fix cp#321 already ruled for `runpod-route.ts`: move the implementation into core, have both
+sides import it, do not write a second one. The carried body is byte-identical to the vivijure-cf
+file apart from one substitution, `D1Database` to the platform `Database` type.
+
+`RunpodResult` gains an optional `backend` tag (`runpod-wan-train` / `runpod-render` / `local-door`),
+set by the function that MAKES the routing choice and never re-derived by a caller. A submit or an
+observed-terminal poll on a RunPod backend writes a row labelled `cast-train-wan` or
+`cast-train-sdxl`, carrying RunPod's own `executionTime` / `delayTime`. A local-door train is our own
+iron and records nothing; an untagged result records nothing, so a caller that forgets produces a
+findable gap rather than a row invented against a guessed endpoint.
+
+Not claimed: a job that ages out of RunPod retention before any poll observes it terminal still
+leaves its row at `submitted` with no seconds. `reconcileOpenRunpodJobs` is the mechanism for that
+and is now reachable from core; wiring a cast-train pass through it is follow-on work.
+
 ## [1.15.0] -- 2026-08-15
 
 ### feat(modules): the phase stall ceiling is sized to the work, not to a constant (core#182)
