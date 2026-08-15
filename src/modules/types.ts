@@ -79,6 +79,21 @@ export const HOOK_CARDINALITY: Record<HookName, "pick_one" | "chain"> = {
  *  effect of editing this file, and never a consequence of a hook merely being `chain`. */
 export const SELECTABLE_HOOKS: ReadonlySet<HookName> = new Set<HookName>(["finish"]);
 
+/** Hooks whose PHASE the core sizes its stall ceiling against, from the modules' own declared
+ *  per-invocation ceilings (core#182). These are the two per-shot CHAIN phases where a step that
+ *  retries moves `attempts` and not `idx`, so `filmProgressMarker` cannot see the retry and a
+ *  correctly-running module can burn FINISH_STEP_MAX_ATTEMPTS whole invocations against a clock that
+ *  never re-stamps. That is the specific mechanism `max_invocation_seconds` exists to bound, and it
+ *  is the ONLY mechanism it is claimed to bound.
+ *
+ *  DELIBERATELY NOT the whole pollable set. `keyframe` and `clips` are also ceiling-governed, but
+ *  their stall math and recovery paths are different (batch clock, R2 adoption), and extending the
+ *  derivation there without measuring those paths would be inventing a guarantee rather than
+ *  asserting one. Adding a hook here is a reviewable decision with its own issue, never a side
+ *  effect of editing this file. `tests/phase-ceiling-182` asserts that limit explicitly so a green
+ *  suite does not imply coverage this does not have. */
+export const CEILING_DERIVED_HOOKS: ReadonlySet<HookName> = new Set<HookName>(["finish", "speech"]);
+
 /** A caller's per-render participation statement for ONE selectable chain hook (cf#537).
  *
  *  THREE states exist on the wire and they must never collapse:
@@ -288,6 +303,53 @@ export interface ModuleManifest {
    *  while `validateManifest` still LOADS such a manifest (a third-party module is not our gate to
    *  fail). A malformed value is refused at load, so a typo can never read as "default". */
   participation?: "default" | "opt_in";
+  /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable` / `duration_grid` /
+   *  `participation`). core#182. The module's OWN enforced per-invocation wall-clock ceiling, in
+   *  seconds: the point at which THIS module's door gives up on one invoke and returns, whether that
+   *  is a shared deadline or the sum of its per-subprocess guards on the longest path.
+   *
+   *  WHY THE CORE NEEDS IT. `PHASE_HARD_DEADLINE_SECONDS` fails a pollable phase that has made no
+   *  observable progress. A chain step that RETRIES moves `attempts` and not `idx`, and
+   *  `filmProgressMarker` deliberately ignores `attempts` (a step retrying is not a step
+   *  progressing), so a step can burn `FINISH_STEP_MAX_ATTEMPTS` whole invocations while the marker
+   *  never moves. Whether that fits under the ceiling is therefore a fact about the MODULE, and
+   *  until this field existed the core had no channel to learn it: the ordering between the door's
+   *  guard and the phase ceiling lived in two repositories with nothing asserting it, and was
+   *  already violated in production by modules whose guards exceed the ceiling on a single attempt.
+   *
+   *  DECLARE THE WHOLE INVOCATION OR DECLARE NOTHING. A guard covering PART of the path is not an
+   *  invocation ceiling, and relaying it as one is worse than absence: it is an under-claim the core
+   *  cannot detect, and the derived window it produces is too small in the direction that kills
+   *  correct work. Measured 2026-08-15 across the four `finish` doors, this is the common case rather
+   *  than a corner: one enforces a shared deadline over decode and upscale but leaves the ENCODE step
+   *  unguarded, two enforce no wall-clock guard anywhere, and the one that guards every subprocess
+   *  makes all four of its guards env-overridable. Not one of them can declare a constant honestly
+   *  today, and that is the finding this field exists to surface, not a reason to soften it.
+   *
+   *  A CONFIGURABLE GUARD IS RELAYED, NOT HARDCODED. Where the guard is read from the environment,
+   *  the module reports the value IT IS RUNNING WITH, best-effort, the way `duration_grid` relays
+   *  what its backend declares. A manifest constant standing in for a value the deployment can change
+   *  is a claim about a different deployment.
+   *
+   *  DECLARE ONLY WHAT THE MODULE ACTUALLY ENFORCES. This is the module stating a guard it HAS, in
+   *  the manner of `duration_grid` relaying its backend's fixed grid. A module with no wall-clock
+   *  guard MUST leave this absent rather than declaring an aspiration: absent means "undeclared",
+   *  which is a real and reportable state, and the core says so out loud instead of substituting a
+   *  number. `checkManifest` FAILS conformance for a module serving a hook the core derives a
+   *  ceiling from, so an absence is loud at the gate rather than discovered by a dead render.
+   *
+   *  NOT A RATE, and this is the line that must not be crossed. Seconds per second of footage is a
+   *  property of model x resolution x the card the job lands on, not of the module. A module
+   *  declaring a rate would be asserting a hardware-conditional number as a module property. This
+   *  field is hardware-independent precisely because it is a guard the module itself imposes.
+   *
+   *  IT ALSO BREAKS A CIRCLE, which is the root cause rather than a side effect. Every first-party
+   *  finish module Worker carries `RUNPOD_COLD_GRACE_MS = 900_000` commented "15 min; the film
+   *  pipeline's 90-min deadline still bounds it" -- the modules delegate the ceiling to core, while
+   *  core#182 is the report that core's ceiling kills their correctly-running work. Both sides
+   *  believed the other owned it, so neither did, and nothing anywhere could observe that. A manifest
+   *  field forces exactly one side to state a number or state that it has none. */
+  max_invocation_seconds?: number;
 }
 
 /** A fixed duration grid for a motion backend (#707): the pinned output fps and the per-quality-tier

@@ -18,6 +18,10 @@ const goodManifest = {
   // This fixture had to move with its subject -- a fixture that stops standing in for real data is
   // how a suite quietly stops testing the thing it names.
   participation: "default" as const,
+  // core#182: `finish` is a CEILING-DERIVED hook, so conformance now requires the module to state the
+  // per-invocation wall-clock ceiling it enforces. Same reasoning as the participation line above:
+  // the fixture moves with its subject, or it stops standing in for real data.
+  max_invocation_seconds: 1200,
   provides: [{ id: "x", label: "X" }],
   config_schema: {
     n: { type: "int", default: 2, min: 1, max: 4 },

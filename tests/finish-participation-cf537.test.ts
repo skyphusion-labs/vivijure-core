@@ -313,7 +313,10 @@ describe("cf#537 manifest contract", () => {
   it("conformance PASSES the same module once it declares one", () => {
     for (const p of ["default", "opt_in"] as const) {
       const checks = checkManifest({
+        // max_invocation_seconds is core#182's gate on the same hook; this test is about
+        // participation, so it declares one rather than tripping an unrelated check.
         name: "m", version: "1.0.0", api: MODULE_API, hooks: ["finish"], participation: p,
+        max_invocation_seconds: 1200,
       });
       expect(allPass(checks), JSON.stringify(failures(checks))).toBe(true);
     }

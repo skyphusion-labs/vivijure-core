@@ -124,10 +124,16 @@ describe("core#182 filmProgressMarker sees per-step progress", () => {
     expect(seen.size).toBe(3);
   });
 
-  it("THE LIMIT, asserted so it is not mistaken for closed: a SINGLE-STEP chain still has no intra-shot progress", () => {
+  it("THE LIMIT of the MARKER, and where it is now covered: a SINGLE-STEP chain has no intra-shot progress", () => {
     // A finish chain of just `finish-upscale` is one step, so there is nothing between "started" and
-    // "done" for any marker to observe. This is the exact configuration #182 describes, and this fix
-    // does NOT cover it -- that case needs a ceiling sized to the work, not a finer marker.
+    // "done" for any marker to observe. This is the exact configuration #182 describes, and NO marker
+    // can cover it -- the limit below is permanent and this assertion stays.
+    //
+    // It is no longer the whole of #182, and this comment is corrected rather than deleted so the
+    // reason is legible: that case needed a ceiling sized to the WORK, not a finer marker, which is
+    // what `phaseCeiling` / `phaseCeilingVerdict` now provide from the modules' own declared
+    // `max_invocation_seconds`. See `tests/phase-ceiling-182`. What the assertions below still prove
+    // is that the MARKER does not see it, which is exactly why the ceiling had to.
     const one = (idx: number) =>
       filmAt("finish", {
         finish_shots: [
@@ -139,7 +145,10 @@ describe("core#182 filmProgressMarker sees per-step progress", () => {
     expect(before).not.toBe(after); // it moves exactly once, at the end
     const job = one(0);
     stampFilmProgress(job, null, 0);
-    // ...and nothing in between re-stamps, so a single step longer than the ceiling still dies.
+    // ...and nothing in between re-stamps. Whether the render then DIES is no longer this file's
+    // question: with nothing declared the floor still kills it exactly as before (the CONTROL in
+    // tests/phase-ceiling-182), and with a declaration the ceiling moves out to the module's own
+    // budget. The marker's blindness is what is asserted here.
     expect(stampFilmProgress(job, null, PHASE_HARD_DEADLINE_SECONDS * 1000)).toBe(false);
     expect(ceilingAgeSeconds(job, PHASE_HARD_DEADLINE_SECONDS * 1000)).toBeGreaterThanOrEqual(
       PHASE_HARD_DEADLINE_SECONDS,

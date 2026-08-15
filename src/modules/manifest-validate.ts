@@ -57,5 +57,15 @@ export function validateManifest(raw: unknown): ModuleManifest | string {
   if (m.participation !== undefined && m.participation !== "default" && m.participation !== "opt_in") {
     return `participation ${JSON.stringify(m.participation)} unknown (default | opt_in)`;
   }
+  // core#182: refuse a malformed ceiling at LOAD rather than coercing it, exactly as `participation`
+  // above. The core multiplies this value by FINISH_STEP_MAX_ATTEMPTS to size a phase deadline, so a
+  // string "1200", a 0, a negative or a NaN that fell through would either read as UNDECLARED (and be
+  // reported as an absence the module does not have) or silently produce a deadline of zero, failing
+  // a healthy render at the first tick. Absent stays legal and means undeclared; wrong does not load.
+  if (m.max_invocation_seconds !== undefined) {
+    const v = m.max_invocation_seconds;
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0)
+      return `max_invocation_seconds ${JSON.stringify(v)} must be a positive finite number of seconds`;
+  }
   return m as unknown as ModuleManifest;
 }
