@@ -21,7 +21,15 @@ concurrency:
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    # Structurally uncollidable, for two independent reasons:
+    # 1. An explicit job name that interpolates the matrix is used VERBATIM; GitHub cannot
+    #    append its own matrix suffix to it. This repo is the in-estate proof: it already
+    #    interpolates and emits exactly the interpolated string, with no doubled suffix.
+    # 2. The literal prefix "CodeQL scan " is not a string the other producer (the dynamic
+    #    GitHub Code Quality workflow) can emit; that one only ever emits "Analyze".
+    # Do NOT change the job id (analyze) or the category inputs: those, not the display name,
+    # key the code-scanning analysis_key and category, and alert continuity rides on them.
+    name: CodeQL scan (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:

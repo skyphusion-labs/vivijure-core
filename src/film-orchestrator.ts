@@ -69,9 +69,9 @@ import {
   coerceDialogueLineIds,
   KEYFRAME_STALL_SECONDS,
   PHASE_HARD_DEADLINE_SECONDS,
+  phaseCeilingVerdict,
   POLLABLE_PHASES,
   phaseAgeSeconds,
-  ceilingAgeSeconds,
   stampFilmProgress,
   resolveClipDurationFloor,
   mapClipDurationsToShots,
@@ -2720,11 +2720,33 @@ async function recoverStalledPhase(env: Env, job: FilmJob, preModules?: Register
   // phases the ceiling tracks last_progress_at (#704): a slow local-gpu card landing one clip every few
   // minutes is healthy however long the phase runs, so only 90min with NO new shot fails; the batch
   // keyframe phase keeps the phase_started_at clock (age above).
-  const ceilingAge = ceilingAgeSeconds(job, now);
-  if (ceilingAge >= PHASE_HARD_DEADLINE_SECONDS) {
-    const stuckPhase = job.phase;
+  // core#182: the ceiling is sized to the WORK, not to a constant. `phaseCeilingVerdict` raises the
+  // 90min floor to FINISH_STEP_MAX_ATTEMPTS * the longest per-invocation ceiling the modules in THIS
+  // job's chain DECLARE, because a retrying step moves `attempts` and not `idx` and the progress
+  // marker cannot see it. Steps whose module declares nothing get NO substituted number: the floor
+  // holds and they are named, on the job and in a structured event, so an unbounded ordering is
+  // visible instead of arriving later as a dead render with a misleading "no progress" message.
+  // The whole decision is a pure function so a test drives the real seam rather than restating it.
+  const verdict = phaseCeilingVerdict(job, preModules, now);
+  const unbounded = verdict.ceiling.undeclared.concat(verdict.ceiling.unresolved);
+  if (unbounded.join(",") !== (job.ceiling_undeclared || []).join(",")) {
+    job.ceiling_undeclared = unbounded;
+    if (unbounded.length) {
+      emitStructuredEvent({
+        ev: "film.ceiling_undeclared",
+        film_id: job.film_id,
+        phase: job.phase,
+        undeclared: verdict.ceiling.undeclared,
+        unresolved: verdict.ceiling.unresolved,
+        holding_floor_seconds: PHASE_HARD_DEADLINE_SECONDS,
+      });
+      console.warn(`film ${job.film_id}: phase "${job.phase}" stall ceiling is UNBOUNDED against ${unbounded.join(", ")} (no max_invocation_seconds declared); holding the ${PHASE_HARD_DEADLINE_SECONDS}s floor (core#182)`);
+    }
+  }
+
+  if (verdict.expired) {
     job.phase = "failed";
-    job.error = `render stalled in phase "${stuckPhase}" for ${Math.floor(ceilingAge / 60)}min with no progress; failing so it does not hang (resubmit to retry) (#129/#704)`;
+    job.error = verdict.error as string;
     return true;
   }
   return false;
