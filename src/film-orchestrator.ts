@@ -52,6 +52,7 @@ import {
   classifyFinishRetry,
   resolveFinishConfigs,
   finishShotAdoptableFromR2,
+  filmFinishView,
   reclaimFinishShotsFromR2,
   finishStepOutputKey,
   finishStepAppliedTag,

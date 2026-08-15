@@ -7,6 +7,7 @@ import type { FilmJob, FilmScene } from "./film-model.js";
 import {
   summarizeFilm,
   clipDeliveries,
+  filmFinishView,
   KEYFRAME_STALL_SECONDS,
 } from "./film-model.js";
 import type { RunpodJobView, RunpodStatus } from "./runpod-types.js";

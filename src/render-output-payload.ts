@@ -28,7 +28,7 @@
 
 import type { ClipJob } from "./render-orchestrator.js";
 import type { FilmJob } from "./film-model.js";
-import { clipDeliveries } from "./film-model.js";
+import { clipDeliveries, filmFinishView } from "./film-model.js";
 import { resolveFilmOutputKey } from "./film-output-key.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 
@@ -48,6 +48,8 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
     mode: job.derive_mode ?? (job.keyframes_only ? "keyframes-only" : "full"),
   };
   if (job.film_finish?.sidecar_key) out.sidecar_key = job.film_finish.sidecar_key;
+  // cf#1662: ALWAYS set, including null. The keys presence is what says this row was measured.
+  out.film_finish = filmFinishView(job.film_finish);
   if (job.finish_unavailable) {
     out.finish_unavailable = {
       at: job.finish_unavailable.at,
@@ -85,5 +87,12 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
  *  `updateRenderFromView`). They run in that order inside one tick, so the view is the last writer;
  *  identical bytes are what makes that ordering harmless rather than load-bearing. */
 export function scatterDonePayload(job: ScatterJob): Record<string, unknown> {
-  return { output_key: job.film_key, project: job.project, mode: "full" };
+  // cf#1662: scatter carries the identical film_finish shape and was equally invisible; ALWAYS
+  // set, including null.
+  return {
+    output_key: job.film_key,
+    project: job.project,
+    mode: "full",
+    film_finish: filmFinishView(job.film_finish),
+  };
 }
