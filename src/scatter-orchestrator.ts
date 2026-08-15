@@ -51,7 +51,10 @@ import {
   markFinishFailed,
   markRenderFailedByJobId,
   updateRenderFromView,
+  prepareRenderUpdate,
+  runPreparedRenderUpdates,
 } from "./renders-db.js";
+import type { PreparedRenderUpdate } from "./renders-db.js";
 import { resolveCastLoras, untrainedCastMessage } from "./cast-loras.js";
 import { fireNotifyForScatter } from "./scatter-notify.js";
 import { isTransientD1Error, withD1Retry, d1ErrorCode } from "./d1-retry.js";
@@ -230,6 +233,9 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
 }
 
 /** Persist a scatter submit so it can NEVER orphan a render (#289).
+ *
+ *  (core#181: the gather tick batches its per-shard row UPDATEs the same way, via
+ *  runPreparedRenderUpdates. The two paths no longer disagree about how N row writes are issued.)
  *
  *  The runnable R2 doc is written FIRST: the poll/advance path runs entirely off it
  *  (loadScatterJob), so once it lands the render is runnable and a later transient cannot strand
@@ -719,6 +725,17 @@ export async function advanceScatterJob(
   // a new cost introduced by a change whose whole purpose is removing one.
   const modules = await discoverModules(env as unknown as Record<string, unknown>);
 
+  // core#181: each advanced shard's render-row UPDATE is PREPARED in the loop and issued as ONE
+  // batch below, in place of the N sequential D1 round trips this loop used to pay -- the same
+  // `env.DB.batch()` the submit path in this file already uses for its N shard inserts.
+  //
+  // Only the WRITES are batched. The advances are not statements and cannot be folded into a batch:
+  // each is a full orchestration tick with its own lease, R2 reads and module fan-out. Whether the
+  // advances should also run CONCURRENTLY is a separate question with a different trade-off (it
+  // multiplies in-flight subrequests inside one invocation, against the subrequest budget --
+  // vivijure-cf#512) and is deliberately NOT answered here.
+  const rowUpdates: Array<{ shardIdx: number; prepared: PreparedRenderUpdate; doneShots: string[] }> = [];
+
   for (let i = 0; i < job.shard_film_ids.length; i++) {
     const filmId = job.shard_film_ids[i];
     const shots = job.shard_shots[i] ?? [];
@@ -733,13 +750,22 @@ export async function advanceScatterJob(
     try {
       const r = await advanceFilmJob(env, filmId, modules);
       if (r) {
-        await updateRenderFromView(env, filmJobToPollView(r.job, r.clipJob), ctx);
+        // Prepared INSIDE the per-shard try: building the view can itself do per-shard work (the
+        // #99 output_key adoption HEAD), and a throw there must isolate to this shard exactly as
+        // the write it replaces did.
+        const prepared = await prepareRenderUpdate(env, filmJobToPollView(r.job, r.clipJob));
         status = shardStatusForOutcome({ ok: true, job: r.job });
+        const doneShots: string[] = [];
         if (r.job.phase === "done") {
           for (const [shotId] of (await clipKeysFromFilmJob(env, r.job)).entries()) {
-            present.add(shotId);
+            doneShots.push(shotId);
           }
         }
+        // HELD, not applied. The old ordering wrote the row BEFORE reading the clip keys, so a
+        // throwing write left the shard UNDETERMINED and withheld its shots from the gather. The
+        // shots therefore land in `present` only once the batch below has landed, which keeps that
+        // coupling rather than quietly letting a gather finish on top of an unwritten projection.
+        rowUpdates.push({ shardIdx: i, prepared, doneShots });
       } else {
         status = shardStatusForOutcome({ ok: false, reason: "doc_missing" });
       }
@@ -751,6 +777,35 @@ export async function advanceScatterJob(
       status = shardStatusForOutcome({ ok: false, reason: "errored" });
     }
     shardStatuses.push({ status, shots });
+  }
+
+  // core#181: ONE round trip for every advanced shard's row, in place of N.
+  if (rowUpdates.length) {
+    try {
+      await runPreparedRenderUpdates(
+        env,
+        rowUpdates.map((u) => u.prepared),
+        ctx,
+        "scatter.gather.shard-rows",
+      );
+      for (const u of rowUpdates) for (const shotId of u.doneShots) present.add(shotId);
+    } catch (e) {
+      // A D1 batch is one transaction, so a rejection means NO row moved -- the same condition the
+      // per-shard catch above handles one shard at a time, true of every shard in the batch at
+      // once. Each contributing shard is therefore downgraded to UNDETERMINED (IN_PROGRESS, not
+      // dead) with its done-shots withheld, which is exactly the state the old code left a shard in
+      // when its own write threw. A shard that never reached a write (doc_missing, or an advance
+      // that threw) is NOT in `rowUpdates` and keeps the status it already has, so a batch failure
+      // cannot resurrect a genuinely-dead shard either. The tick itself never fails on a projection
+      // write.
+      for (const u of rowUpdates) {
+        shardStatuses[u.shardIdx].status = shardStatusForOutcome({ ok: false, reason: "errored" });
+      }
+      const kind = isTransientD1Error(e) ? "transient D1" : "row-write error";
+      console.warn(
+        `scatter ${scatterId} shard row batch failed (${kind}); ${rowUpdates.length} shard(s) undetermined, will retry: ${(e as Error).message}`,
+      );
+    }
   }
 
   // #26: shards/gather/mux are chained as if/else-if so a phase is driven AT MOST ONCE per tick.

@@ -14,6 +14,7 @@
 // when no row exists for that jobId.
 
 import type { Env, ExecutionContext } from "./platform/orchestrator-context.js";
+import type { PreparedStatement } from "./platform/types.js";
 import type { RunpodJobView } from "./runpod-types.js";
 import { writeRenderLog } from "./render-log.js";
 import { withD1Retry } from "./d1-retry.js";
@@ -331,16 +332,33 @@ export async function insertRender(env: Env, row: NewRenderRow): Promise<boolean
   return ((res.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
 }
 
+/** One render-row update with its D1 write SEPARATED from its execution, so N independent updates
+ *  can be issued as a single `env.DB.batch()` instead of N sequential round trips (core#181).
+ *
+ *  `stmt` is the bound UPDATE and nothing else. `afterWrite` carries the work that must happen only
+ *  once the write has LANDED (the terminal-status render log), so a batching caller runs it after
+ *  the batch rather than before it. Splitting on that boundary is what keeps the batched and the
+ *  single-view forms observably identical: same statement, same post-write side effects, same
+ *  order. */
+export interface PreparedRenderUpdate {
+  stmt: PreparedStatement;
+  afterWrite(ctx?: ExecutionContext): Promise<void>;
+}
+
 // Best-effort UPDATE from a poll / cancel response. No-op when no row
 // exists for the jobId (matches the "back-compat for pre-v0.34.0 jobs"
 // policy). Ownership is NOT checked here; the route handler enforces
 // authn via Cloudflare Access at the edge; the single-operator studio does no per-identity
 // authz (the list endpoint is unscoped).
-export async function updateRenderFromView(
+//
+// core#181: everything here EXCEPT the D1 round trip. The R2 reads this may do (the #99 output_key
+// adoption HEAD) stay on the caller's side of the batch deliberately -- they are per-view work that
+// a batch cannot fold, and preparing inside the caller's own per-item error handling is what lets a
+// batching caller keep its per-item isolation.
+export async function prepareRenderUpdate(
   env: Env,
   view: RunpodJobView,
-  ctx?: ExecutionContext,
-): Promise<void> {
+): Promise<PreparedRenderUpdate> {
   const now = nowSeconds();
   const completed = TERMINAL_STATUSES.has(view.status) ? now : null;
 
@@ -399,10 +417,8 @@ export async function updateRenderFromView(
 
   const outputJson = view.output !== undefined ? JSON.stringify(view.output) : null;
 
-  // Advance hot path: retry a transient D1 blip so a sweep tick self-heals instead of aborting.
-  await withD1Retry(() =>
-    env.DB.prepare(
-      `UPDATE renders SET
+  const stmt = env.DB.prepare(
+    `UPDATE renders SET
       status = ?,
       output_key = COALESCE(?, output_key),
       output_json = ?,
@@ -414,44 +430,90 @@ export async function updateRenderFromView(
       keyframes_json = COALESCE(?, keyframes_json),
       mode = COALESCE(?, mode)
     WHERE job_id = ?`,
-    )
-      .bind(
-        view.status,
-        outputKey,
-        outputJson,
-        view.error ?? null,
-        view.executionTimeMs ?? null,
-        view.delayTimeMs ?? null,
-        now,
-        completed,
-        keyframesJson,
-        modeFromOutput,
-        view.jobId,
-      )
-      .run(),
+  ).bind(
+    view.status,
+    outputKey,
+    outputJson,
+    view.error ?? null,
+    view.executionTimeMs ?? null,
+    view.delayTimeMs ?? null,
+    now,
+    completed,
+    keyframesJson,
+    modeFromOutput,
+    view.jobId,
   );
 
-  // v0.141.0: on terminal status, persist a per-render log to R2 (conventional
-  // key renders/logs/<jobId>.txt) so History can offer a "view logs" link.
-  // Best-effort: this never blocks or breaks the render-resolve path. When an
-  // ExecutionContext is supplied (the poll route) the R2 write runs via
-  // ctx.waitUntil, OFF the poll hot path -- the caller's response no longer waits
-  // on an R2 PUT (issue #15). Without ctx (tests / other callers) it falls back to
-  // awaiting so behavior is unchanged. A failure is logged rather than swallowed
-  // silently, so a persistently failing log write is diagnosable instead of invisible.
-  if (completed !== null) {
-    const logTask = (async () => {
-      try {
-        await writeRenderLog(env, view);
-      } catch (e) {
-        console.warn(
-          `render log write failed for job ${view.jobId}: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-    })();
-    if (ctx) ctx.waitUntil(logTask);
-    else await logTask;
+  return {
+    stmt,
+    async afterWrite(ctx?: ExecutionContext): Promise<void> {
+      // v0.141.0: on terminal status, persist a per-render log to R2 (conventional
+      // key renders/logs/<jobId>.txt) so History can offer a "view logs" link.
+      // Best-effort: this never blocks or breaks the render-resolve path. When an
+      // ExecutionContext is supplied (the poll route) the R2 write runs via
+      // ctx.waitUntil, OFF the poll hot path -- the caller's response no longer waits
+      // on an R2 PUT (issue #15). Without ctx (tests / other callers) it falls back to
+      // awaiting so behavior is unchanged. A failure is logged rather than swallowed
+      // silently, so a persistently failing log write is diagnosable instead of invisible.
+      if (completed === null) return;
+      const logTask = (async () => {
+        try {
+          await writeRenderLog(env, view);
+        } catch (e) {
+          console.warn(
+            `render log write failed for job ${view.jobId}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      })();
+      if (ctx) ctx.waitUntil(logTask);
+      else await logTask;
+    },
+  };
+}
+
+/** Apply one render-row update. Unchanged contract: one D1 round trip, then the post-write log. */
+export async function updateRenderFromView(
+  env: Env,
+  view: RunpodJobView,
+  ctx?: ExecutionContext,
+): Promise<void> {
+  const prepared = await prepareRenderUpdate(env, view);
+  // Advance hot path: retry a transient D1 blip so a sweep tick self-heals instead of aborting.
+  await withD1Retry(() => prepared.stmt.run());
+  await prepared.afterWrite(ctx);
+}
+
+/** Apply N prepared render-row updates as ONE D1 round trip (core#181).
+ *
+ *  This is the batched twin of `updateRenderFromView`, for callers holding several INDEPENDENT row
+ *  updates at once -- the scatter gather tick, which had N shards each paying its own round trip
+ *  while the submit path in the same file already batched its N inserts.
+ *
+ *  `Database.batch` is OPTIONAL in the platform contract (platform/types.ts), so a host without it
+ *  runs the same statements sequentially rather than throwing. That is the same shape
+ *  `reconcileStorageLedger` already uses, and it is why this is not simply `env.DB.batch!(...)`:
+ *  calling the bang form on a batch-less host would make every gather tick throw.
+ *
+ *  FAILURE IS ALL-OR-NOTHING BY CONTRACT, in both paths. A D1 batch is one transaction, so a
+ *  rejection means no row moved. The sequential fallback can land a prefix, so this THROWS on the
+ *  first failure rather than continuing, and the caller must treat the whole set as unwritten. Every
+ *  statement here is an idempotent UPDATE keyed on job_id, so re-issuing a prefix on the next tick
+ *  is free; the alternative (reporting partial success) would hand the caller a distinction it
+ *  cannot act on. */
+export async function runPreparedRenderUpdates(
+  env: Env,
+  prepared: PreparedRenderUpdate[],
+  ctx?: ExecutionContext,
+  label = "renders.update.batch",
+): Promise<void> {
+  if (prepared.length === 0) return;
+  if (env.DB.batch) {
+    const stmts = prepared.map((p) => p.stmt);
+    await withD1Retry(() => env.DB.batch!(stmts), { label });
+  } else {
+    for (const p of prepared) await withD1Retry(() => p.stmt.run(), { label });
   }
+  for (const p of prepared) await p.afterWrite(ctx);
 }
 
 // v0.146.0: cloud-animate progress feedback. A cloud animation runs one
