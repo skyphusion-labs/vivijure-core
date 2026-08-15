@@ -1,0 +1,22 @@
+[
+  {
+    "symbol": "rp_handler.py",
+    "expected": 3,
+    "reason": "Two references (runpod-submit.ts:10, :87) name the RETIRED vivijure-serverless worker, so the file is gone with its repo rather than missing from a live one; the same file already migrated its sibling prose at :61-68, which is what makes these two visibly un-migrated. The third (renders-db.ts:952) is a CONFIRMED-FALSE claim: it says rp_handler.py writes renders/<project>/<name>.mp4, while the live backend writes a fixed renders/{slug}/full.mp4, so the collision mode it describes is not the real one. Tracked in core#183; deliberately not fixed here, because this PR ships the detector and fixing its findings in the same change would leave the detector never observed firing on real data."
+  },
+  {
+    "symbol": "core.py",
+    "expected": 5,
+    "reason": "Names a vivijure-serverless-era entrypoint. Two of the five (bundle-assembler.ts:68 and :445) are CONFIRMED FALSE beyond the stale name: they claim the pod falls back from scene.start_image to a clips/ path, and the live backend's _resolve_keyframe falls back only to keyframes/<shot_id>.png and raises HarnessError when the shot needs one. The rest are stale names above claims that still hold. Tracked in core#183."
+  },
+  {
+    "symbol": "characters.py",
+    "expected": 1,
+    "reason": "Stale NAME, true behaviour: the reference-globbing it describes is real and lives in the backend's contract.py (list_character_references, with exactly the extensions claimed). The census counted this class separately from the false-claim class on purpose, because counting a stale name as a false claim inflates the number. Tracked in core#183."
+  },
+  {
+    "symbol": "studio_service.py",
+    "expected": 1,
+    "reason": "Names the RETIRED vivijure-serverless studio_service. The norm_project behaviour quoted beside it is reproduced verbatim in the comment and is not itself in dispute; only the file it attributes the behaviour to is gone. Tracked in core#183."
+  }
+]
