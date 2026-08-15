@@ -95,6 +95,31 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
   annotation, a planted early date reddens on its own reason, and restoring the true values goes
   green -- the control proving it does not simply always fail.
 
+### test(changelog): entries under a released heading must be in that release (core#202)
+
+- `tests/changelog-released-entries.test.ts`: for every `## [X.Y.Z]` heading with a matching
+  `vivijure-core-vX.Y.Z` tag, each `### ` entry beneath it must have been introduced by a commit that
+  is an ANCESTOR of that tag. Sibling of `changelog-version.test.ts`, which guards the HEADING; this
+  guards the ENTRIES.
+- core#204 found three entries under the published `## [1.13.0]` naming work that merged after the
+  tag, and while that PR sat open it acquired a FOURTH from an unrelated merge appending to the top
+  released heading while `## Unreleased` was empty. The accrual is mechanical, one per merge in that
+  state, and nothing in the repo could observe it: measured across 179 tracked files, 7 workflows and
+  2 scripts, the only `merge-base --is-ancestor` was `publish-npm.yml:37` asserting a build commit is
+  on main.
+- A BACKFILL is legitimate and must be DECLARED. An entry can postdate its tag for a good reason --
+  the work shipped, the prose was late -- which is documented practice here (`63fd0bb7` added the
+  v1.3.0 lip-sync entry ten minutes after the tag). A naive ancestry check calls that a defect, and a
+  guard that manufactures defects is worse than one that misses them, because someone then deletes a
+  correct record. Such an entry carries a `Backfilled: <why>` line; every accepted backfill is
+  PRINTED on every run, so an exemption is visible rather than silent.
+- Refusals are not passes: a shallow clone, absent tags, an unresolvable entry or a zero-row
+  derivation all FAIL. `ci.yml` gains `fetch-depth: 0`, because `fetch-tags` and history depth are
+  separate facts and `merge-base` cannot answer on a shallow clone.
+- Driven RED before shipping: a planted post-tag entry under `## [1.13.0]` reddens the gate and the
+  diagnostic names the entry and the tag; the same entry carrying a `Backfilled:` line goes green,
+  which is the control proving the gate does not simply always fail.
+
 ## [1.14.0] -- 2026-08-14
 
 MINOR. Per-render participation for the `finish` chain (cf#537), so a caller names which finish
@@ -1083,6 +1108,11 @@ MINOR (additive; new module `storage-quota`, one additive optional field on `R2L
   `dialogue_audio`, so an in-flight job from before this fix cannot strand on it either.
 - Recorded here from the tag range: this landed on main between 1.2.14 and 1.3.0 without an entry of its
   own, and an unlogged shipped change is the same ledger hole 1.2.13 had to be backfilled for.
+- Backfilled: the FIX shipped in v1.3.0; only this entry was late, added by `63fd0bb7` ten minutes
+  after the tag. Verified at the artifact -- the phrase is absent from `vivijure-core-v1.3.0`'s own
+  CHANGELOG (0 occurrences, against a control proving the matcher finds entries that ARE in it) while
+  the code it describes was already on main. This line is the machine-readable form of the sentence
+  above, so `tests/changelog-released-entries.test.ts` can tell a late ENTRY from a late RELEASE.
 
 ### Added: `host.hooks_unavailable` -- a host can declare hooks it cannot serve (vivijure-cf#98)
 
