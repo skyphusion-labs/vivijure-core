@@ -270,17 +270,42 @@ export async function readManifest(
   return null;
 }
 
-// Per-isolate discovery cache for the /api/modules route (issue #17 follow-up). That route re-ran N
-// service-binding manifest fetches on EVERY request; with a short TTL it serves a cached registry
-// instead. Module bindings are static per deploy and a module only changes its manifest on its own
-// redeploy, so 60s of staleness is fine. This holds only module metadata (identical for every user),
-// so the module-scoped cache leaks nothing cross-request. OPT-IN: only the route passes a TTL; every
-// dispatch-path caller passes nothing and keeps the old always-fresh behavior.
-let discoveryCache: { modules: RegisteredModule[]; expiresAt: number } | null = null;
+// Per-isolate cache for the SERVICE-BINDING scan only (cf#515 defect 2).
+//
+// THE SEAM. `discoverModules` merges two populations with OPPOSITE volatility, and the old cache
+// held both under one policy:
+//   * the `MODULE_*` service scan -- N parallel subrequests, one per bound module. It can only
+//     change when the STUDIO redeploys, and a studio redeploy replaces the isolate, which discards
+//     this cache anyway. Expensive, and structurally safe to cache.
+//   * the WfP dispatch set -- ONE D1 query against `installed_modules`, mutated at RUNTIME by row
+//     writes with no redeploy (the operator install/uninstall/enable routes). Cheap, and NOT safe
+//     to cache for any window.
+// The expensive half is the safe half, so these were never in tension. Caching the service scan and
+// re-reading dispatch on EVERY call gets the whole fan-out saving while keeping three shipped
+// contracts true BY CONSTRUCTION rather than by tolerance: uninstall stops dispatch "on the next
+// request", `enabled = 0` stays the v1 fast-kill, and an install is "live on the next request".
+//
+// RESIDUAL, stated so nobody rediscovers it: a MODULE worker redeploying its OWN manifest is
+// invisible for up to the window. That is a planned operator action, never an emergency control,
+// which is why it is acceptable here and a stale dispatch set would not be.
+//
+// A DEGRADED SCAN IS NEVER CACHED. `readManifest` returns null after MANIFEST_READ_ATTEMPTS
+// transient failures and those nulls are filtered, so a scan taken during a module blip is silently
+// SHORT. Caching that would pin the gap for the whole window instead of self-healing on the next
+// call, on the path that decides which module serves a hook. So only a scan that returned every
+// bound module is stored; a short scan is used once and dropped.
+const SERVICE_SCAN_TTL_MS = 30_000;
 
-/** Test-only: drop the per-isolate discovery cache so a suite starts clean. */
+let serviceScanCache: {
+  /** The binding-name set this scan was taken from. A different set is a different question. */
+  key: string;
+  modules: RegisteredModule[];
+  expiresAt: number;
+} | null = null;
+
+/** Test-only: drop the per-isolate service-scan cache so a suite starts clean. */
 export function _resetModuleDiscoveryCache(): void {
-  discoveryCache = null;
+  serviceScanCache = null;
 }
 
 /** A D1 database, shaped minimally so the registry stays dependency-free (no import of Env). Only the
@@ -368,27 +393,46 @@ export function mergeRegistries(
 /** Discover every installed module: the `MODULE_*` service-binding scan (read each binding's manifest
  *  in parallel) MERGED with the WfP dispatch modules from D1 (discoverDispatchModules, a no-op unless
  *  MODULE_DISPATCH is bound). Both kinds land in ONE registry, agnostic to how each later resolves to a
- *  Fetcher. With `opts.cacheTtlMs > 0` the result is cached per-isolate for that many ms (the
- *  /api/modules route uses this); without it discovery runs fresh (the pipeline paths). `opts.nowMs` is
- *  injectable for tests. */
+ *  Fetcher. The DISPATCH half is re-read from D1 on EVERY call, always, so a runtime install /
+ *  uninstall / enable-toggle takes effect on the next request (cf#515 defect 2). The SERVICE-BINDING
+ *  scan -- the expensive half, N subrequests -- is cached per-isolate for `opts.cacheTtlMs`,
+ *  defaulting to SERVICE_SCAN_TTL_MS; pass 0 to force a cold scan. A scan that did not return every
+ *  bound module is never cached. `opts.nowMs` is injectable for tests. */
 export async function discoverModules(
   env: Record<string, unknown>,
   opts: { cacheTtlMs?: number; nowMs?: number } = {},
 ): Promise<RegisteredModule[]> {
-  const ttl = opts.cacheTtlMs ?? 0;
+  const ttl = opts.cacheTtlMs ?? SERVICE_SCAN_TTL_MS;
   const now = opts.nowMs ?? Date.now();
-  if (ttl > 0 && discoveryCache && now < discoveryCache.expiresAt) {
-    return discoveryCache.modules;
-  }
   const names = moduleBindingNames(env);
-  const [read, dispatch] = await Promise.all([
-    Promise.all(names.map((n) => readManifest(n, env[n] as FetcherLike))),
+  // Keyed on the binding SET: a different set of bindings is a different question, so a cache taken
+  // against another env can never answer it.
+  const key = names.join("\u0000");
+
+  const cached =
+    ttl > 0 && serviceScanCache && serviceScanCache.key === key && now < serviceScanCache.expiresAt
+      ? serviceScanCache.modules
+      : null;
+
+  // Dispatch is ALWAYS re-read. It is one D1 query, and it is the half that changes at runtime.
+  const [scanned, dispatch] = await Promise.all([
+    cached ? Promise.resolve(null) : Promise.all(names.map((n) => readManifest(n, env[n] as FetcherLike))),
     discoverDispatchModules(env),
   ]);
-  const service = read.filter((m): m is RegisteredModule => m !== null);
-  const modules = mergeRegistries(service, dispatch);
-  if (ttl > 0) discoveryCache = { modules, expiresAt: now + ttl };
-  return modules;
+
+  let service: RegisteredModule[];
+  if (cached) {
+    service = cached;
+  } else {
+    const rows = scanned as (RegisteredModule | null)[];
+    service = rows.filter((m): m is RegisteredModule => m !== null);
+    // COMPLETE scans only: a short scan means a module blipped, and pinning that would convert a
+    // one-request degradation into a full-window one.
+    if (ttl > 0 && service.length === names.length) {
+      serviceScanCache = { key, modules: service, expiresAt: now + ttl };
+    }
+  }
+  return mergeRegistries(service, dispatch);
 }
 
 /** Look up the module binding that should answer a `pick_one` hook for a given choice (by module
