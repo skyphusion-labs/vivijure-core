@@ -55,8 +55,19 @@ npm view @skyphusion-labs/vivijure-core@1.2.2 version
 > The refusal is loud, at cut time, and one step from recoverable, so this is a procedure-accuracy
 > defect and not a correctness hole -- but it means **the release PR now OPENS the cycle and CLOSES
 > it in the same commit**, which is what v1.16.0 did: bump, insert `## Unreleased / v<next>`, then
-> run the assemble script. Follow that, not the paragraph above, until a guard exists that can see
-> a fragment landing on a spent version. Filed as core#236.
+> run the assemble script. Follow that, not the paragraph above.
+>
+> **CLOSED by core#236.** `tests/changelog-version.test.ts` now refuses a `changelog.d/` fragment
+> sitting on a `package.json` version that is already tagged, with a released-form heading -- work
+> that has no version to be released under. So the obligation in the paragraph above has a mechanism
+> again, and it fires at REVIEW time on the PR that caused it rather than at cut time on whoever cuts
+> next. **A `src/` PR opening a cycle is once more forced rather than remembered:**
+> `changelog-entry-required.mjs` makes it add an entry, the fragment route is now refused on a spent
+> version, so the first such PR of a cycle has to bump. (The direct-`CHANGELOG.md` route still
+> satisfies that guard during the migration window; its own misfiling risk is core#212's, not this
+> one's.) Three neighbouring states stay green on purpose and are asserted so: an open cycle heading,
+> post-release main with an empty `changelog.d/`, and the release PR itself after assemble and before
+> the tag.
 >
 > **This does NOT reintroduce the per-PR version pin that broke #144.** A version opens ONCE per
 > cycle. Every subsequent PR adds an entry under the already-open heading and touches no version
