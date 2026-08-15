@@ -43,6 +43,20 @@ tagged version with no open Unreleased heading as the deliberate steady state be
 (core#146), and a permanent anchor would fire the tests/changelog-version.test.ts spent-version
 guard on every release cut, before the next feature PR bumps package.json.
 
+## Before closing a cycle: check who is still open
+
+core#212 own live measurement: the trigger for the misfiling class is the RELEASE CUT itself, not
+branch age. A PR is exposed the instant a release is cut while it is open, no matter how recently
+it was branched, because the entry it wrote genuinely was under the open heading at PR time and
+only becomes wrong once main advances past it. A PR-time gate cannot see this: it is structurally
+incapable of failing on the input it is meant to catch, because the defect is created AFTER the PR
+is reviewed.
+
+So run `node scripts/changelog-release-cut-check.mjs` before running changelog-assemble.mjs. It
+refuses if any open PR still touches CHANGELOG.md directly, naming each one, since closing the
+heading now would strand its entry under the newly published section once it merges. A PR that
+used a changelog.d/ fragment instead is not at risk, by construction. See RELEASES.md.
+
 ## The gate
 
 `npm run typecheck` and `npm test` run in CI on every PR (`.github/workflows/ci.yml`).

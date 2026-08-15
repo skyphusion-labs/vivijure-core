@@ -13,6 +13,8 @@ Tag prefix `vivijure-core-v` must match `package.json` version (workflow verifie
 
 Step 1 also closes the changelog cycle: as of core#202, running `node scripts/changelog-assemble.mjs <version> <date>` folds every `changelog.d/` fragment (plus whatever is still open under the Unreleased-shaped heading) into the released section, in place of hand-editing that heading. See CONTRIBUTING.md.
 
+BEFORE that step, run `node scripts/changelog-release-cut-check.mjs` (core#212): it refuses if any open PR still touches `CHANGELOG.md` directly, since closing the heading now would strand that PRs entry under it once merged. Wait for those PRs to land, or ask their authors to switch to a `changelog.d/` fragment first, which is immune to this by construction.
+
 ## Cutting a release
 
 ```bash
