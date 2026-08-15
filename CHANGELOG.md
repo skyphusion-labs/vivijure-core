@@ -5,6 +5,39 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased / v1.15.0
 
+### fix(scatter): the gather tick batches its per-shard render-row writes (core#181)
+
+- `advanceScatterJob` issued one `updateRenderFromView` D1 round trip PER SHARD, every tick, for the
+  life of a scatter job -- while `finalizeScatterSubmit`, 400 lines earlier in the same file, already
+  issues its N shard rows as one `env.DB.batch()` wrapped in `withD1Retry`. The capability was
+  present in the file; the gather path did not use it.
+- `updateRenderFromView` is split into `prepareRenderUpdate` (build the bound statement plus the
+  post-write log task) and the execution, so N independent row updates can go out as one batch via
+  the new `runPreparedRenderUpdates`. The single-view contract is unchanged.
+- MEASURED, counting D1 round trips across one `advanceScatterJob` call: render-row round trips go
+  from N to 1 (N=2: 2 -> 1; N=6: 6 -> 1; sweep over 2/3/6/12 shards: `[2,3,6,12]` -> `[1,1,1,1]`),
+  and total round trips per tick fall from `3N + 2` to `2N + 3` (N=2: 8 -> 7, N=6: 20 -> 15) -- a
+  slope of 3 round trips per shard down to 2.
+- NOT changed, deliberately: the per-shard `advanceFilmJob` calls stay SERIAL. They are not
+  statements and cannot be folded into a batch (each is a full orchestration tick with its own
+  lease, R2 reads and module fan-out), and whether they should run CONCURRENTLY is a separate
+  question with a subrequest-budget trade-off (vivijure-cf#512).
+- Error isolation is preserved rather than merely unbroken. A D1 batch is one transaction, so a
+  rejection means no row moved -- the same condition the per-shard `catch` handled one shard at a
+  time, true of every shard at once -- so every contributing shard is downgraded to UNDETERMINED
+  (IN_PROGRESS, not dead) with its done-shots withheld from the gather, and the tick still returns.
+  A shard that never reached a write keeps the status it already had, so a batch failure cannot
+  resurrect a genuinely-dead shard.
+- `Database.batch` is OPTIONAL in the platform contract, so a host without it runs the same
+  statements sequentially instead of throwing (the shape `reconcileStorageLedger` already uses).
+  `env.DB.batch!(...)` unconditionally would have made every gather tick throw on vivijure-local.
+- The acceptance asserts the ROUND-TRIP COUNT, not just that the tick succeeds: a correctness-only
+  test passes identically before and after and cannot observe the fix. Driven at N > 1 throughout,
+  since N = 1 makes the two forms indistinguishable. Mutation-tested on a scratch copy: reverting
+  the batching reddens exactly the five count assertions and leaves all five controls green;
+  removing only the isolation `try`/`catch` reddens exactly the isolation assertion and leaves every
+  count assertion green.
+
 ### test(releases): the ledger's source commit must RESOLVE to its tag, not merely look like a sha (core#209)
 
 - `tests/releases-ledger.test.ts` asserted the cell was seven hex characters. Two different wrong
