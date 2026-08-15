@@ -15,8 +15,14 @@ import {
   pollCastLoraJob,
   submitTrainLoraJob,
   submitTrainWanLoraJob,
+  type RunpodJobBackend,
   type RunpodResult,
 } from "./runpod-submit.js";
+import {
+  parseRunpodErrorType,
+  recordRunpodJob,
+  terminalOutcomeFromRunpodStatus,
+} from "./runpod-job-log.js";
 import { secretValue, type SecretsStoreSecret } from "./secret-store.js";
 import {
   buildLoraTrainingBundleArgs,
@@ -28,6 +34,114 @@ import {
 } from "./lora-bundle.js";
 
 const MIN_TRAINING_REFS = 4;
+
+// -------------------------------------------------------------------------------------------------
+// JOB-LOG ATTRIBUTION FOR CAST LoRA TRAINING (cf#475).
+//
+// THE GAP THIS CLOSES. Every RunPod job a MODULE WORKER submits has written a runpod_job_log row
+// since cf#279. Cast LoRA training is submitted from HERE instead -- studio-side, through
+// runpod-submit.ts -- and wrote nothing at all. Measured on the money rather than inferred: the
+// vivijure-wan-train endpoint billed 14.5% of GPU spend on 2026-08-01 and 21.9% on 2026-08-02 with
+// ZERO rows on either day. Not mis-attributed; absent, and absent in the flattering direction, since
+// every row that IS in the table is correct.
+//
+// It matters more than telemetry tidiness because cf#394 rules cast-LoRA training in scope for the
+// hosted door: without a row there is nothing that says which tenant caused an hour and three
+// quarters of an 80GB card, TENANT_SPEND_DAILY_CEILING is unenforceable on the single most expensive
+// operation in the product, and there is no basis to bill it.
+//
+// SAME RECORDER, NOT A SECOND ONE. recordRunpodJob is the identical function the 97 module call
+// sites use; it moved into core in this change precisely so this path could reach it (see
+// runpod-job-log.ts for why, and for the drift that had already happened between the two copies that
+// existed before). Nothing here re-implements the upsert, the bounds, the timeout or the retry.
+//
+// WHAT IS DELIBERATELY NOT RECORDED, so an absence here is not read as an oversight:
+//
+//   LOCAL-DOOR TRAINS. An SDXL train on the homelab door is our own iron and carries no marginal
+//   vendor cost, which is the standing ruling on what the meter is for. It is not RunPod spend and a
+//   runpod_job_log row for it would be a fabricated one.
+//
+//   FAILED SUBMITS. No job id means nothing to key the upsert on, and nothing was billed. This
+//   matches the module path exactly, which also records only once an id exists.
+//
+//   JOBS WE NEVER OBSERVED TERMINAL. The terminal write happens when a poll SEES a terminal status.
+//   A job that ages out of RunPod retention (~30 min) before any poll catches it leaves its row at
+//   `submitted` with no seconds -- honest, and visibly open, rather than guessed. reconcileOpenRunpodJobs
+//   in runpod-job-log.ts is the mechanism that closes those and is now reachable from core; wiring a
+//   cast-train pass through it is follow-on work, not something this change silently claims.
+// -------------------------------------------------------------------------------------------------
+
+/** Job-log `module` label for a Wan cast train. Maps to the RUNPOD_WAN_TRAIN_ENDPOINT_ID endpoint,
+ *  which bills as `vivijure-wan-train` in RunPod serverless. */
+export const CAST_TRAIN_WAN_JOB_LOG_MODULE = "cast-train-wan";
+
+/** Job-log `module` label for a cloud SDXL cast train, which shares the render endpoint. */
+export const CAST_TRAIN_SDXL_JOB_LOG_MODULE = "cast-train-sdxl";
+
+/**
+ * The job-log label for a result, or null when this job is not RunPod GPU spend on our account.
+ *
+ * Null for `local-door` (own iron) and for an UNTAGGED result. Untagged returning null is the point:
+ * a caller that forgets to tag records nothing, rather than recording a job against a guessed
+ * endpoint. A gap is findable; an invented row is not.
+ */
+export function castTrainJobLogModule(backend: RunpodJobBackend | undefined): string | null {
+  if (backend === "runpod-wan-train") return CAST_TRAIN_WAN_JOB_LOG_MODULE;
+  if (backend === "runpod-render") return CAST_TRAIN_SDXL_JOB_LOG_MODULE;
+  return null;
+}
+
+/** Open the row the moment a training job exists on a RunPod endpoint. */
+async function recordCastTrainSubmit(
+  env: Env,
+  submit: RunpodResult,
+  submittedAtMs: number,
+): Promise<void> {
+  if (!submit.ok) return;
+  const moduleLabel = castTrainJobLogModule(submit.backend);
+  if (!moduleLabel) return;
+  await recordRunpodJob(env.DB, {
+    jobId: submit.view.jobId,
+    module: moduleLabel,
+    outcome: "submitted",
+    submittedAtMs,
+  });
+}
+
+/**
+ * Close the row when a poll OBSERVES a terminal status, carrying RunPod's own execution and delay
+ * times so the seconds are attributable rather than merely counted.
+ *
+ * Self-gating on purpose: callers hand it every successful poll and it writes only on a terminal
+ * one. That keeps the two poll paths (refreshTrainingLora and handleCastLoraStatus) from each
+ * growing their own copy of the terminal-status list, which is the same duplication this whole
+ * change is about.
+ *
+ * submittedAtMs is NOT passed. The submit write already set it, the upsert never overwrites it, and
+ * the only value available here is the cast row's updated_at, which moves. An unknown submit time
+ * must stay distinguishable from a known one, so on the (rare) path where the submit write was lost
+ * this INSERTs with submitted_at NULL rather than with a plausible-looking guess.
+ */
+async function recordCastTrainTerminal(env: Env, poll: RunpodResult): Promise<void> {
+  if (!poll.ok) return;
+  const moduleLabel = castTrainJobLogModule(poll.backend);
+  if (!moduleLabel) return;
+  const view = poll.view;
+  const outcome = terminalOutcomeFromRunpodStatus(view.statusRaw);
+  if (!outcome) return;
+  await recordRunpodJob(env.DB, {
+    jobId: view.jobId,
+    module: moduleLabel,
+    outcome,
+    detail: outcome === "completed" ? undefined : view.error || "runpod status " + view.statusRaw,
+    errorType: parseRunpodErrorType(view.error),
+    // NULL-not-zero: normalizeRunpodResponse leaves these undefined when RunPod did not report
+    // them, and recordRunpodJob turns undefined into NULL. A 0 would read as a real measurement of
+    // a job that took no time.
+    executionMs: view.executionTimeMs ?? null,
+    delayMs: view.delayTimeMs ?? null,
+  });
+}
 
 export type CastTrainModelFamily = "sdxl" | "wan";
 
@@ -285,6 +399,11 @@ export async function refreshTrainingLora(
   } catch {
     poll = { ok: false, error: "poll threw" };
   }
+  // cf#475: record BEFORE acting on the status. The recorder is best-effort by contract (it never
+  // throws and never outlives its own timeout), so it cannot affect what happens next; putting it
+  // first means every RETURN path below is already covered and a future branch cannot be added past
+  // the recording without noticing.
+  await recordCastTrainTerminal(env, poll);
   if (poll.ok) {
     const view = poll.view;
     if (view.status === "COMPLETED") {
@@ -408,6 +527,8 @@ async function executeCastTrain(
     if (!submit.ok) {
       return json({ error: submit.error }, 502);
     }
+    // cf#475: the job now exists on a RunPod endpoint and is accruing GPU-seconds. Open its row.
+    await recordCastTrainSubmit(env, submit, timestamp * 1000);
     const updated = await setLoraJob(env, cast.id, submit.view.jobId);
     return json({
       ok: true,
@@ -431,6 +552,8 @@ async function executeCastTrain(
     return json({ error: submit.error }, 502);
   }
 
+  // cf#475. A local-door train is tagged `local-door` and records nothing (see castTrainJobLogModule).
+  await recordCastTrainSubmit(env, submit, timestamp * 1000);
   const updated = await setLoraJob(env, cast.id, submit.view.jobId);
   return json({
     ok: true,
@@ -462,6 +585,8 @@ export async function handleCastLoraStatus(
     poll = { ok: false, error: "poll threw" };
   }
 
+  // cf#475, same reasoning as refreshTrainingLora: record the observation before branching on it.
+  await recordCastTrainTerminal(env, poll);
   if (poll.ok) {
     const view = poll.view;
     if (view.status === "COMPLETED") {
