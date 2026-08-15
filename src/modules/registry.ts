@@ -405,8 +405,26 @@ export async function discoverModules(
   const ttl = opts.cacheTtlMs ?? SERVICE_SCAN_TTL_MS;
   const now = opts.nowMs ?? Date.now();
   const names = moduleBindingNames(env);
-  // Keyed on the binding SET: a different set of bindings is a different question, so a cache taken
-  // against another env can never answer it.
+  // Keyed on the binding NAME SET. State the guarantee this actually gives, because the previous
+  // wording claimed a stronger one: it said a cache taken against another env can never answer
+  // this question, and that is false. The key carries NO manifest content, so two envs binding
+  // the SAME names to DIFFERENT modules collide and the second caller receives the first scan.
+  //
+  // WHAT MAKES THIS SAFE IS THE DEPLOYMENT MODEL, NOT THE KEY. A Worker isolate serves one env
+  // whose MODULE_* service bindings are fixed at deploy time; changing them requires a redeploy,
+  // and a redeploy is a new isolate with an empty cache. So in production the name set does imply
+  // the manifest set, and hashing manifest identity into the key would buy nothing on a collision
+  // production cannot currently produce, at the cost of work on every scan.
+  //
+  // WHERE THE PREMISE BREAKS, so the next reader does not rediscover it: any context that
+  // evaluates two DIFFERENT envs in ONE isolate. A vitest file is the live example -- many cases
+  // share one module isolate, and two cases stubbing different manifests under the same binding
+  // names will collide. That is what _resetModuleDiscoveryCache() above exists for, and
+  // vivijure-cf hit exactly this on the 1.15.0 bump (cf#598, core#232). If a runtime ever
+  // evaluates multiple envs per isolate, this key becomes wrong and must carry manifest identity.
+  //
+  // The guarantee, stated exactly: a cache taken against a DIFFERENT SET OF BINDING NAMES can
+  // never answer this question. A different set of MODULES behind the same names can.
   const key = names.join("\u0000");
 
   const cached =
