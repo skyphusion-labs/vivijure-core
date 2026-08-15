@@ -20,6 +20,7 @@
 
 import type { Env } from "./platform/orchestrator-context.js";
 import { asFetcher } from "./platform/fetcher.js";
+import { mediaFinishHeaders } from "./media-finish-auth.js";
 import type { ClipJob } from "./clip-job-model.js";
 import { presignR2Get } from "./presign.js";
 import { emitStructuredEvent } from "./structured-events.js";
@@ -49,7 +50,11 @@ export async function callVideoFinishInspect(
   if (!vpc) return null;
   const retries = opts.retries ?? 3;
   const backoffMs = opts.backoffMs ?? 1500;
-  const init = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) };
+  const init = {
+    method: "POST",
+    headers: await mediaFinishHeaders(env),
+    body: JSON.stringify(payload),
+  };
   let resp: Response | null = null;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {

@@ -8,6 +8,7 @@
 // No Worker ever holds a multi-minute GPU/cloud render.
 
 import type { Env } from "./platform/orchestrator-context.js";
+import { mediaFinishHeaders } from "./media-finish-auth.js";
 import {
   discoverModules,
   invokeModule,
@@ -1009,7 +1010,7 @@ export async function callVideoFinish(
   const backoffMs = opts.backoffMs ?? 1500;
   const init = {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: await mediaFinishHeaders(env),
     body: JSON.stringify(payload),
   };
   // video-finish runs always-on on the fleet, reached over a Workers VPC binding (private, no cold
@@ -1059,7 +1060,11 @@ export async function callAudioMix(
   if (!mix) return null; // not provisioned -> caller degrades to single-track mux
   const retries = opts.retries ?? 3;
   const backoffMs = opts.backoffMs ?? 1500;
-  const init = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) };
+  const init = {
+    method: "POST",
+    headers: await mediaFinishHeaders(env),
+    body: JSON.stringify(payload),
+  };
   let resp: Response | null = null;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {

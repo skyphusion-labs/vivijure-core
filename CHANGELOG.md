@@ -3,6 +3,18 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.17.0] -- 2026-08-15
+
+### feat(media): send MEDIA_FINISH_TOKEN on video-finish and audio-mix VPC calls (core#240)
+
+The fleet media containers now refuse work when `LOCAL_FINISH_TOKEN` is set
+(vivijure-cf#613). `callVideoFinish`, `callAudioMix` and `callVideoFinishInspect`
+sent no bearer, so arming that token would 401 every assemble and mux.
+
+They now attach `Authorization: Bearer` when `env.MEDIA_FINISH_TOKEN` (or
+`FINISH_DOOR_TOKEN`) is a readable string or a Secrets Store handle. Unset stays
+fail-open. New public helpers: `mediaFinishToken`, `mediaFinishHeaders`.
+
 ## [1.16.0] -- 2026-08-15
 
 ### docs(modules): the scan-cache key comment claimed a guarantee the key does not give (core#232)
