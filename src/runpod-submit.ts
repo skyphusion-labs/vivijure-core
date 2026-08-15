@@ -470,9 +470,37 @@ export interface RunpodTransportOpts {
   timeoutMs?: number;
 }
 
+/**
+ * WHICH BACKEND ACTUALLY SERVED THE CALL (cf#475).
+ *
+ * A cast LoRA train can land on three different places -- the dedicated Wan training endpoint, the
+ * homelab local door, or the cloud render endpoint -- and only two of those are RunPod GPU spend on
+ * our account. Anything that records a RunPod job has to know which one it was.
+ *
+ * IT IS SET BY THE FUNCTION THAT MADE THE ROUTING CHOICE, AND NEVER RE-DERIVED BY A CALLER. Reading
+ * the bindings a second time to work out where a job went is a second implementation of the routing
+ * rule, which is cf#403 / cp#321 exactly: the two copies agree in the test and drift in production.
+ * The submitter and the poller each know, at the moment they choose; they say so here.
+ *
+ * OPTIONAL ON PURPOSE, AND ABSENT MEANS DO NOT RECORD. Every other RunPod call site in the estate
+ * (render submit, finalize, regen, cancel, the module workers driving runpodRequest directly) leaves
+ * it undefined, and a recorder gated on a KNOWN backend therefore records nothing for a path nobody
+ * has tagged. That is the safe default: a missing row is a gap someone can find, and a row invented
+ * for a job that never ran on our account is a wrong number nobody can find.
+ */
+export type RunpodJobBackend = "runpod-wan-train" | "runpod-render" | "local-door";
+
 export type RunpodResult =
-  | { ok: true; view: RunpodJobView }
-  | { ok: false; error: string; status?: number };
+  | { ok: true; view: RunpodJobView; backend?: RunpodJobBackend }
+  | { ok: false; error: string; status?: number; backend?: RunpodJobBackend };
+
+/** Stamp a result with the backend that produced it. Rebuilt field-by-field rather than spread, so
+ *  the discriminated union survives and a future arm cannot be silently widened past it. */
+function onBackend(result: RunpodResult, backend: RunpodJobBackend): RunpodResult {
+  return result.ok
+    ? { ok: true, view: result.view, backend }
+    : { ok: false, error: result.error, status: result.status, backend };
+}
 
 interface RunpodRequestSpec {
   method: "GET" | "POST";
@@ -983,7 +1011,7 @@ export async function submitTrainLoraJob(
 ): Promise<RunpodResult> {
   const body = JSON.stringify(buildTrainLoraPayload(args));
   if (await localDoorConfigured(env)) {
-    return submitToLocalDoor(env, body, "train-lora submit", opts);
+    return onBackend(await submitToLocalDoor(env, body, "train-lora submit", opts), "local-door");
   }
   const endpointId = await secretValue(env.RUNPOD_ENDPOINT_ID as SecretsStoreSecret | string | undefined);
   if (!endpointId) {
@@ -993,7 +1021,10 @@ export async function submitTrainLoraJob(
         "SDXL cast train needs LOCAL_BACKEND_URL (homelab door) or RUNPOD_ENDPOINT_ID (cloud render EP)",
     };
   }
-  return submitToRunpodEndpoint(env, endpointId, body, "train-lora submit", opts);
+  return onBackend(
+    await submitToRunpodEndpoint(env, endpointId, body, "train-lora submit", opts),
+    "runpod-render",
+  );
 }
 
 // Submit a Wan 2.2 A14B LoRA training job to the DEDICATED Wan-training endpoint (the lead's
@@ -1010,12 +1041,15 @@ export async function submitTrainWanLoraJob(
       SecretsStoreSecret | string | undefined,
   );
   if (!endpointId) return runpodMissingWanEndpoint();
-  return submitToRunpodEndpoint(
-    env,
-    endpointId,
-    JSON.stringify(buildTrainWanLoraPayload(args)),
-    "train-wan-lora submit",
-    opts,
+  return onBackend(
+    await submitToRunpodEndpoint(
+      env,
+      endpointId,
+      JSON.stringify(buildTrainWanLoraPayload(args)),
+      "train-wan-lora submit",
+      opts,
+    ),
+    "runpod-wan-train",
   );
 }
 
@@ -1110,14 +1144,14 @@ export async function pollCastLoraJob(
   );
   let wanPoll: RunpodResult | undefined;
   if (wanEndpointId) {
-    wanPoll = await pollRunpodJob(env, wanEndpointId, jobId, opts);
+    wanPoll = onBackend(await pollRunpodJob(env, wanEndpointId, jobId, opts), "runpod-wan-train");
     if (wanPoll.ok) return wanPoll;
     if (wanPoll.status !== 404) return wanPoll;
   }
 
   let localPoll: RunpodResult | undefined;
   if (await localDoorConfigured(env)) {
-    localPoll = await pollLocalDoorJob(env, jobId, opts);
+    localPoll = onBackend(await pollLocalDoorJob(env, jobId, opts), "local-door");
     if (localPoll.ok) return localPoll;
     if (localPoll.status !== 404) return localPoll;
   }
@@ -1129,7 +1163,7 @@ export async function pollCastLoraJob(
     if (wanPoll) return wanPoll;
     return runpodMissingEndpoint();
   }
-  const renderPoll = await pollRenderJob(env, jobId, opts);
+  const renderPoll = onBackend(await pollRenderJob(env, jobId, opts), "runpod-render");
   return mergeCastLoraPollResults(wanPoll ?? localPoll, renderPoll);
 }
 
