@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.15.0
+## [1.15.0] -- 2026-08-15
 
 ### feat(modules): the phase stall ceiling is sized to the work, not to a constant (core#182)
 
@@ -212,6 +212,94 @@ it is **not** a column without a writer -- `renders-db.ts:648` writes it and the
 `job.finish_elapsed_ms`. The value is never produced, because it accumulates only from a module
 forwarding `elapsed_ms`. That refines cf#369 item 2: the gap is the producer, not the column, and
 those need different fixes.
+
+### ci(comments): detect comments naming a consumer-side file that no longer exists (core#183)
+
+A census of `src/` measured **1424 comment blocks, 650 of which make a falsifiable claim about
+another component, and 7 measurably false**. Verifying a claim costs a human read; verifying that a
+NAMED FILE still exists costs a filesystem lookup. That is the one axis of the census worth
+automating, and it had the highest yield per unit cost of the three tried.
+
+`scripts/comment-symbol-refs.mjs` flags a comment in `src/` that names `<something>.py` when no live
+consumer repo contains a file by that name. It runs in `ci` against the five satellite/backend repos
+plus `vivijure-cf`.
+
+**What it detects, stated narrowly:** a STALE REFERENCE. That is a **superset** of the false-claim
+class and not the same thing -- a stale name can sit above a perfectly true sentence, which is why
+the census counted 8 such comments separately. The tool does not claim a flagged comment is WRONG,
+only that it points at something that is gone. Overclaiming here would make the number useless.
+
+**Failure posture, which is the whole design:**
+
+- **Refuses (exit 2) when no consumer root is declared**, and **also when only SOME resolve.** Five
+  of six checkouts is not a clean sweep, it is a narrower one reporting the same green.
+- **A two-way control runs on EVERY invocation, before any verdict:** a known-present file must
+  resolve and a known-absent one must not. Either failing exits 2, because a resolver that cannot see
+  is indistinguishable from a tree with nothing stale in it.
+- **`tests/comment-symbol-refs.test.ts` drives the SHIPPED script** through nine constructed cases --
+  clean tree, stale reference, no roots, partial roots, blind control, string-literal-not-a-comment,
+  exclusion honoured, exclusion drift, malformed exclusion. So CI watches the detector fail on every
+  run rather than only watching it pass.
+
+**Exclusions carry a reason AND an expected count**, both required or the script refuses. The count
+is what stops an allowlist growing coverage holes: an exclusion covers a KNOWN set of references, so
+a new mention of an already-excluded file trips the gate instead of being absorbed.
+
+Ten current references across four symbols are excluded and tracked in core#183, each with its
+reason recorded: `rp_handler.py` (3), `core.py` (5), `characters.py` (1), `studio_service.py` (1).
+Most name the retired `vivijure-serverless` worker, so the file is gone with its repo rather than
+missing from a live one. **The known-false comments are deliberately NOT fixed here** -- fixing a
+detector's findings in the same change that ships it leaves the detector never observed firing on
+real data.
+
+**One correction to the reasoning that motivated this.** The census reported that searching `docs/`
+masked `rp_handler.py`. Measured while building this: for a FILENAME resolver, excluding `docs/`
+changes nothing -- identical results with and without, on all nine symbols. That masking was a
+CONTENT match, and a filename match is immune to it by construction. The `docs/` exclusion is kept
+as cheap insurance against a doc file literally named for a consumer module, not because it is
+load-bearing.
+
+**What it cannot see, so green is not mistaken for coverage:** dotted symbol references
+(`r2_io.download_and_extract`) are out of scope, because the looser form matches ordinary property
+access at a noise level that would get the guard switched off; claims naming no file and no symbol
+are unreachable by any of this; nothing outside `src/` is scanned; and it says nothing about whether
+a claim is TRUE, only whether the file it names still exists.
+
+### fix(render): single-source the `output_json` payload across its writers (core#205)
+
+- `markFinishDone` writes `output_json = ?` UNCONDITIONALLY (not `COALESCE`, unlike `output_ms` and
+  `finish_elapsed_ms` in the same statement), so whichever site writes last takes the whole column.
+  The payload was built in several places and only ONE of them derived it from the poll view, so a
+  field added to the view was silently absent from the row anyone queries. That already cost
+  cf#549's `film_finish` sidecar (core#203).
+- `filmDonePayload` / `scatterDonePayload` (`src/render-output-payload.ts`) are now the single source
+  for the four sites that hold a job doc. `render-adopt` stays hand-built ON PURPOSE and is pinned by
+  a test: it has no job doc and its key set is a different CONTRACT, not a drifted copy. Folding it
+  in would have bent the shape to make the writer count come out at one, and a refactor that swallows
+  a genuinely different contract to make a number look clean is how the next drift hides.
+- The keys the finalize writer cannot reach are asserted as an ENUMERATED DELTA
+  (`["clip_deliveries", "clips", "model"]`), not as an absence. An absence check would keep passing if
+  the builder later stopped emitting all three.
+- **The writer population is FIVE, not the three the issue names**, derived by UNION of five sweeps
+  (36 `output_json` lines, 12 `outputJson`, 3 `markFinishDone` call sites, 4 `updateRenderFromView`
+  call sites, 15 `output_key:` literals). Derived by intersection it would have been three, and the
+  broken writer drops out of its own population.
+- **Site 4 changes the issue's story and is worth more than the fix.** core#205 says scatter "happens
+  to survive because `updateRenderFromView` runs after `finalizeScatterDone`". It survives because
+  that later writer is a SECOND HAND-BUILT OBJECT restating the same three keys: two independently
+  maintained duplicates agreeing, not an ordering guarantee. **Anyone acting on the issue's version
+  would have hardened the ordering and left the actual fragility untouched.**
+- **The five are not uniformly proven, and this is the qualification to carry.** Three further
+  statements touching the column were screened OUT by REASONING, not by test:
+  `setCloudAnimateProgress` and `setHybridProgress` (both terminal-guarded) and
+  `setRenderAudioOutput` (a `json_set` merge). Those exclusion arguments are ARGUMENTS, not
+  assertions, and the checkable form of the risk is that **no test in this repo would fail if either
+  argument turned out to be wrong.**
+- Found live while writing the acceptance probe: `keyframes_incomplete` was in the poll view and
+  absent from `transitionToDone`'s hand-built payload, and on the single-film path that write is the
+  LAST writer of the tick. A film that dropped keyframes and shipped anyway recorded the loud degrade
+  in the view and lost it from the row. The probe is that field, so it is a real value rather than a
+  synthetic one.
 
 ## [1.14.0] -- 2026-08-14
 
