@@ -67,6 +67,40 @@ export const HOOK_CARDINALITY: Record<HookName, "pick_one" | "chain"> = {
   "film.finish": "chain",
 };
 
+/** Chain hooks that honour a per-render participation selection (cf#537).
+ *
+ *  A chain hook NOT in this set ignores `select` entirely and keeps run-every-bound-module, which is
+ *  what every chain hook did before cf#537 and what all of them except `finish` still do. That is a
+ *  DELIBERATE default, not an oversight: `finish` folds four modules that each mutate the picture and
+ *  feed the next, so running all four is a compounding cost and quality decision the caller could not
+ *  make. `notify` is a true fan-out (several notifiers delivering IS the intent), `plan.enhance` is a
+ *  genuine fold, and `speech` / `master` / `film.finish` have too few declarers today for the question
+ *  to bite. Adding a hook here is a reviewable product decision with its own issue -- never a side
+ *  effect of editing this file, and never a consequence of a hook merely being `chain`. */
+export const SELECTABLE_HOOKS: ReadonlySet<HookName> = new Set<HookName>(["finish"]);
+
+/** A caller's per-render participation statement for ONE selectable chain hook (cf#537).
+ *
+ *  THREE states exist on the wire and they must never collapse:
+ *    - ABSENT (this hook missing from RenderHookSelection) -- the caller predates the contract.
+ *      Resolves to the DEFAULT-PARTICIPATION set: every serving module whose manifest does not
+ *      declare `participation: "opt_in"`. Deliberately NOT representable inside this type.
+ *    - { mode: "default" } -- a contract-aware caller explicitly asking for the studio default.
+ *      Resolves identically to ABSENT, and is distinguishable from it in telemetry.
+ *    - { mode: "named"; modules } -- exactly these, in ui.order. `modules: []` means ZERO finish
+ *      modules and is a first-class value, not an absence.
+ *
+ *  A bare `string[]` was rejected on purpose. It invites `sel?.length ? named(sel) : all()` at some
+ *  call site nobody reviews, which collapses "explicitly zero modules" back into "absent" and
+ *  rebuilds the exact defect cf#537 exists to fix. With the tag, that collapse does not typecheck. */
+export type HookSelection =
+  | { mode: "default" }
+  | { mode: "named"; modules: string[] };
+
+/** A whole render's participation statement, keyed by hook. Only hooks in SELECTABLE_HOOKS are
+ *  honoured; an entry for any other hook is carried but ignored by `selectForChain`. */
+export type RenderHookSelection = Partial<Record<HookName, HookSelection>>;
+
 /** One-line description of each hook, for the self-assembling UI. Single source of truth: the
  *  frontend renders the hook panel from this (served via GET /api/modules), not a hardcoded copy. */
 export const HOOK_BLURBS: Record<HookName, string> = {
@@ -234,6 +268,26 @@ export interface ModuleManifest {
    *  ABSENT means no declared constraint -- the module must never fabricate a grid. Tier keys match
    *  the render quality tiers the module accepts (e.g. draft/standard/final). */
   duration_grid?: DurationGridDecl;
+  /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable` / `finish_consumes_audio`).
+   *  cf#537. Whether this module runs when a render carries NO explicit selection for its hook.
+   *
+   *    "default" or ABSENT -- yes. The pre-cf#537 behaviour: bound and serving means it runs.
+   *    "opt_in"            -- no. It runs ONLY when a caller NAMES it in that render's selection.
+   *
+   *  The module declares its OWN nature; the participation POLICY stays in the core (`selectForChain`),
+   *  exactly the division of labour `finish_consumes_audio` already uses. Naming a module explicitly
+   *  overrides this field in the permissive direction -- naming IS the opt-in -- and never in the
+   *  restrictive one.
+   *
+   *  KNOWN LIMIT, stated here rather than discovered later: the default is PERMISSIVE, so ABSENCE is a
+   *  signal at the manifest layer. A module that ought to be opt_in and does not say so keeps running
+   *  on every render and nothing reports it -- the same shape as the defect cf#537 fixes, relocated one
+   *  layer down. It is accepted because the alternative is a simultaneous 27-manifest cutover, which
+   *  this file already reasons against for the /1 -> /2 migration. The mitigation is `checkManifest`,
+   *  which FAILS conformance for any module declaring a SELECTABLE hook without an explicit value,
+   *  while `validateManifest` still LOADS such a manifest (a third-party module is not our gate to
+   *  fail). A malformed value is refused at load, so a typo can never read as "default". */
+  participation?: "default" | "opt_in";
 }
 
 /** A fixed duration grid for a motion backend (#707): the pinned output fps and the per-quality-tier
