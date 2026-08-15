@@ -483,23 +483,48 @@ export async function updateRenderFromView(
   await prepared.afterWrite(ctx);
 }
 
-/** Apply N prepared render-row updates as ONE D1 round trip (core#181).
+/** Issue N independent prepared writes as ONE D1 round trip where the host offers `Database.batch`,
+ *  and as one round trip per statement where it does not (core#181 gather, core#215 submit).
+ *
+ *  THIS GUARD IS THE POINT, and it is why every caller goes through here rather than writing its
+ *  own. `Database.batch` is OPTIONAL in the platform contract (platform/types.ts) because the LOCAL
+ *  panel supplies its own SQLite-backed Database; the CF binding implements it. `env.DB.batch!(...)`
+ *  therefore asserts to the COMPILER something no host is required to honour, and asserts nothing at
+ *  runtime -- on a batch-less host it throws a TypeError at the call site. core#215 was exactly
+ *  that, in the scatter submit, where the surrounding catch swallowed the TypeError as a d1.error
+ *  and the submit reported success having written none of its shard rows. Three files had
+ *  independently written this guard by then (the storage-ledger rebuild, the gather tick, and
+ *  nearly the submit); one copy, called from all of them, is the fix for the class rather than the
+ *  instance.
+ *
+ *  Both arms go through `withD1Retry` under the SAME label, so a host without batch is observably
+ *  the same operation in the d1.retry / d1.exhausted stream, only issued N times.
+ *
+ *  FAILURE IS ALL-OR-NOTHING BY CONTRACT, in both arms. A D1 batch is one transaction, so a
+ *  rejection means no row moved. The sequential fallback can land a prefix, so this THROWS on the
+ *  first failure rather than continuing, and the caller must treat the whole set as unwritten. Both
+ *  current callers write idempotent statements (an UPDATE keyed on job_id; an INSERT ... ON CONFLICT
+ *  DO NOTHING), so re-issuing a prefix is free; the alternative (reporting partial success) would
+ *  hand the caller a distinction it cannot act on. */
+export async function runPreparedWrites(
+  env: Env,
+  stmts: PreparedStatement[],
+  label: string,
+): Promise<void> {
+  if (stmts.length === 0) return;
+  if (env.DB.batch) {
+    await withD1Retry(() => env.DB.batch!(stmts), { label });
+  } else {
+    for (const stmt of stmts) await withD1Retry(() => stmt.run(), { label });
+  }
+}
+
+/** Apply N prepared render-row updates, then their post-write side effects (core#181).
  *
  *  This is the batched twin of `updateRenderFromView`, for callers holding several INDEPENDENT row
  *  updates at once -- the scatter gather tick, which had N shards each paying its own round trip
- *  while the submit path in the same file already batched its N inserts.
- *
- *  `Database.batch` is OPTIONAL in the platform contract (platform/types.ts), so a host without it
- *  runs the same statements sequentially rather than throwing. That is the same shape
- *  `reconcileStorageLedger` already uses, and it is why this is not simply `env.DB.batch!(...)`:
- *  calling the bang form on a batch-less host would make every gather tick throw.
- *
- *  FAILURE IS ALL-OR-NOTHING BY CONTRACT, in both paths. A D1 batch is one transaction, so a
- *  rejection means no row moved. The sequential fallback can land a prefix, so this THROWS on the
- *  first failure rather than continuing, and the caller must treat the whole set as unwritten. Every
- *  statement here is an idempotent UPDATE keyed on job_id, so re-issuing a prefix on the next tick
- *  is free; the alternative (reporting partial success) would hand the caller a distinction it
- *  cannot act on. */
+ *  while the submit path in the same file already batched its N inserts. The write itself is
+ *  `runPreparedWrites` above, including its all-or-nothing failure contract. */
 export async function runPreparedRenderUpdates(
   env: Env,
   prepared: PreparedRenderUpdate[],
@@ -507,12 +532,7 @@ export async function runPreparedRenderUpdates(
   label = "renders.update.batch",
 ): Promise<void> {
   if (prepared.length === 0) return;
-  if (env.DB.batch) {
-    const stmts = prepared.map((p) => p.stmt);
-    await withD1Retry(() => env.DB.batch!(stmts), { label });
-  } else {
-    for (const p of prepared) await withD1Retry(() => p.stmt.run(), { label });
-  }
+  await runPreparedWrites(env, prepared.map((p) => p.stmt), label);
   for (const p of prepared) await p.afterWrite(ctx);
 }
 
