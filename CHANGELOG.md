@@ -95,6 +95,31 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
   annotation, a planted early date reddens on its own reason, and restoring the true values goes
   green -- the control proving it does not simply always fail.
 
+### test(changelog): entries under a released heading must be in that release (core#202)
+
+- `tests/changelog-released-entries.test.ts`: for every `## [X.Y.Z]` heading with a matching
+  `vivijure-core-vX.Y.Z` tag, each `### ` entry beneath it must have been introduced by a commit that
+  is an ANCESTOR of that tag. Sibling of `changelog-version.test.ts`, which guards the HEADING; this
+  guards the ENTRIES.
+- core#204 found three entries under the published `## [1.13.0]` naming work that merged after the
+  tag, and while that PR sat open it acquired a FOURTH from an unrelated merge appending to the top
+  released heading while `## Unreleased` was empty. The accrual is mechanical, one per merge in that
+  state, and nothing in the repo could observe it: measured across 179 tracked files, 7 workflows and
+  2 scripts, the only `merge-base --is-ancestor` was `publish-npm.yml:37` asserting a build commit is
+  on main.
+- A BACKFILL is legitimate and must be DECLARED. An entry can postdate its tag for a good reason --
+  the work shipped, the prose was late -- which is documented practice here (`63fd0bb7` added the
+  v1.3.0 lip-sync entry ten minutes after the tag). A naive ancestry check calls that a defect, and a
+  guard that manufactures defects is worse than one that misses them, because someone then deletes a
+  correct record. Such an entry carries a `Backfilled: <why>` line; every accepted backfill is
+  PRINTED on every run, so an exemption is visible rather than silent.
+- Refusals are not passes: a shallow clone, absent tags, an unresolvable entry or a zero-row
+  derivation all FAIL. `ci.yml` gains `fetch-depth: 0`, because `fetch-tags` and history depth are
+  separate facts and `merge-base` cannot answer on a shallow clone.
+- Driven RED before shipping: a planted post-tag entry under `## [1.13.0]` reddens the gate and the
+  diagnostic names the entry and the tag; the same entry carrying a `Backfilled:` line goes green,
+  which is the control proving the gate does not simply always fail.
+
 ## [1.14.0] -- 2026-08-14
 
 MINOR. Per-render participation for the `finish` chain (cf#537), so a caller names which finish
@@ -141,31 +166,6 @@ manifest layer is a signal, and the mitigation is the conformance gate rather th
 **Consumers** repin to pick this up; `vivijure-cf` carries the matching `finish-blender`
 `participation: "opt_in"` declaration and the door plumbing.
 
-
-### test(changelog): entries under a released heading must be in that release (core#202)
-
-- `tests/changelog-released-entries.test.ts`: for every `## [X.Y.Z]` heading with a matching
-  `vivijure-core-vX.Y.Z` tag, each `### ` entry beneath it must have been introduced by a commit that
-  is an ANCESTOR of that tag. Sibling of `changelog-version.test.ts`, which guards the HEADING; this
-  guards the ENTRIES.
-- core#204 found three entries under the published `## [1.13.0]` naming work that merged after the
-  tag, and while that PR sat open it acquired a FOURTH from an unrelated merge appending to the top
-  released heading while `## Unreleased` was empty. The accrual is mechanical, one per merge in that
-  state, and nothing in the repo could observe it: measured across 179 tracked files, 7 workflows and
-  2 scripts, the only `merge-base --is-ancestor` was `publish-npm.yml:37` asserting a build commit is
-  on main.
-- A BACKFILL is legitimate and must be DECLARED. An entry can postdate its tag for a good reason --
-  the work shipped, the prose was late -- which is documented practice here (`63fd0bb7` added the
-  v1.3.0 lip-sync entry ten minutes after the tag). A naive ancestry check calls that a defect, and a
-  guard that manufactures defects is worse than one that misses them, because someone then deletes a
-  correct record. Such an entry carries a `Backfilled: <why>` line; every accepted backfill is
-  PRINTED on every run, so an exemption is visible rather than silent.
-- Refusals are not passes: a shallow clone, absent tags, an unresolvable entry or a zero-row
-  derivation all FAIL. `ci.yml` gains `fetch-depth: 0`, because `fetch-tags` and history depth are
-  separate facts and `merge-base` cannot answer on a shallow clone.
-- Driven RED before shipping: a planted post-tag entry under `## [1.13.0]` reddens the gate and the
-  diagnostic names the entry and the tag; the same entry carrying a `Backfilled:` line goes green,
-  which is the control proving the gate does not simply always fail.
 
 ### fix(scatter): discover the module registry once per request, not once per shard (vivijure-cf#515)
 
