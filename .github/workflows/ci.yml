@@ -26,11 +26,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-tags: true
-          # core#209: tests/releases-ledger.test.ts resolves each ledger row's tag to its
-          # COMMIT (`git rev-list -n 1 <tag>`), which a shallow clone cannot do -- fetch-tags
-          # supplies the tag OBJECTS and not the history behind them. The guard REFUSES rather
-          # than passing when the clone is shallow, so without this the failure is loud and
-          # misdirected instead of silent.
+          # core#202: tests/changelog-released-entries.test.ts asks an ANCESTRY question
+          # (is the commit that introduced this entry an ancestor of that releases tag?), and
+          # merge-base cannot answer it on a shallow clone. fetch-tags alone is not enough --
+          # tags present and history present are separate facts, and the default depth is 1.
+          # The guard REFUSES rather than passing when the clone is shallow, so without this the
+          # failure is loud and misdirected rather than silent; this is what makes it measure.
+          # core#209: tests/releases-ledger.test.ts resolves each ledger row tag to its COMMIT
+          # (git rev-list -n 1 <tag>), which a shallow clone cannot do either -- fetch-tags
+          # supplies the tag OBJECTS and not the history behind them, and this guard also
+          # REFUSES rather than passing when the clone is shallow.
           fetch-depth: 0
       - name: Checkout vivijure (module manifest drift guard)
         uses: actions/checkout@v7
