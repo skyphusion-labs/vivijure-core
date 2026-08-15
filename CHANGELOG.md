@@ -5,6 +5,51 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased / v1.15.0
 
+### feat(modules): the phase stall ceiling is sized to the work, not to a constant (core#182)
+
+- `PHASE_HARD_DEADLINE_SECONDS` (90min) fails a pollable phase that has shown no progress.
+  `filmProgressMarker` deliberately does not count `attempts` -- a step retrying is not a step
+  progressing -- so a finish/speech chain step can burn `FINISH_STEP_MAX_ATTEMPTS` whole invocations
+  against a clock that never re-stamps. Whether that fits inside 90 minutes is a fact about the
+  MODULE, and the ordering between a door's own guard and this ceiling spanned three repositories
+  with nothing asserting it.
+- NEW optional, additive manifest field `max_invocation_seconds` (no `MODULE_API` bump; the
+  `cancelable` / `duration_grid` / `participation` pattern): the per-invocation wall-clock ceiling
+  the module itself enforces. Malformed values are refused at LOAD (`validateManifest`); absence
+  stays legal and means UNDECLARED, which is a real and reportable state.
+- NEW `phaseCeiling` / `phaseCeilingVerdict` in `film-model.ts`, pure and exported so a test drives
+  the real seam instead of restating it (the reason `stampFilmProgress` was extracted in #182):
+
+      effective = max(PHASE_HARD_DEADLINE_SECONDS, FINISH_STEP_MAX_ATTEMPTS * max declared in play)
+
+  No new constant exists: both terms were already in the file. The 90 minutes is now a FLOOR, so the
+  derivation can only ever RAISE the ceiling and a job with nothing declared behaves byte-for-byte
+  as before (asserted as the CONTROL, not assumed).
+- A step whose module declares nothing gets NO substituted number. It is named on the job
+  (`FilmJob.ceiling_undeclared`) and in a `film.ceiling_undeclared` structured event, and the floor
+  holds -- so an unbounded ordering is visible instead of arriving as a dead render. A chain step
+  resolving to no registered module at all is reported SEPARATELY (`unresolved`), because collapsing
+  it would hide a different defect inside this one.
+- The CONFORMANCE requirement that forces a module to declare is deliberately NOT in this change
+  (core#223). Not one first-party `finish` door can declare a value honestly today, so the gate would
+  land RED in a shared repo and block every other lane, and a gate that blocks correct work is a gate
+  that gets switched off. It lands with the declarations that satisfy it. Not softened into a warning
+  with an override: an override that becomes routine is indistinguishable from the check being off.
+- Scoped to `finish` and `speech` (`CEILING_DERIVED_HOOKS`), the two per-shot chain phases with the
+  retry-invisible-to-the-marker shape. `keyframe` and `clips` are ceiling-governed too but have
+  different stall math and recovery paths, and extending the derivation there without measuring them
+  would be inventing a guarantee rather than asserting one. The limit is asserted, not left to be
+  discovered.
+- WHAT THIS DOES NOT DO, stated so a green suite does not imply it: it does not give any door a
+  guard, and it does not choose a shot-length policy. Read from source at
+  `vivijure-backend@f9dc930`, `vivijure-upscale@d34135d`, `vivijure-musetalk@c97bd61` and
+  `vivijure-blender@4fa33fe`, not one of the four `finish` doors can declare a value honestly today:
+  two enforce no wall-clock guard at all, one guards decode and upscale but leaves ENCODE unguarded,
+  and the one that guards every subprocess makes all four of its tunables env-overridable. All four
+  module Workers carry `RUNPOD_COLD_GRACE_MS = 900_000` commented "the film pipeline's 90-min
+  deadline still bounds it", so the doors delegate the ceiling to core while core#182 reports that
+  core's ceiling kills their correctly-running work. Nobody owns it. This change is the channel that
+  forces one side to state a number or state that it has none.
 ### fix(scatter): scatter submit writes every shard row on a host with no `DB.batch` (core#215)
 
 - `finalizeScatterSubmit` wrote its N shard rows as `env.DB.batch!(stmts)`. `batch` is OPTIONAL on
