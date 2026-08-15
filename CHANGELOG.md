@@ -5,6 +5,37 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased / v1.15.0
 
+### fix(scatter): scatter submit writes every shard row on a host with no `DB.batch` (core#215)
+
+- `finalizeScatterSubmit` wrote its N shard rows as `env.DB.batch!(stmts)`. `batch` is OPTIONAL on
+  the `Database` interface (`platform/types.ts`), because the LOCAL panel supplies its own
+  SQLite-backed implementation; the `!` satisfies the compiler and asserts nothing at runtime.
+- CORRECTING THE FILED SYMPTOM, which was worse than reported: the call does not throw out of
+  submit. The TypeError lands in the surrounding `catch`, which logs a structured `d1.error` and
+  swallows it by design (#289 runnability-first). So on a batch-less host the submit reported
+  SUCCESS having written NONE of its shard rows, with every one of them left to the poll-path
+  self-heal. MEASURED on the fixture before the fix: 0 of 3 shard rows written, 1 swallowed
+  `d1.error`, submit resolved.
+- The guard now lives in ONE place: `runPreparedWrites(env, stmts, label)` in `renders-db.ts`
+  (batch where the host offers it, one round trip per statement where it does not, both through
+  `withD1Retry` under the same label). `runPreparedRenderUpdates` (core#181) delegates to it, and
+  the submit path calls it. Three files had independently written this guard; a fourth copy is the
+  defect, so this is one copy with two callers rather than a new pattern.
+- Behaviour chosen and asserted for a no-batch host: the SAME rows, issued sequentially, N round
+  trips instead of 1, all-or-nothing on failure preserved (throws on the first failure, caller
+  treats the set as unwritten). Explicitly NOT a silent `?.` no-op.
+- ACCEPTANCE asserts the REASON, not the status. The core#181 D1 round-trip recorder moved to
+  `tests/helpers/scatter-d1-trips.ts` (one fixture, two suites) and now captures BINDS, so the
+  assertions read the `job_id` that actually reached the host: 3 of 3 shard rows on a no-batch host,
+  sweep `[[2,2],[3,3],[6,6]]`, zero swallowed `d1.error` lines, and the with-batch host still costs
+  ONE round trip carrying three statements. A control proves the no-batch fixture OMITS `batch`
+  rather than stubbing it.
+- MUTATION-TESTED, both directions. Reverting the call site to `env.DB.batch!(stmts)` reddens
+  exactly the four no-batch assertions (4 failed of 766) and leaves the controls and the with-batch
+  case green. Replacing the sequential arm with a silent no-op reddens four (three here plus
+  core#181's no-batch gather test) while the `d1.error` assertion stays GREEN, which is why the
+  count and identity assertions exist: a silent no-op logs nothing.
+
 ### fix(scatter): the gather tick batches its per-shard render-row writes (core#181)
 
 - `advanceScatterJob` issued one `updateRenderFromView` D1 round trip PER SHARD, every tick, for the
