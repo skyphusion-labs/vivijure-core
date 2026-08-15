@@ -5,6 +5,51 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased / v1.15.0
 
+### feat(modules): the phase stall ceiling is sized to the work, not to a constant (core#182)
+
+- `PHASE_HARD_DEADLINE_SECONDS` (90min) fails a pollable phase that has shown no progress.
+  `filmProgressMarker` deliberately does not count `attempts` -- a step retrying is not a step
+  progressing -- so a finish/speech chain step can burn `FINISH_STEP_MAX_ATTEMPTS` whole invocations
+  against a clock that never re-stamps. Whether that fits inside 90 minutes is a fact about the
+  MODULE, and the ordering between a door's own guard and this ceiling spanned three repositories
+  with nothing asserting it.
+- NEW optional, additive manifest field `max_invocation_seconds` (no `MODULE_API` bump; the
+  `cancelable` / `duration_grid` / `participation` pattern): the per-invocation wall-clock ceiling
+  the module itself enforces. Malformed values are refused at LOAD (`validateManifest`); absence
+  stays legal and means UNDECLARED, which is a real and reportable state.
+- NEW `phaseCeiling` / `phaseCeilingVerdict` in `film-model.ts`, pure and exported so a test drives
+  the real seam instead of restating it (the reason `stampFilmProgress` was extracted in #182):
+
+      effective = max(PHASE_HARD_DEADLINE_SECONDS, FINISH_STEP_MAX_ATTEMPTS * max declared in play)
+
+  No new constant exists: both terms were already in the file. The 90 minutes is now a FLOOR, so the
+  derivation can only ever RAISE the ceiling and a job with nothing declared behaves byte-for-byte
+  as before (asserted as the CONTROL, not assumed).
+- A step whose module declares nothing gets NO substituted number. It is named on the job
+  (`FilmJob.ceiling_undeclared`) and in a `film.ceiling_undeclared` structured event, and the floor
+  holds -- so an unbounded ordering is visible instead of arriving as a dead render. A chain step
+  resolving to no registered module at all is reported SEPARATELY (`unresolved`), because collapsing
+  it would hide a different defect inside this one.
+- The CONFORMANCE requirement that forces a module to declare is deliberately NOT in this change
+  (core#223). Not one first-party `finish` door can declare a value honestly today, so the gate would
+  land RED in a shared repo and block every other lane, and a gate that blocks correct work is a gate
+  that gets switched off. It lands with the declarations that satisfy it. Not softened into a warning
+  with an override: an override that becomes routine is indistinguishable from the check being off.
+- Scoped to `finish` and `speech` (`CEILING_DERIVED_HOOKS`), the two per-shot chain phases with the
+  retry-invisible-to-the-marker shape. `keyframe` and `clips` are ceiling-governed too but have
+  different stall math and recovery paths, and extending the derivation there without measuring them
+  would be inventing a guarantee rather than asserting one. The limit is asserted, not left to be
+  discovered.
+- WHAT THIS DOES NOT DO, stated so a green suite does not imply it: it does not give any door a
+  guard, and it does not choose a shot-length policy. Read from source at
+  `vivijure-backend@f9dc930`, `vivijure-upscale@d34135d`, `vivijure-musetalk@c97bd61` and
+  `vivijure-blender@4fa33fe`, not one of the four `finish` doors can declare a value honestly today:
+  two enforce no wall-clock guard at all, one guards decode and upscale but leaves ENCODE unguarded,
+  and the one that guards every subprocess makes all four of its tunables env-overridable. All four
+  module Workers carry `RUNPOD_COLD_GRACE_MS = 900_000` commented "the film pipeline's 90-min
+  deadline still bounds it", so the doors delegate the ceiling to core while core#182 reports that
+  core's ceiling kills their correctly-running work. Nobody owns it. This change is the channel that
+  forces one side to state a number or state that it has none.
 ### fix(scatter): scatter submit writes every shard row on a host with no `DB.batch` (core#215)
 
 - `finalizeScatterSubmit` wrote its N shard rows as `env.DB.batch!(stmts)`. `batch` is OPTIONAL on
@@ -94,6 +139,31 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
   annotation and the fix, a planted wrong-but-real commit reddens it without falsely claiming
   annotation, a planted early date reddens on its own reason, and restoring the true values goes
   green -- the control proving it does not simply always fail.
+
+### test(changelog): entries under a released heading must be in that release (core#202)
+
+- `tests/changelog-released-entries.test.ts`: for every `## [X.Y.Z]` heading with a matching
+  `vivijure-core-vX.Y.Z` tag, each `### ` entry beneath it must have been introduced by a commit that
+  is an ANCESTOR of that tag. Sibling of `changelog-version.test.ts`, which guards the HEADING; this
+  guards the ENTRIES.
+- core#204 found three entries under the published `## [1.13.0]` naming work that merged after the
+  tag, and while that PR sat open it acquired a FOURTH from an unrelated merge appending to the top
+  released heading while `## Unreleased` was empty. The accrual is mechanical, one per merge in that
+  state, and nothing in the repo could observe it: measured across 179 tracked files, 7 workflows and
+  2 scripts, the only `merge-base --is-ancestor` was `publish-npm.yml:37` asserting a build commit is
+  on main.
+- A BACKFILL is legitimate and must be DECLARED. An entry can postdate its tag for a good reason --
+  the work shipped, the prose was late -- which is documented practice here (`63fd0bb7` added the
+  v1.3.0 lip-sync entry ten minutes after the tag). A naive ancestry check calls that a defect, and a
+  guard that manufactures defects is worse than one that misses them, because someone then deletes a
+  correct record. Such an entry carries a `Backfilled: <why>` line; every accepted backfill is
+  PRINTED on every run, so an exemption is visible rather than silent.
+- Refusals are not passes: a shallow clone, absent tags, an unresolvable entry or a zero-row
+  derivation all FAIL. `ci.yml` gains `fetch-depth: 0`, because `fetch-tags` and history depth are
+  separate facts and `merge-base` cannot answer on a shallow clone.
+- Driven RED before shipping: a planted post-tag entry under `## [1.13.0]` reddens the gate and the
+  diagnostic names the entry and the tag; the same entry carrying a `Backfilled:` line goes green,
+  which is the control proving the gate does not simply always fail.
 
 ## [1.14.0] -- 2026-08-14
 
@@ -1083,6 +1153,11 @@ MINOR (additive; new module `storage-quota`, one additive optional field on `R2L
   `dialogue_audio`, so an in-flight job from before this fix cannot strand on it either.
 - Recorded here from the tag range: this landed on main between 1.2.14 and 1.3.0 without an entry of its
   own, and an unlogged shipped change is the same ledger hole 1.2.13 had to be backfilled for.
+- Backfilled: the FIX shipped in v1.3.0; only this entry was late, added by `63fd0bb7` ten minutes
+  after the tag. Verified at the artifact -- the phrase is absent from `vivijure-core-v1.3.0`'s own
+  CHANGELOG (0 occurrences, against a control proving the matcher finds entries that ARE in it) while
+  the code it describes was already on main. This line is the machine-readable form of the sentence
+  above, so `tests/changelog-released-entries.test.ts` can tell a late ENTRY from a late RELEASE.
 
 ### Added: `host.hooks_unavailable` -- a host can declare hooks it cannot serve (vivijure-cf#98)
 
