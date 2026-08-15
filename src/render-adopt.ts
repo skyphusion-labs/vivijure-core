@@ -122,6 +122,13 @@ export async function handleAdoptRender(
         ? deriveProjectFromBundleKey(bundleKey)
         : jobId;
 
+  // core#205 screened this writer and deliberately LEFT it hand-built. The other four output_json
+  // payload builders restate a FilmJob/ScatterJob doc and so were folded into
+  // src/render-output-payload.ts. This one has no job doc at all: adopt takes a render produced
+  // OUTSIDE the orchestrator, so there is nothing to derive from and its key set
+  // ({output_key, seconds?, has_audio?}) is a different contract, not a drifted copy of the film
+  // one. tests/render-output-json-writers-205.test.ts pins that key set so the difference stays
+  // deliberate instead of becoming the next silent divergence.
   const outJson = (): string => {
     const out: Record<string, unknown> = { output_key: outputKey };
     if (typeof body.seconds === "number") out.seconds = body.seconds;

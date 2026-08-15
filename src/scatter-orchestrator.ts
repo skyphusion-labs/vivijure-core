@@ -24,6 +24,7 @@ import {
 } from "./film-orchestrator.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
 import { filmJobToPollView, filterScenesByShotIds, orderScenesByShotIds, mapRenderOverridesToModuleConfigs } from "./film-render-bridge.js";
+import { scatterDonePayload } from "./render-output-payload.js";
 import { presignR2Get, presignR2Put } from "./presign.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
 import { defaultGpuDoorModule, discoverModules, servingForHook } from "./modules/registry.js";
@@ -551,15 +552,14 @@ async function assembleScatterClips(
 
 async function finalizeScatterDone(env: Env, job: ScatterJob): Promise<void> {
   if (!job.film_key) return;
+  // core#205: DERIVED, shared with scatterJobToPollView. This write runs FIRST in the scatter tick
+  // and updateRenderFromView(scatterJobToPollView(job)) runs after it, so the VIEW is the last writer
+  // here -- the opposite order from the single-film path. Identical bytes is what makes that safe.
   await markFinishDone(
     env,
     job.scatter_id,
     job.film_key,
-    JSON.stringify({
-      output_key: job.film_key,
-      project: job.project,
-      mode: "full",
-    }),
+    JSON.stringify(scatterDonePayload(job)),
     outputMsFromSeconds(job.film_output_seconds?.[job.film_key]),
     job.finish_elapsed_ms,
   );
@@ -846,7 +846,8 @@ export function scatterJobToPollView(job: ScatterJob): RunpodJobView {
     status = "CANCELLED";
   } else if (job.phase === "done") {
     status = "COMPLETED";
-    output = { output_key: job.film_key, project: job.project, mode: "full" };
+    output = scatterDonePayload(job); // core#205: same builder finalizeScatterDone uses
+
   } else if (job.phase === "failed") {
     status = "FAILED";
   } else {
