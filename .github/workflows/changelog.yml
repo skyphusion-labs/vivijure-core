@@ -1,0 +1,51 @@
+name: changelog
+
+# core#178: two PRs (#176, #177) shipped src/ changes with no CHANGELOG.md entry, caught only by a
+# human reading RELEASES.md instead of trusting a description of it. This job fails a PR that
+# touches src/ without also touching CHANGELOG.md or adding a changelog.d/ fragment (core#202,
+# ported convention from vivijure-cf#546, itself ported from vivijure-control-plane cp#358).
+#
+# Deliberately narrow: src/ only, matching this repo package surface (no public/ or modules/
+# top-level directories, unlike vivijure-cf). Touch, not content -- the check exists to make the
+# author stop and decide, not to grade prose. Escape hatch is the no-changelog label, so a
+# deliberate skip is a recorded decision on the PR rather than a silent one.
+#
+# THREE-DOT, NOT TWO. See scripts/changelog-entry-required.mjs and
+# tests/changelog-entry-required.test.ts, which reproduce the two-dot false pass as a fixture and
+# prove three-dot fixes it.
+#
+# Not part of the required-check set the CI workflow enforces; this job id can be renamed freely.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: CHANGELOG.md entry required for src/ changes
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/changelog-entry-required.mjs . "$BASE_SHA" "$HEAD_SHA" "$LABELS_JSON"
