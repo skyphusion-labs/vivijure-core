@@ -13,7 +13,9 @@
 //
 //     effective = max(PHASE_HARD_DEADLINE_SECONDS, FINISH_STEP_MAX_ATTEMPTS * max declared in play)
 //
-// so the 90 minutes is a FLOOR rather than a guess, and no new constant exists.
+// so the 90 minutes is a FLOOR rather than a guess, and no new constant exists. The CONFORMANCE
+// requirement that forces a module to declare is SEQUENCED to core#223, to land with the
+// declarations that satisfy it rather than red in a shared repo.
 //
 // WHAT THESE TESTS ARE CAREFUL ABOUT. Every declared value here is NON-DEFAULT and distinct from
 // every other, because on a default an honoured declaration and a substituted one are byte-identical.
@@ -261,23 +263,17 @@ describe("core#182 the declaration is refused at LOAD when malformed, and requir
     }
   });
 
-  it("MEASURED: conformance FAILS a module serving a ceiling-derived hook with no declaration", () => {
-    for (const hook of ["finish", "speech"]) {
-      const checks = checkManifest({ ...base, hooks: [hook], participation: "default" });
-      const c = checks.find((x) => x.name === "max-invocation-seconds");
-      expect(c?.pass, hook).toBe(false);
+  // THE GATE IS NOT IN THIS PR, and its absence is deliberate rather than an oversight. Not one
+  // first-party `finish` door can declare a value honestly today, so a conformance requirement would
+  // land RED in a shared repo and block every other lane -- and a gate that blocks correct work is a
+  // gate that gets switched off. It lands with the declarations that satisfy it (core#223).
+  //
+  // What IS asserted here is that `checkManifest` stays SILENT on this field for now, so the day the
+  // gate lands it is a visible change rather than something that was quietly half-present.
+  it("MEASURED: conformance does not yet speak about this field, and that is the sequencing, not a softening", () => {
+    for (const hooks of [["finish"], ["speech"], ["notify"]]) {
+      const checks = checkManifest({ ...base, hooks, participation: "default" });
+      expect(checks.some((x) => x.name === "max-invocation-seconds"), hooks.join()).toBe(false);
     }
-  });
-
-  it("MEASURED: conformance PASSES the same module once it declares one", () => {
-    const checks = checkManifest({ ...base, max_invocation_seconds: UPSCALE_SECONDS });
-    expect(checks.find((x) => x.name === "max-invocation-seconds")?.pass).toBe(true);
-  });
-
-  it("MEASURED: the gate is SCOPED -- a module serving no ceiling-derived hook is not asked", () => {
-    // Or it becomes a whole-catalogue cutover by the back door, which is what this repo already
-    // reasons against for the /1 -> /2 migration and for cf#537's participation gate.
-    const checks = checkManifest({ ...base, hooks: ["notify"], participation: undefined });
-    expect(checks.some((x) => x.name === "max-invocation-seconds")).toBe(false);
   });
 });

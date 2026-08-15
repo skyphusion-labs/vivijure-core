@@ -335,8 +335,15 @@ export interface ModuleManifest {
    *  the manner of `duration_grid` relaying its backend's fixed grid. A module with no wall-clock
    *  guard MUST leave this absent rather than declaring an aspiration: absent means "undeclared",
    *  which is a real and reportable state, and the core says so out loud instead of substituting a
-   *  number. `checkManifest` FAILS conformance for a module serving a hook the core derives a
-   *  ceiling from, so an absence is loud at the gate rather than discovered by a dead render.
+   *  number: it is named on `FilmJob.ceiling_undeclared` and in a `film.ceiling_undeclared` structured
+   *  event, so an absence is visible rather than discovered by a dead render.
+   *
+   *  A CONFORMANCE GATE ON THIS FIELD IS SEQUENCED, NOT SOFTENED. `checkManifest` does NOT yet fail a
+   *  module for omitting it, because not one first-party `finish` door can declare a value honestly
+   *  today (two enforce no wall-clock guard at all) -- so the gate would land RED in a shared repo,
+   *  blocking every other lane, and a gate that blocks correct work gets switched off. It lands with
+   *  the declarations that satisfy it. Deliberately not a warning-with-override: an override that
+   *  becomes routine is indistinguishable from the check being off.
    *
    *  NOT A RATE, and this is the line that must not be crossed. Seconds per second of footage is a
    *  property of model x resolution x the card the job lands on, not of the module. A module

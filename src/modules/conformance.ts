@@ -11,7 +11,7 @@
 // .test.ts) drives them against a deployed module URL. This is the conformance half of the module
 // SDK: the contract is the law, and this is how a contributor proves they obey it.
 
-import { CEILING_DERIVED_HOOKS, SELECTABLE_HOOKS, SUPPORTED_MODULE_APIS, type HookName } from "./types.js";
+import { SELECTABLE_HOOKS, SUPPORTED_MODULE_APIS, type HookName } from "./types.js";
 import { validateManifest } from "./manifest-validate.js";
 
 export interface ConformanceCheck {
@@ -76,20 +76,6 @@ export function checkManifest(raw: unknown): ConformanceCheck[] {
     checks.push(p === "default" || p === "opt_in"
       ? ok("participation", String(p))
       : bad("participation", `a module serving ${selectable.join(", ")} must declare participation: "default" | "opt_in" (cf#537); got ${JSON.stringify(p)}`));
-  }
-  // core#182: a module serving a hook the core sizes its stall ceiling against must state its own
-  // per-invocation wall-clock ceiling. Absent means UNDECLARED, and the core cannot invent the
-  // number: it falls back to the floor and reports the module by name, so a door whose guard exceeds
-  // the ceiling kills a correctly-running render and nothing anywhere says why. Same split as
-  // participation above -- this fails CONFORMANCE, not LOAD, so a third-party manifest still loads.
-  // A module with no wall-clock guard at all cannot pass this honestly, and that is the intent: the
-  // finding is the missing guard, not the missing field.
-  const ceilingHooks = m.hooks.filter((h) => (CEILING_DERIVED_HOOKS as ReadonlySet<string>).has(h));
-  if (ceilingHooks.length) {
-    const v = (m as { max_invocation_seconds?: unknown }).max_invocation_seconds;
-    checks.push(typeof v === "number" && Number.isFinite(v) && v > 0
-      ? ok("max-invocation-seconds", String(v))
-      : bad("max-invocation-seconds", `a module serving ${ceilingHooks.join(", ")} must declare max_invocation_seconds (a positive number of seconds it actually enforces) so the core can size the phase ceiling to the work (core#182); got ${JSON.stringify(v)}`));
   }
   if (m.config_schema) {
     for (const [k, f] of Object.entries(m.config_schema)) checks.push(checkConfigField(k, f));

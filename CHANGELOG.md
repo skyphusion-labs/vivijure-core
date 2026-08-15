@@ -26,10 +26,15 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
   derivation can only ever RAISE the ceiling and a job with nothing declared behaves byte-for-byte
   as before (asserted as the CONTROL, not assumed).
 - A step whose module declares nothing gets NO substituted number. It is named on the job
-  (`FilmJob.ceiling_undeclared`) and in a `film.ceiling_undeclared` structured event, the floor
-  holds, and `checkManifest` FAILS conformance for a module serving a ceiling-derived hook without a
-  declaration -- so an unbounded ordering is loud at the gate instead of arriving as a dead render.
-  Conformance fails, LOAD does not: a third-party manifest keeps working.
+  (`FilmJob.ceiling_undeclared`) and in a `film.ceiling_undeclared` structured event, and the floor
+  holds -- so an unbounded ordering is visible instead of arriving as a dead render. A chain step
+  resolving to no registered module at all is reported SEPARATELY (`unresolved`), because collapsing
+  it would hide a different defect inside this one.
+- The CONFORMANCE requirement that forces a module to declare is deliberately NOT in this change
+  (core#223). Not one first-party `finish` door can declare a value honestly today, so the gate would
+  land RED in a shared repo and block every other lane, and a gate that blocks correct work is a gate
+  that gets switched off. It lands with the declarations that satisfy it. Not softened into a warning
+  with an override: an override that becomes routine is indistinguishable from the check being off.
 - Scoped to `finish` and `speech` (`CEILING_DERIVED_HOOKS`), the two per-shot chain phases with the
   retry-invisible-to-the-marker shape. `keyframe` and `clips` are ceiling-governed too but have
   different stall math and recovery paths, and extending the derivation there without measuring them
