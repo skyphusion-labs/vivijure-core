@@ -11,7 +11,7 @@ import {
   KEYFRAME_STALL_SECONDS,
 } from "./film-model.js";
 import type { RunpodJobView, RunpodStatus } from "./runpod-types.js";
-import { resolveFilmOutputKey } from "./film-output-key.js";
+import { filmDonePayload } from "./render-output-payload.js";
 import {
   resolveModuleRenderConfigs,
   type RenderTier,
@@ -155,41 +155,9 @@ export function filmJobToPollView(job: FilmJob, clipJob: ClipJob | null, keyfram
     status = "CANCELLED";
   } else if (job.phase === "done") {
     status = "COMPLETED";
-    const mode = job.derive_mode ?? (job.keyframes_only ? "keyframes-only" : "full");
-    output = {
-      output_key: resolveFilmOutputKey(job),
-      project: job.project,
-      mode,
-    };
-    if (job.film_finish?.sidecar_key) output.sidecar_key = job.film_finish.sidecar_key;
-    // cf#1662: ALWAYS set, including null. The key's presence is what says this row was measured.
-    output.film_finish = filmFinishView(job.film_finish);
-    if (job.finish_unavailable) {
-      output.finish_unavailable = {
-        at: job.finish_unavailable.at,
-        reason: job.finish_unavailable.reason,
-        delivered: job.finish_unavailable.delivered,
-      };
-      const uClips = job.finish_unavailable.clips;
-      if (uClips?.length) output.clips = uClips.map((c) => ({ shot_id: c.shot_id, key: c.clip_key }));
-    }
-    if (job.keyframes_only && job.keyframes?.length) {
-      output.keyframes = job.keyframes.map((k) => ({ shot_id: k.shot_id, key: k.keyframe_key }));
-      output.scenes = job.scenes;
-    }
-    if (job.derive_mode && clipJob) {
-      const clips = clipJob.shots
-        .filter((s) => s.status === "done" && s.clip_key)
-        .map((s) => ({
-          shot_id: s.shot_id,
-          key: s.clip_key as string,
-          model: s.motion_backend ?? clipJob.motion_backend ?? undefined,
-        }));
-      if (clips.length) output.clips = clips;
-      const models = new Set(clips.map((c) => c.model).filter(Boolean));
-      if (models.size === 1) output.model = [...models][0];
-      else if (job.motion_backend) output.model = job.motion_backend;
-    }
+    // core#205: the done payload is DERIVED, in exactly one place, shared with the finalize writer
+    // (transitionToDone -> markFinishDone). Do not inline fields here.
+    output = filmDonePayload(job, clipJob);
   } else if (job.phase === "failed") {
     status = "FAILED";
   } else {
@@ -202,12 +170,13 @@ export function filmJobToPollView(job: FilmJob, clipJob: ClipJob | null, keyfram
     if (job.phase === "keyframe" && job.keyframe_wait && output) {
       output.backend_wait = job.keyframe_wait;
     }
+    // These two used to sit after the branch, guarded by `&& output`, which meant they fired for the
+    // done branch and this one and never for CANCELLED/FAILED (both leave output undefined). The done
+    // branch now gets them from filmDonePayload, so they belong to the in-progress branch alone.
+    if (job.keyframes_incomplete && output) output.keyframes_incomplete = job.keyframes_incomplete;
+    const deliveries = clipDeliveries(clipJob);
+    if (deliveries && output) output.clip_deliveries = deliveries;
   }
-
-  if (job.keyframes_incomplete && output) output.keyframes_incomplete = job.keyframes_incomplete;
-
-  const deliveries = clipDeliveries(clipJob);
-  if (deliveries && output) output.clip_deliveries = deliveries;
 
   return {
     jobId: job.film_id,

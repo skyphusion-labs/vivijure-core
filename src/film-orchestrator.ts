@@ -121,6 +121,7 @@ import {
   type JobSummary,
 } from "./render-orchestrator.js";
 import { markFinishDone, markRenderFailedByJobId } from "./renders-db.js";
+import { filmDonePayload } from "./render-output-payload.js";
 import {
   adoptFilmOutputKeyFromStore,
   defaultFilmOutputKey,
@@ -1208,21 +1209,15 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
     }
   }
   if (filmKey) {
-    const mode = job.derive_mode ?? (job.keyframes_only ? "keyframes-only" : "full");
-    const out: Record<string, unknown> = { output_key: filmKey, project: job.project, mode };
-    if (job.film_finish?.sidecar_key) out.sidecar_key = job.film_finish.sidecar_key;
-    // fc#1662/cf#549: markFinishDone writes output_json UNCONDITIONALLY (not COALESCE), so this
-    // hand-built object is the LAST writer on the single-film path. Omitting film_finish here would
-    // erase what filmJobToPollView just put on the row -- the field would exist in the view, pass
-    // its tests, and be absent from the artifact anyone actually queries.
-    out.film_finish = filmFinishView(job.film_finish);
-    if (job.finish_unavailable) {
-      out.finish_unavailable = {
-        at: job.finish_unavailable.at,
-        reason: job.finish_unavailable.reason,
-        delivered: job.finish_unavailable.delivered,
-      };
-    }
+    // core#205: DERIVED, not restated. filmDonePayload is the single source for this payload and the
+    // poll view builds the same object from the same job doc, so a field added there arrives here for
+    // free. The adoption above already wrote the recovered key back onto job.film_key, and
+    // resolveFilmOutputKey prefers film_key, so the builder resolves to this same filmKey.
+    // clipJob is null here BY CONSTRUCTION: transitionToDone runs below the frame that read the clip
+    // doc. The two clip-doc-derived keys (clips/model on a derive_mode render, clip_deliveries) are
+    // therefore absent from THIS write and a later poll/sweep updateRenderFromView backfills them.
+    // This write is the LAST output_json writer of the single-film tick.
+    const out = filmDonePayload(job, null);
     try {
       // The length of the artifact actually delivered: a lookup of the FINAL film key, so whichever
       // stage wrote last supplies the number (Conrad, 2026-08-02: "we bill on the last writer").
