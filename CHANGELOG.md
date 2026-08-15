@@ -3,7 +3,99 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.14.0
+## Unreleased / v1.15.0
+
+### fix(scatter): scatter submit writes every shard row on a host with no `DB.batch` (core#215)
+
+- `finalizeScatterSubmit` wrote its N shard rows as `env.DB.batch!(stmts)`. `batch` is OPTIONAL on
+  the `Database` interface (`platform/types.ts`), because the LOCAL panel supplies its own
+  SQLite-backed implementation; the `!` satisfies the compiler and asserts nothing at runtime.
+- CORRECTING THE FILED SYMPTOM, which was worse than reported: the call does not throw out of
+  submit. The TypeError lands in the surrounding `catch`, which logs a structured `d1.error` and
+  swallows it by design (#289 runnability-first). So on a batch-less host the submit reported
+  SUCCESS having written NONE of its shard rows, with every one of them left to the poll-path
+  self-heal. MEASURED on the fixture before the fix: 0 of 3 shard rows written, 1 swallowed
+  `d1.error`, submit resolved.
+- The guard now lives in ONE place: `runPreparedWrites(env, stmts, label)` in `renders-db.ts`
+  (batch where the host offers it, one round trip per statement where it does not, both through
+  `withD1Retry` under the same label). `runPreparedRenderUpdates` (core#181) delegates to it, and
+  the submit path calls it. Three files had independently written this guard; a fourth copy is the
+  defect, so this is one copy with two callers rather than a new pattern.
+- Behaviour chosen and asserted for a no-batch host: the SAME rows, issued sequentially, N round
+  trips instead of 1, all-or-nothing on failure preserved (throws on the first failure, caller
+  treats the set as unwritten). Explicitly NOT a silent `?.` no-op.
+- ACCEPTANCE asserts the REASON, not the status. The core#181 D1 round-trip recorder moved to
+  `tests/helpers/scatter-d1-trips.ts` (one fixture, two suites) and now captures BINDS, so the
+  assertions read the `job_id` that actually reached the host: 3 of 3 shard rows on a no-batch host,
+  sweep `[[2,2],[3,3],[6,6]]`, zero swallowed `d1.error` lines, and the with-batch host still costs
+  ONE round trip carrying three statements. A control proves the no-batch fixture OMITS `batch`
+  rather than stubbing it.
+- MUTATION-TESTED, both directions. Reverting the call site to `env.DB.batch!(stmts)` reddens
+  exactly the four no-batch assertions (4 failed of 766) and leaves the controls and the with-batch
+  case green. Replacing the sequential arm with a silent no-op reddens four (three here plus
+  core#181's no-batch gather test) while the `d1.error` assertion stays GREEN, which is why the
+  count and identity assertions exist: a silent no-op logs nothing.
+
+### fix(scatter): the gather tick batches its per-shard render-row writes (core#181)
+
+- `advanceScatterJob` issued one `updateRenderFromView` D1 round trip PER SHARD, every tick, for the
+  life of a scatter job -- while `finalizeScatterSubmit`, 400 lines earlier in the same file, already
+  issues its N shard rows as one `env.DB.batch()` wrapped in `withD1Retry`. The capability was
+  present in the file; the gather path did not use it.
+- `updateRenderFromView` is split into `prepareRenderUpdate` (build the bound statement plus the
+  post-write log task) and the execution, so N independent row updates can go out as one batch via
+  the new `runPreparedRenderUpdates`. The single-view contract is unchanged.
+- MEASURED, counting D1 round trips across one `advanceScatterJob` call: render-row round trips go
+  from N to 1 (N=2: 2 -> 1; N=6: 6 -> 1; sweep over 2/3/6/12 shards: `[2,3,6,12]` -> `[1,1,1,1]`),
+  and total round trips per tick fall from `3N + 2` to `2N + 3` (N=2: 8 -> 7, N=6: 20 -> 15) -- a
+  slope of 3 round trips per shard down to 2.
+- NOT changed, deliberately: the per-shard `advanceFilmJob` calls stay SERIAL. They are not
+  statements and cannot be folded into a batch (each is a full orchestration tick with its own
+  lease, R2 reads and module fan-out), and whether they should run CONCURRENTLY is a separate
+  question with a subrequest-budget trade-off (vivijure-cf#512).
+- Error isolation is preserved rather than merely unbroken. A D1 batch is one transaction, so a
+  rejection means no row moved -- the same condition the per-shard `catch` handled one shard at a
+  time, true of every shard at once -- so every contributing shard is downgraded to UNDETERMINED
+  (IN_PROGRESS, not dead) with its done-shots withheld from the gather, and the tick still returns.
+  A shard that never reached a write keeps the status it already had, so a batch failure cannot
+  resurrect a genuinely-dead shard.
+- `Database.batch` is OPTIONAL in the platform contract, so a host without it runs the same
+  statements sequentially instead of throwing (the shape `reconcileStorageLedger` already uses).
+  `env.DB.batch!(...)` unconditionally would have made every gather tick throw on vivijure-local.
+- The acceptance asserts the ROUND-TRIP COUNT, not just that the tick succeeds: a correctness-only
+  test passes identically before and after and cannot observe the fix. Driven at N > 1 throughout,
+  since N = 1 makes the two forms indistinguishable. Mutation-tested on a scratch copy: reverting
+  the batching reddens exactly the five count assertions and leaves all five controls green;
+  removing only the isolation `try`/`catch` reddens exactly the isolation assertion and leaves every
+  count assertion green.
+
+### test(releases): the ledger's source commit must RESOLVE to its tag, not merely look like a sha (core#209)
+
+- `tests/releases-ledger.test.ts` asserted the cell was seven hex characters. Two different wrong
+  values passed that in one hour: `git ls-remote --tags` returns the tag ANNOTATION object rather
+  than the commit (for `vivijure-core-v1.13.0` those are `dea7149f` and `9cd62f20`, both well-formed),
+  and a real-but-wrong commit naming the feature merge instead of the tagged one. A third arrived in
+  the `published` column, where npm's `time` object keyed by version yields `created` if you take its
+  first value -- a month early, ISO-shaped, green.
+- The new assertions test RELATIONSHIPS instead of formats: the recorded sha must be the commit
+  `git rev-list -n 1 <tag>` resolves to, and a published date may not precede the commit it claims to
+  publish nor sit in the future. Offline by construction, like the rest of the file; the registry read
+  stays a human step.
+- Refusals are not passes: a shallow clone, absent tags, or a filled row whose tag cannot be resolved
+  all FAIL rather than skipping, and the denominator (rows, filled cells, tags visible) prints on
+  every run so a resolver that found nothing cannot pass vacuously. `ci.yml` and `code-coverage.yml`
+  gain `fetch-depth: 0`, because tag OBJECTS and the history behind them are different facts.
+- **Found four wrong rows on its first run against real data** and they are corrected here:
+  `v1.2.12` `05ea36b` -> `c761e2c` and `v1.2.3` `fed694e` -> `d01ee29` recorded commits that are
+  ancestors of the tag but not the tagged commit; `v1.2.9` `f4084c6` -> `e734eb2` and `v1.2.8`
+  `5df0d4f` -> `d7d3ee2` recorded PR merge commits that are not in the tag's history at all, the
+  shape a squash merge leaves behind.
+- Driven red before shipping: a planted annotation object reddens it with a diagnostic naming the
+  annotation and the fix, a planted wrong-but-real commit reddens it without falsely claiming
+  annotation, a planted early date reddens on its own reason, and restoring the true values goes
+  green -- the control proving it does not simply always fail.
+
+## [1.14.0] -- 2026-08-14
 
 MINOR. Per-render participation for the `finish` chain (cf#537), so a caller names which finish
 modules run on their render instead of every bound module running on every shot.
