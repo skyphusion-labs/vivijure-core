@@ -48,6 +48,10 @@ export interface FinishShot {
   // that silenced shot_02) re-dispatches the step up to FINISH_STEP_MAX_ATTEMPTS instead of going
   // failed; a deterministic reject or the cap exhausted fails loud. Mirrors scatter assemble_attempts.
   attempts?: number;
+  // #226: per-step FinishOutput.degraded reasons, in chain order. The tag on `applied` is often the
+  // generic `passthrough:backend-soft-degrade`; this is the field that tells "no face" from
+  // "door timed out". Optional: job docs written before #226 have only the tag.
+  degraded?: string[];
 }
 
 /** One shot's dialogue audio moving through the `speech` chain (post-dialogue, pre-finish). `chain` is
@@ -338,7 +342,17 @@ export function joinKeyframesToScenes(
   return { matched, missing };
 }
 
-export interface FinishSummary { total: number; done: number; failed: number; pending: number; adopted: number; degraded: number; }
+export interface FinishSummary {
+  total: number;
+  done: number;
+  failed: number;
+  pending: number;
+  adopted: number;
+  degraded: number;
+  // Distinct non-empty reasons, first-seen order. Empty when nothing degraded. A panel that
+  // renders this (not the `passthrough:` tag) can tell "no face" from "door timed out" (#226).
+  reasons: string[];
+}
 /** #707: per-shot delivered-vs-planned duration, surfaced on the film summary. A fixed-grid motion
  *  backend (e.g. CogVideoX: 8fps pinned, per-tier frame caps) honestly clamps a shot's requested
  *  duration; the clamp was always visible in the module output but silent to the API/UI. One entry per
@@ -411,22 +425,44 @@ function contentMsFromSeconds(seconds: number | undefined): number | undefined {
     : undefined;
 }
 
+/** Reasons a finish shot actually degraded. Prefers FinishOutput.degraded (the channel, #226);
+ *  falls back to the `passthrough:` tag suffix so pre-#226 job docs still summarise. */
+export function finishShotReasons(s: FinishShot): string[] {
+  const fromField = (s.degraded ?? []).filter((r) => typeof r === "string" && r.length > 0);
+  if (fromField.length > 0) return fromField;
+  const out: string[] = [];
+  for (const tag of [...(s.applied ?? []), ...(s.adopted ?? [])]) {
+    if (!tag.startsWith("passthrough:")) continue;
+    const reason = tag.slice("passthrough:".length);
+    if (reason.length > 0) out.push(reason);
+  }
+  return out;
+}
+
+function uniqueFirstSeen(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
 export function summarizeFinish(shots: FinishShot[]): FinishSummary {
+  const perShot = shots.map(finishShotReasons);
   return {
     total: shots.length,
     done: shots.filter((s) => s.status === "done").length,
     failed: shots.filter((s) => s.status === "failed").length,
     pending: shots.filter((s) => s.status === "pending").length,
     adopted: shots.filter((s) => (s.adopted?.length ?? 0) > 0).length, // #583: shots with >=1 finish step reused from R2
-    // A soft-degraded shot is DONE and did no work. The module tags it `passthrough:<reason>` rather
-    // than fabricating a success tag (#77/#249), so the disclosure is already persisted -- it was only
-    // never SUMMARISED, and an all-degraded stage read total:N done:N failed:0 exactly like a clean one.
-    // Read off `applied`/`adopted` deliberately: no new FinishShot field, so this reports correctly on
-    // job docs written before this change. `noop:` is EXCLUDED -- an intentional no-op (e.g. a lip-sync
-    // module on a shot with no dialogue) is not a degrade and must not raise an alarm.
-    degraded: shots.filter((s) =>
-      [...(s.applied ?? []), ...(s.adopted ?? [])].some((tag) => tag.startsWith("passthrough:")),
-    ).length,
+    // A soft-degraded shot is DONE and did no work. Count from the reason channel first (#226),
+    // then the `passthrough:` tag so pre-#226 docs still report. `noop:` is EXCLUDED -- an
+    // intentional no-op (e.g. a lip-sync module on a shot with no dialogue) is not a degrade.
+    degraded: perShot.filter((rs) => rs.length > 0).length,
+    reasons: uniqueFirstSeen(perShot.flat()),
   };
 }
 export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummary {
@@ -469,12 +505,30 @@ export function orderFinalClips(
   return out;
 }
 
+/** House CSAM needle, same as the keyframe door. A refusal is a HARD FAIL, never a polish degrade. */
+export function isCsamRefusalReason(text: unknown): boolean {
+  return typeof text === "string" && text.toLowerCase().includes("csam");
+}
+
+/** True when a finish module's output is a CSAM refusal wearing a FinishOutput shape. */
+export function finishOutputIsCsamRefusal(out: FinishOutput): boolean {
+  if (isCsamRefusalReason(out.degraded)) return true;
+  return (out.applied ?? []).some((tag) => isCsamRefusalReason(tag));
+}
+
 /** Pure: fold one finish module's output into the shot -- chain its output clip into the next module,
- *  record what it applied, advance the chain index; status -> done when the chain is exhausted. */
+ *  record what it applied, advance the chain index; status -> done when the chain is exhausted.
+ *  #226: also persist `out.degraded` so the reason is not swallowed. CSAM is refused by the
+ *  caller (see applyFinishOutputOrRefuse); this fold never turns a refusal into a degrade. */
 export function applyFinishOutput(fs: FinishShot, out: FinishOutput): void {
   fs.clip_key = out.clip_key;
   const tags = out.applied || [];
   fs.applied.push(...tags);
+  // #226: the reason channel, not the tag. A lipsync no-face and an upscale timeout on the same
+  // shot are two facts; last-write-wins would hide one.
+  if (typeof out.degraded === "string" && out.degraded.length > 0) {
+    (fs.degraded ??= []).push(out.degraded);
+  }
   // #662: account THIS run step in the per-step ledger (chain order), so a done shot's ledger covers the
   // whole chain 1:1. `tags` may be empty (a step that ran but reported no marker); the record still
   // accounts the step -- coverage is per-record, not per-tag.
@@ -483,6 +537,18 @@ export function applyFinishOutput(fs: FinishShot, out: FinishOutput): void {
   fs.poll = undefined;
   fs.attempts = 0; // a step succeeded -> the next step gets a fresh transient-retry budget
   if (fs.idx >= fs.chain.length) fs.status = "done"; // else stays pending; next advance submits chain[idx]
+}
+
+/** Fold a finish output, or fail the shot if the output is a CSAM refusal. The fold itself must
+ *  never record a CSAM reason as a polish miss -- that is the bright line, not a degrade. */
+export function applyFinishOutputOrRefuse(fs: FinishShot, out: FinishOutput): void {
+  if (finishOutputIsCsamRefusal(out)) {
+    fs.status = "failed";
+    fs.error = typeof out.degraded === "string" && out.degraded.length > 0 ? out.degraded : "csam refusal";
+    fs.poll = undefined;
+    return;
+  }
+  applyFinishOutput(fs, out);
 }
 
 /** Pure: fold an ADOPTED (reused-from-R2, NOT run this pass) finish-step artifact into the shot. Same

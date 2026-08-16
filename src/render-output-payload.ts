@@ -28,7 +28,7 @@
 
 import type { ClipJob } from "./render-orchestrator.js";
 import type { FilmJob } from "./film-model.js";
-import { clipDeliveries, filmFinishView } from "./film-model.js";
+import { clipDeliveries, filmFinishView, summarizeFinish } from "./film-model.js";
 import { resolveFilmOutputKey } from "./film-output-key.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 
@@ -58,6 +58,13 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
     };
     const uClips = job.finish_unavailable.clips;
     if (uClips?.length) out.clips = uClips.map((c) => ({ shot_id: c.shot_id, key: c.clip_key }));
+  }
+  // #226: clip-level finish reasons on the SAME payload the panel already reads. Absent when the
+  // film never entered a finish chain (keyframes-only, no finish modules). Present (including
+  // degraded:0) once finish_shots exist, so a clean row is distinguishable from an unmeasured one.
+  if (job.finish_shots) {
+    const fin = summarizeFinish(job.finish_shots);
+    out.finish = { degraded: fin.degraded, reasons: fin.reasons };
   }
   if (job.keyframes_only && job.keyframes?.length) {
     out.keyframes = job.keyframes.map((k) => ({ shot_id: k.shot_id, key: k.keyframe_key }));

@@ -45,6 +45,8 @@ describe("summarizeFinish degraded accounting", () => {
     expect(allDegraded).not.toEqual(allSucceeded);
     expect(allDegraded.degraded).toBe(3);
     expect(allSucceeded.degraded).toBe(0);
+    expect(allDegraded.reasons).toEqual(["door-token-not-yet-visible"]);
+    expect(allSucceeded.reasons).toEqual([]);
   });
 
   it("does NOT count an intentional noop as a degrade", () => {
@@ -94,5 +96,36 @@ describe("summarizeFinish degraded accounting", () => {
     const s = summarizeFinish([]);
     expect(s.total).toBe(0);
     expect(s.degraded).toBe(0);
+    expect(s.reasons).toEqual([]);
+  });
+
+  it("counts a shot that set FinishOutput.degraded without a passthrough: tag (#226)", () => {
+    // The field is the degrade channel. A module that records the reason and tags applied
+    // differently (speech-upscale shape) was previously invisible.
+    const s = summarizeFinish([
+      shot({ shot_id: "a", applied: [], degraded: ["no detectable face in clip"] }),
+    ]);
+    expect(s.degraded).toBe(1);
+    expect(s.reasons).toEqual(["no detectable face in clip"]);
+  });
+
+  it("prefers the degraded field over the generic passthrough: tag, so two causes stay distinct", () => {
+    const s = summarizeFinish([
+      shot({
+        shot_id: "a",
+        applied: ["passthrough:backend-soft-degrade"],
+        degraded: ["backend-soft-degrade: no detectable face in clip"],
+      }),
+      shot({
+        shot_id: "b",
+        applied: ["passthrough:backend-soft-degrade"],
+        degraded: ["backend-soft-degrade: wall-clock guard expired after 900s"],
+      }),
+    ]);
+    expect(s.degraded).toBe(2);
+    expect(s.reasons).toEqual([
+      "backend-soft-degrade: no detectable face in clip",
+      "backend-soft-degrade: wall-clock guard expired after 900s",
+    ]);
   });
 });
