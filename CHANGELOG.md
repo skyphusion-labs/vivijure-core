@@ -3,8 +3,6 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.18.1
-
 ## [1.18.1] -- 2026-08-16
 
 ### fix(media): do not default VIDEO_FINISH_URL to the live Traefik hostname
@@ -17,9 +15,9 @@ core made unit tests call the real door (401). Hosted sets the var.
 ### feat(media): assemble/mux/inspect call video-finish over public HTTPS, not VPC
 
 `VIDEO_FINISH_VPC` was a host binding hard-wired through core. Assemble now
-fetches `VIDEO_FINISH_URL` (default `https://video-finish.skyphusion.org`, the
-Traefik SUBMIT name) with the existing bearer. Empty `VIDEO_FINISH_URL`
-disables the tier. No VPC fallback.
+fetches `VIDEO_FINISH_URL` (hosted sets `https://video-finish.skyphusion.org`)
+with the existing bearer. Empty/unset `VIDEO_FINISH_URL` disables the tier.
+No VPC fallback.
 
 ## [1.17.0] -- 2026-08-15
 
