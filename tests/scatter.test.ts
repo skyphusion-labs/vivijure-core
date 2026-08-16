@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildShardJobs,
   gatherDecision,
+  resolveShardCount,
   splitShots,
   type ScatterArgs,
   type ShardStatus,
@@ -24,6 +25,33 @@ describe("splitShots", () => {
   it("drops blank ids and returns [] for an empty list", () => {
     expect(splitShots([], 3)).toEqual([]);
     expect(splitShots(["a", "", "b"], 2)).toEqual([["a"], ["b"]]);
+  });
+});
+
+// ----------------------------------------------------------------- resolveShardCount
+
+describe("resolveShardCount", () => {
+  it("omitted request uses min(shots, defaultMax), not 2", () => {
+    expect(resolveShardCount(undefined, 10)).toBe(10);
+    expect(resolveShardCount(undefined, 30)).toBe(20);
+    expect(resolveShardCount(undefined, 30, 8)).toBe(8);
+    expect(resolveShardCount("", 6)).toBe(6);
+  });
+  it("explicit 1 is a serial film", () => {
+    expect(resolveShardCount(1, 10)).toBe(1);
+  });
+  it("clamps an explicit count to [1, shots]", () => {
+    expect(resolveShardCount(99, 4)).toBe(4);
+    expect(resolveShardCount(0, 4)).toBe(1);
+    expect(resolveShardCount(-3, 4)).toBe(1);
+    expect(resolveShardCount(3, 8)).toBe(3);
+  });
+  it("garbage requested falls back to the implicit default", () => {
+    expect(resolveShardCount("nope", 5)).toBe(5);
+    expect(resolveShardCount(Number.NaN, 5)).toBe(5);
+  });
+  it("zero shots still returns 1 so callers do not emit empty shard jobs", () => {
+    expect(resolveShardCount(4, 0)).toBe(1);
   });
 });
 

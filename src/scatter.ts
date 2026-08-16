@@ -34,6 +34,37 @@ import type { RenderSubmitArgs } from "./runpod-submit.js";
 // `shardCount` is clamped to [1, shots.length]: asking for more shards than
 // shots would mint empty jobs (GPU-seconds for nothing), and asking for <1 is
 // just a normal single render. An empty shot list returns [].
+/** Default ceiling when the caller omits a count. Matches the hosted
+ *  vivijure-backend workersMax (20). Hosts may pass a different cap
+ *  (RENDER_SHARD_MAX). Never a reason to stay at 2. */
+export const DEFAULT_SHARD_MAX = 20;
+
+/**
+ * Resolve how many parallel shard jobs a render should start.
+ *
+ * - omitted / non-numeric `requested` -> min(shots, defaultMax)
+ * - explicit 1 -> one job (the old serial film path)
+ * - explicit N -> clamped to [1, shots]
+ *
+ * 2 is a FLOOR for the named scatter door (a one-shard scatter is just a
+ * film). It is not a default. The leftover host `shardCount ?? 2` is why
+ * a 20-worker pool ran 2-wide.
+ */
+export function resolveShardCount(
+  requested: unknown,
+  shotCount: number,
+  defaultMax: number = DEFAULT_SHARD_MAX,
+): number {
+  const shots = Math.max(0, Math.floor(Number(shotCount)) || 0);
+  if (shots === 0) return 1;
+  const cap = Math.max(1, Math.floor(Number(defaultMax)) || DEFAULT_SHARD_MAX);
+  const implicit = Math.min(shots, cap);
+  if (requested == null || requested === "") return implicit;
+  const n = typeof requested === "number" ? requested : Number(requested);
+  if (!Number.isFinite(n)) return implicit;
+  return Math.max(1, Math.min(Math.floor(n), shots));
+}
+
 export function splitShots(shotIds: string[], shardCount: number): string[][] {
   const shots = shotIds.filter((s) => typeof s === "string" && s.length > 0);
   if (shots.length === 0) return [];
