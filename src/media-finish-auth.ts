@@ -32,15 +32,14 @@ export async function mediaFinishToken(env: Env): Promise<string> {
   }
 }
 
-/** Public Traefik SUBMIT origin. Same shape as the GPU door table, not a host VPC binding. */
+/** Public Traefik SUBMIT origin the hosted studio sets as VIDEO_FINISH_URL. Not a default:
+ *  an unset URL means the tier is off. Baking the hostname here made unit tests hit live. */
 export const VIDEO_FINISH_SUBMIT = "https://video-finish.skyphusion.org";
 
-/** Public Traefik SUBMIT origin. Host may override VIDEO_FINISH_URL; empty string disables. */
+/** Host-set public origin. Unset or empty disables assemble/mux/inspect. No VPC fallback. */
 export function videoFinishUrl(env: Env): string {
   const raw = env.VIDEO_FINISH_URL;
-  if (raw === "") return "";
-  if (typeof raw === "string" && raw.trim()) return raw.replace(/\/$/, "");
-  return VIDEO_FINISH_SUBMIT;
+  return typeof raw === "string" && raw.trim() ? raw.replace(/\/$/, "") : "";
 }
 
 /** True when the host set a public video-finish origin. No VPC fallback. */
