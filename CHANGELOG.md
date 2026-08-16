@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.21.0
+
 ## [1.20.0] -- 2026-08-16
 
 ### feat(media): every CPU media door is a host URL, no baked origin

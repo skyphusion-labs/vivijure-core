@@ -46,6 +46,7 @@ import {
   joinKeyframesToScenes,
   filmPhaseToShardStatus,
   applyFinishOutput,
+  applyFinishOutputOrRefuse,
   adoptFinishStepOutput,
   applySpeechOutput,
   FINISH_STEP_MAX_ATTEMPTS,
@@ -891,20 +892,21 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       ]);
       (req.input as FinishInput).output_hash = await finishStepInputHash(
         clipEtag, audioEtag, fs.configs?.[fs.idx] as Record<string, unknown> | undefined);
-      // cf#312: presign after output_hash so hash_url can ride with it. Modules that understand
-      // video_url/output_url use the credentialless satellite branch; others ignore the fields.
+      // cf#312: presign after output_hash so hash_url can ride with it. Dispatch omits the R2
+      // object key to reach the credentialless satellite branch. Satellites select on KEY
+      // PRESENCE, not on understanding video_url/output_url (core#226).
       await attachFinishPresigns(env, job, fs, req.input as FinishInput, modules);
       const r = await invokeModule<FinishInput, FinishOutput>(fetcher, req);
       if (!r.ok) { failOrRetry(fs, r.error, false); }
       else if ((r as { pending?: boolean }).pending) { fs.poll = (r as { poll: string }).poll; }
-      else if ("output" in r) { const v = hookOutputViolation(fs.chain[fs.idx], "finish", r.output); if (v) { fs.status = "failed"; fs.error = v; } else { applyFinishOutput(fs, r.output as FinishOutput); } }
+      else if ("output" in r) { const v = hookOutputViolation(fs.chain[fs.idx], "finish", r.output); if (v) { fs.status = "failed"; fs.error = v; } else { applyFinishOutputOrRefuse(fs, r.output as FinishOutput); } }
       else { fs.status = "failed"; fs.error = "finish module returned neither output nor a poll token"; }
     } else {
       const p = await pollModule<FinishOutput>(fetcher, { poll: fs.poll });
       if (p.ok && !(p as { pending?: boolean }).pending) {
         const out = (p as { output: FinishOutput }).output;
         const v = hookOutputViolation(fs.chain[fs.idx], "finish", out);
-        if (v) { fs.status = "failed"; fs.error = v; } else { applyFinishOutput(fs, out); }
+        if (v) { fs.status = "failed"; fs.error = v; } else { applyFinishOutputOrRefuse(fs, out); }
       } else if (!p.ok && classifyFinishFailure(p.error) === "transient") {
         failOrRetry(fs, p.error, true); // a transport blip: re-poll the same job under the cap
       } else if (!(await adoptFinishStepFromR2(env, job, fs, preModules))) {
