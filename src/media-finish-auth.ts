@@ -4,13 +4,19 @@
  * Those images refuse work when LOCAL_FINISH_TOKEN is set (vivijure-cf#613). Assemble
  * and mux go through this package, so the header has to be attached here or arming
  * the token 401s every film. Unset stays fail-open: a self-host with no token keeps
- * the current unauthenticated VPC path.
+ * the unauthenticated path.
  *
  * Typed unknown because the host may bind a plaintext string OR a Secrets Store
  * handle. Same resolution shape as tenantR2FromEnv / runpodRoute: a string is used
  * as-is, a `{ get() }` handle is awaited, anything else is absent.
  */
 import type { Env } from "./platform/orchestrator-context.js";
+
+export type MediaDoorKey =
+  | "VIDEO_FINISH_URL"
+  | "AUDIO_MIX_URL"
+  | "AUDIO_BEAT_SYNC_URL"
+  | "IMAGE_PREP_URL";
 
 function asGetter(value: unknown): { get: () => Promise<unknown> } | null {
   if (!value || typeof value !== "object") return null;
@@ -32,30 +38,46 @@ export async function mediaFinishToken(env: Env): Promise<string> {
   }
 }
 
-/** Public Traefik SUBMIT origin the hosted studio sets as VIDEO_FINISH_URL. Not a default:
- *  an unset URL means the tier is off. Baking the hostname here made unit tests hit live. */
-export const VIDEO_FINISH_SUBMIT = "https://video-finish.skyphusion.org";
-
-/** Host-set public origin. Unset or empty disables assemble/mux/inspect. No VPC fallback. */
-export function videoFinishUrl(env: Env): string {
-  const raw = env.VIDEO_FINISH_URL;
+/** Host-set public origin for a CPU media door. Unset or empty means that door is off. */
+export function mediaDoorUrl(env: Env, key: MediaDoorKey): string {
+  const raw = env[key];
   return typeof raw === "string" && raw.trim() ? raw.replace(/\/$/, "") : "";
 }
 
-/** True when the host set a public video-finish origin. No VPC fallback. */
-export function videoFinishReachable(env: Env): boolean {
-  return Boolean(videoFinishUrl(env));
+/** True when the host set a public origin for this door. */
+export function mediaDoorReachable(env: Env, key: MediaDoorKey): boolean {
+  return Boolean(mediaDoorUrl(env, key));
 }
 
-/** POST a path on video-finish over public HTTPS (Traefik SUBMIT). No VPC. */
+/** POST a path on a host-configured media door. Returns null when the URL is unset. */
+export async function mediaDoorFetch(
+  env: Env,
+  key: MediaDoorKey,
+  path: string,
+  init: RequestInit,
+): Promise<Response | null> {
+  const url = mediaDoorUrl(env, key);
+  if (!url) return null;
+  return fetch(url + (path.startsWith("/") ? path : "/" + path), init);
+}
+
+/** Host-set video-finish origin. Unset or empty disables assemble/mux/inspect. */
+export function videoFinishUrl(env: Env): string {
+  return mediaDoorUrl(env, "VIDEO_FINISH_URL");
+}
+
+/** True when the host set a public video-finish origin. */
+export function videoFinishReachable(env: Env): boolean {
+  return mediaDoorReachable(env, "VIDEO_FINISH_URL");
+}
+
+/** POST a path on video-finish. Returns null when VIDEO_FINISH_URL is unset. */
 export async function videoFinishFetch(
   env: Env,
   path: string,
   init: RequestInit,
 ): Promise<Response | null> {
-  const url = videoFinishUrl(env);
-  if (!url) return null;
-  return fetch(url + (path.startsWith("/") ? path : "/" + path), init);
+  return mediaDoorFetch(env, "VIDEO_FINISH_URL", path, init);
 }
 
 /** JSON POST headers, plus Authorization when a token is readable. */

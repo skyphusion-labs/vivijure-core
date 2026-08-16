@@ -255,7 +255,7 @@ export async function validateClipArtifact(env: Env, key: string, expectedSecond
       // #25: payloadLen <= 0 (a header-only moov where size === headerSize, or a size-0 "extends to EOF"
       // box) is a CORRUPT container, not a trustworthy one. Fall through leaving video_track FALSE so
       // judgeClip fails the "no video track" gate, instead of the old blanket `else` trusting it and
-      // shipping a degenerate ftyp+empty-moov+noise-mdat clip (the self-host path with no VIDEO_FINISH_VPC
+      // shipping a degenerate ftyp+empty-moov+noise-mdat clip (the self-host path with no VIDEO_FINISH_URL
       // content-validate is most exposed).
     }
     return judgeClip(checks);

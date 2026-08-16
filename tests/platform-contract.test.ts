@@ -67,13 +67,13 @@ describe("Platform ICD", () => {
     expect(env.AUTH_MODE).toBe("token");
   });
 
-  it("orchestratorContextFromPlatform merges hostBindings (Node VPC shim)", () => {
+  it("orchestratorContextFromPlatform merges hostBindings (module HTTP shim)", () => {
     const fetcher = { fetch: async () => new Response("ok") };
     const platform = minimalPlatform({
-      hostBindings: { VIDEO_FINISH_VPC: fetcher },
+      hostBindings: { MODULE_KEYFRAME: fetcher },
     });
     const env = orchestratorContextFromPlatform(platform);
-    expect(env.VIDEO_FINISH_VPC).toBe(fetcher);
+    expect(env.MODULE_KEYFRAME).toBe(fetcher);
   });
 
   it("required Platform fields are present on minimal host", () => {

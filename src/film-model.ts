@@ -235,8 +235,8 @@ export interface FilmJob {
   // observed on this job. Written once to renders.finish_elapsed_ms at markFinishDone. Capacity
   // planning only -- not billing, not GPU time. Absent => not measured on any step.
   finish_elapsed_ms?: number;
-  // Loud, structured degrade when the video-finish tier (VIDEO_FINISH_VPC) is UNAVAILABLE at
-  // assemble/mux -- the binding is unbound, or the container/tunnel was unreachable after the bounded
+  // Loud, structured degrade when the video-finish tier (VIDEO_FINISH_URL) is UNAVAILABLE at
+  // assemble/mux -- the URL is unset, or the container/tunnel was unreachable after the bounded
   // retry. The film COMPLETES (never hard-fails after the GPU spend, #519) delivering what was rendered:
   // the per-shot clips (assemble degrade, no single concatenated film) or the SILENT assembled film (mux
   // degrade, the audio bed could not be muxed). This is the UNAVAILABILITY path ONLY; a genuine per-shot
@@ -245,7 +245,7 @@ export interface FilmJob {
   // smoke tests can assert on it, never a silent green.
   finish_unavailable?: {
     at: "assemble" | "mux";      // which delegated step could not run
-    reason: string;              // the honest cause (unbound binding, or unreachable-after-retry)
+    reason: string;              // the honest cause (VIDEO_FINISH_URL unset, or unreachable-after-retry)
     delivered: "clips" | "silent_film"; // what shipped instead of the finished film
     clips?: { shot_id: string; clip_key: string }[]; // per-shot clips (assemble degrade), the deliverable
   };

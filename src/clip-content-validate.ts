@@ -19,7 +19,6 @@
 // route (which has no downstream spend); Layer 1 covers that route.
 
 import type { Env } from "./platform/orchestrator-context.js";
-import { asFetcher } from "./platform/fetcher.js";
 import { mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
 import type { ClipJob } from "./clip-job-model.js";
 import { presignR2Get } from "./presign.js";

@@ -55,7 +55,7 @@ adoptions stay mechanical, not a rewrite.
 3. **Presign:** core calls `env.PRESIGNER`; each host wires its own `ObjectPresigner`.
 4. **Module registry:** build env bag via `orchestratorContextFromPlatform(platform)` or
    `platformAsEnv(platform)` before `discoverModules()`.
-5. **VPC / AI / RunPod:** inject through `platform.hostBindings` or host-only wrappers; do not
+5. **AI / RunPod / extra fetchers:** inject through `platform.hostBindings` or host-only wrappers; do not
    add CF-specific fields to `Platform` without bumping `PLATFORM_ICD_VERSION`.
 6. **Thin re-export shims** in hosts are OK during migration (`export * from "@skyphusion-labs/vivijure-core/cast-db"`)
    but delete the shim once all call sites import core directly.

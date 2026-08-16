@@ -21,14 +21,14 @@ This document freezes the **host adapter contract** between Vivijure orchestrati
 | `rateLimiter` | Spend guard (optional) | Durable Object / KV | In-memory (local v1) |
 | `scheduler` | Render sweep cron (optional) | `scheduled()` | `node-cron` (when wired) |
 | `vars` | Plain config (`AUTH_MODE`, storage backend, etc.) | Worker env | `process.env` subset |
-| `hostBindings` | Optional extra fetchers (VPC, etc.) | Worker service bindings | Node HTTP VPC shim (`Platform.hostBindings`) |
+| `hostBindings` | Optional extra fetchers (MODULE_* shims) | Worker service bindings | Node HTTP module shim (`Platform.hostBindings`) |
 
 ## Orchestrator context (M18)
 
 Ported orchestrators accept a Cloudflare-shaped `OrchestratorEnv` bag (`DB`, `R2_RENDERS`,
 `PRESIGNER`, module binding keys). **Core** builds it via `orchestratorContextFromPlatform(platform)`
 (`@skyphusion-labs/vivijure-core/platform`). **Node host** sets `platform.hostBindings` from merged
-runtime env during boot/reload (VPC URL shim). **CF host** maps native service bindings the same way.
+runtime env during boot/reload (MODULE_* HTTP shim). **CF host** maps native service bindings the same way.
 
 Routes and DB helpers call `orchestratorContextFromPlatform(platform)` directly; there is no
 host-side env bridge module.
