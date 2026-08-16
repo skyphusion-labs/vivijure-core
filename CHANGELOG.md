@@ -3,7 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.18.0
+## Unreleased / v1.18.1
+
+## [1.18.1] -- 2026-08-16
+
+### fix(media): do not default VIDEO_FINISH_URL to the live Traefik hostname
+
+An unset URL disabled the tier. Baking `video-finish.skyphusion.org` into
+core made unit tests call the real door (401). Hosted sets the var.
 
 ## [1.18.0] -- 2026-08-16
 
