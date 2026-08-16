@@ -3,7 +3,35 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.20.0
+## [1.20.0] -- 2026-08-16
+
+### feat(media): every CPU media door is a host URL, no baked origin
+
+Delete `VIDEO_FINISH_SUBMIT`. There is no default origin; an unset
+`VIDEO_FINISH_URL` turns the tier off. The same shape covers
+`AUDIO_MIX_URL`, `AUDIO_BEAT_SYNC_URL`, and `IMAGE_PREP_URL`.
+The `*_VPC` bindings are gone from Env. Unset = degrade / skip.
+
+Helpers: `mediaDoorUrl` / `mediaDoorFetch` / `mediaDoorReachable`.
+`videoFinish*` stays as a thin wrapper. Degrade copy says
+`VIDEO_FINISH_URL unset`, not `VPC unbound`.
+
+### feat(scatter): resolveShardCount -- omitted parallelism uses the worker pool, not 2
+
+Hosts defaulted `shardCount` to 2, the minimum that still counts as a
+scatter. That is a floor, not a capacity default. A 10-shot film on a
+20-worker endpoint used 2 GPUs. `resolveShardCount` (omitted ->
+`min(shots, defaultMax=20)`, explicit N clamped to `[1, shots]`) is the
+shared rule. Hosts pass `RENDER_SHARD_MAX` when they have a different cap.
+
+### feat(cast-train): hosted Wan-train jobs carry the tenant R2 block
+
+A pooled Wan-train endpoint cannot write every tenant into the
+template bucket. `buildTrainWanLoraPayload` accepts optional `r2`
+(endpoint, access_key_id, secret_access_key, bucket) and puts it
+on `input.r2`. `submitTrainWanLoraJob` attaches `tenantR2FromEnv`.
+Operator studio without the R2_S3_* env omits the block; hosted
+studio has those vars so the block is present. Absent, never null.
 
 ## [1.18.1] -- 2026-08-16
 
