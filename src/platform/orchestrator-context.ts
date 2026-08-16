@@ -58,6 +58,18 @@ export interface OrchestratorEnv {
    */
   RUNPOD_PROXY_BASE?: unknown;
   RUNPOD_PROXY_TOKEN?: unknown;
+  /**
+   * Bearer the fleet media containers check (video-finish / audio-mix / audio-beat-sync;
+   * vivijure-cf#613). Optional: unset is fail-open so a self-host with no token keeps the
+   * current unauthenticated VPC path. `unknown` because a host may bind a plaintext string
+   * or a Secrets Store handle; resolve through `mediaFinishToken`.
+   */
+  MEDIA_FINISH_TOKEN?: unknown;
+  /**
+   * Fallback when MEDIA_FINISH_TOKEN is unbound. The GPU doors already carry this name;
+   * a host that has not added a media-specific binding can reuse the same secret.
+   */
+  FINISH_DOOR_TOKEN?: unknown;
   /** Plain config vars (FILM_CLIP_DURATION_FLOOR, VPC bindings, etc.). */
   [key: string]: unknown;
 }
