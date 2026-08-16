@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { installVfFetch } from "./install-vf-fetch.js";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
@@ -30,17 +31,15 @@ function assembleEnv(job: object) {
       presignGet: async (key: string) => `https://presigned/${key}`,
       presignPut: async (key: string) => `https://presigned-put/${key}`,
     },
-    VIDEO_FINISH_VPC: {
-      fetch: async (url: string) => {
-        if (typeof url === "string" && url.includes("/finish")) {
-          finishCalls++;
-          // a fresh gated concat: one 4.0s shot, matching the plan -> gate passes.
-          return jsonResp({ ok: true, key: OUT, durationSeconds: 4, shots: 1, clipDurations: [4.0] });
-        }
-        return jsonResp({ ok: true });
-      },
-    },
+    VIDEO_FINISH_URL: "https://video-finish.test",
   };
+  installVfFetch(async (url) => {
+    if (String(url).includes("/finish")) {
+      finishCalls++;
+      return jsonResp({ ok: true, key: OUT, durationSeconds: 4, shots: 1, clipDurations: [4.0] });
+    }
+    return jsonResp({ ok: true });
+  });
   return { env: env as unknown as Env, read: () => JSON.parse(stored) as FilmJob, finishCalls: () => finishCalls };
 }
 

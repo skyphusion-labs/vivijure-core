@@ -32,6 +32,33 @@ export async function mediaFinishToken(env: Env): Promise<string> {
   }
 }
 
+/** Public Traefik SUBMIT origin. Same shape as the GPU door table, not a host VPC binding. */
+export const VIDEO_FINISH_SUBMIT = "https://video-finish.skyphusion.org";
+
+/** Public Traefik SUBMIT origin. Host may override VIDEO_FINISH_URL; empty string disables. */
+export function videoFinishUrl(env: Env): string {
+  const raw = env.VIDEO_FINISH_URL;
+  if (raw === "") return "";
+  if (typeof raw === "string" && raw.trim()) return raw.replace(/\/$/, "");
+  return VIDEO_FINISH_SUBMIT;
+}
+
+/** True when the host set a public video-finish origin. No VPC fallback. */
+export function videoFinishReachable(env: Env): boolean {
+  return Boolean(videoFinishUrl(env));
+}
+
+/** POST a path on video-finish over public HTTPS (Traefik SUBMIT). No VPC. */
+export async function videoFinishFetch(
+  env: Env,
+  path: string,
+  init: RequestInit,
+): Promise<Response | null> {
+  const url = videoFinishUrl(env);
+  if (!url) return null;
+  return fetch(url + (path.startsWith("/") ? path : "/" + path), init);
+}
+
 /** JSON POST headers, plus Authorization when a token is readable. */
 export async function mediaFinishHeaders(
   env: Env,

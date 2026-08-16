@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { installVfFetch } from "./install-vf-fetch.js";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
@@ -24,8 +25,9 @@ function muxEnv(job: object, containerBody: unknown) {
       presignGet: async (key: string) => `https://presigned/${key}`,
       presignPut: async (key: string) => `https://presigned-put/${key}`,
     },
-    VIDEO_FINISH_VPC: { fetch: async () => jsonResp(containerBody) },
+    VIDEO_FINISH_URL: "https://video-finish.test",
   };
+  installVfFetch(async () => jsonResp(containerBody));
   return { env: env as unknown as Env, read: () => JSON.parse(stored) as FilmJob };
 }
 

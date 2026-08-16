@@ -3,6 +3,17 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.18.0
+
+## [1.18.0] -- 2026-08-16
+
+### feat(media): assemble/mux/inspect call video-finish over public HTTPS, not VPC
+
+`VIDEO_FINISH_VPC` was a host binding hard-wired through core. Assemble now
+fetches `VIDEO_FINISH_URL` (default `https://video-finish.skyphusion.org`, the
+Traefik SUBMIT name) with the existing bearer. Empty `VIDEO_FINISH_URL`
+disables the tier. No VPC fallback.
+
 ## [1.17.0] -- 2026-08-15
 
 ### feat(media): send MEDIA_FINISH_TOKEN on video-finish and audio-mix VPC calls (core#240)

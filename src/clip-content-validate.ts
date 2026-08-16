@@ -20,7 +20,7 @@
 
 import type { Env } from "./platform/orchestrator-context.js";
 import { asFetcher } from "./platform/fetcher.js";
-import { mediaFinishHeaders } from "./media-finish-auth.js";
+import { mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
 import type { ClipJob } from "./clip-job-model.js";
 import { presignR2Get } from "./presign.js";
 import { emitStructuredEvent } from "./structured-events.js";
@@ -45,9 +45,7 @@ export async function callVideoFinishInspect(
   payload: { clipUrl: string; keyframeUrl?: string },
   opts: { retries?: number; backoffMs?: number } = {},
 ): Promise<InspectResult | null> {
-  if (!env.VIDEO_FINISH_VPC) return null; // tier not installed (stock self-host): skip, never fail
-  const vpc = asFetcher(env.VIDEO_FINISH_VPC);
-  if (!vpc) return null;
+  if (!videoFinishReachable(env)) return null;
   const retries = opts.retries ?? 3;
   const backoffMs = opts.backoffMs ?? 1500;
   const init = {
@@ -58,7 +56,7 @@ export async function callVideoFinishInspect(
   let resp: Response | null = null;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      resp = await vpc.fetch("http://video-finish/inspect", init);
+      resp = await videoFinishFetch(env, "/inspect", init);
     } catch {
       resp = null;
     }
@@ -83,7 +81,7 @@ export interface ContentVerdict {
 /** Presign the clip (and its keyframe, when known) and ask the container for a content verdict. Skips
  *  honestly (never throws, never fails a render) when the tier is unavailable. */
 export async function contentValidateClip(env: Env, clipKey: string, keyframeKey?: string): Promise<ContentVerdict> {
-  if (!env.VIDEO_FINISH_VPC) return { verdict: "skip", reason: "video-finish tier not installed (VIDEO_FINISH_VPC unbound)" };
+  if (!videoFinishReachable(env)) return { verdict: "skip", reason: "video-finish tier not installed (VIDEO_FINISH_URL unset)" };
   let clipUrl: string;
   let keyframeUrl: string | undefined;
   try {
@@ -108,7 +106,7 @@ export async function contentValidateDoneClips(
   job: ClipJob,
   inspect: (env: Env, clipKey: string, keyframeKey?: string) => Promise<ContentVerdict> = contentValidateClip,
 ): Promise<boolean> {
-  if (!env.VIDEO_FINISH_VPC) return false; // tier not installed: Layer 2 is unavailable, Layer 1 stands
+  if (!videoFinishReachable(env)) return false;
   let changed = false;
   for (const shot of job.shots) {
     // #30: "skip" (a transient /inspect outage or the tier being unavailable) is NOT a validation result, so

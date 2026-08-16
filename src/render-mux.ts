@@ -5,6 +5,7 @@
 
 import type { Env } from "./platform/orchestrator-context.js";
 import { callVideoFinish } from "./film-orchestrator.js";
+import { videoFinishReachable } from "./media-finish-auth.js";
 import { stageAudioKeyForRenders } from "./audio-stage.js";
 import { getRenderByIdForUser, setRenderAudioOutput } from "./renders-db.js";
 import { presignR2Get, presignR2Put } from "./presign.js";
@@ -19,7 +20,7 @@ export async function muxAudioOntoVideoKey(
   videoKey: string,
   audioKey: string,
 ): Promise<{ ok: true; output_key: string } | { ok: false; error: string }> {
-  if (!env.VIDEO_FINISH_VPC) return { ok: false, error: "video-finish VPC binding not configured" };
+  if (!videoFinishReachable(env)) return { ok: false, error: "video-finish URL not configured" };
 
   let stagedKey: string;
   try {

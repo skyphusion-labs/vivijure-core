@@ -70,6 +70,12 @@ export interface OrchestratorEnv {
    * a host that has not added a media-specific binding can reuse the same secret.
    */
   FINISH_DOOR_TOKEN?: unknown;
+  /**
+   * Public origin of the video-finish Traefik SUBMIT name
+   * (https://video-finish.skyphusion.org). When set, assemble/mux/inspect use
+   * global fetch to this URL instead of VIDEO_FINISH_VPC.
+   */
+  VIDEO_FINISH_URL?: unknown;
   /** Plain config vars (FILM_CLIP_DURATION_FLOOR, VPC bindings, etc.). */
   [key: string]: unknown;
 }

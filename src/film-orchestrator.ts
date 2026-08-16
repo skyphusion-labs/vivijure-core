@@ -8,7 +8,7 @@
 // No Worker ever holds a multi-minute GPU/cloud render.
 
 import type { Env } from "./platform/orchestrator-context.js";
-import { mediaFinishHeaders } from "./media-finish-auth.js";
+import { mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
 import {
   discoverModules,
   invokeModule,
@@ -1013,14 +1013,12 @@ export async function callVideoFinish(
     headers: await mediaFinishHeaders(env),
     body: JSON.stringify(payload),
   };
-  // video-finish runs always-on on the fleet, reached over a Workers VPC binding (private, no cold
-  // start) -- so the old Container-DO singleton + warm-/health dance is gone (issue #83).
-  const vpc = asFetcher(env.VIDEO_FINISH_VPC);
-  if (!vpc) return null;
+  // Prefers VIDEO_FINISH_URL (Traefik SUBMIT) when the host set one; else the VPC binding.
+  if (!videoFinishReachable(env)) return null;
   let resp: Response | null = null;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      resp = await vpc.fetch("http://video-finish/finish", init);
+      resp = await videoFinishFetch(env, "/finish", init);
     } catch {
       resp = null;
     }
@@ -1896,8 +1894,8 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
     await transitionToDone(env, job, preModules);
     return;
   }
-  if (!env.VIDEO_FINISH_VPC) {
-    await degradeMuxUnavailable(env, job, silentKey, "video-finish tier not installed (VIDEO_FINISH_VPC unbound); shipped silent film", preModules);
+  if (!videoFinishReachable(env)) {
+    await degradeMuxUnavailable(env, job, silentKey, "video-finish tier not installed (VIDEO_FINISH_URL and VIDEO_FINISH_VPC both unset); shipped silent film", preModules);
     return;
   }
 
@@ -2122,8 +2120,8 @@ async function enterAssemblePhase(
     return;
   }
 
-  if (!env.VIDEO_FINISH_VPC) {
-    degradeAssembleUnavailable(job, finalClips, "video-finish tier not installed (VIDEO_FINISH_VPC unbound); delivered per-shot clips");
+  if (!videoFinishReachable(env)) {
+    degradeAssembleUnavailable(job, finalClips, "video-finish tier not installed (VIDEO_FINISH_URL and VIDEO_FINISH_VPC both unset); delivered per-shot clips");
     return;
   }
 
