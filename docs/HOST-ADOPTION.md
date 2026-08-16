@@ -65,7 +65,7 @@ migration record, not a backlog.
        modules: cfModuleTransportFromEnv(env),
        rateLimiter: env.SPEND_RATE_LIMITER ?? undefined,
        vars: pickOrchestratorVars(env),
-       hostBindings: pickHostBindings(env),  // VIDEO_FINISH_VPC, etc.
+       hostBindings: pickHostBindings(env),  // MODULE_* fetchers, etc.
      };
    }
    ```

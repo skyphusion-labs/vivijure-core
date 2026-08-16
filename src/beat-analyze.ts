@@ -1,10 +1,11 @@
 // Planner beat analysis via the installed beat-sync score module (registry-driven).
 //
 // When MODULE_BEAT_SYNC is bound, POST /api/audio/analyze invokes the module worker, which calls
-// the always-on audio-beat-sync container on the Hetzner fleet over Workers VPC. Falls back to a
-// direct core VPC call when the module is not installed (legacy path).
+// the always-on audio-beat-sync container. Falls back to a direct fetch of AUDIO_BEAT_SYNC_URL
+// when the module is not installed (legacy path).
 
 import type { Env } from "./platform/orchestrator-context.js";
+import { mediaDoorFetch, mediaFinishHeaders } from "./media-finish-auth.js";
 import {
   discoverModules,
   invokeModule,
@@ -67,16 +68,14 @@ function userConfigFromRequest(req: AudioAnalyzeRequest): Record<string, unknown
   return out;
 }
 
-async function analyzeViaVpc(
+async function analyzeViaUrl(
   env: Env,
   audioUrl: string,
   req: AudioAnalyzeRequest,
 ): Promise<{ ok: true; plan: AudioBeatPlan } | { ok: false; error: string }> {
-  const vpc = env.AUDIO_BEAT_SYNC_VPC as FetcherLike | undefined;
-  if (!vpc) return { ok: false, error: "AUDIO_BEAT_SYNC_VPC not configured" };
-  const resp = await vpc.fetch("http://audio-beat-sync/analyze", {
+  const resp = await mediaDoorFetch(env, "AUDIO_BEAT_SYNC_URL", "/analyze", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: await mediaFinishHeaders(env),
     body: JSON.stringify({
       audioUrl,
       audioKey: req.audioKey,
@@ -87,6 +86,7 @@ async function analyzeViaVpc(
       forceShots: req.forceShots,
     }),
   });
+  if (!resp) return { ok: false, error: "AUDIO_BEAT_SYNC_URL unset" };
   const plan = parseAudioBeatPlan(await resp.json());
   if (!plan) return { ok: false, error: "beat-sync container returned an unrecognized plan" };
   return { ok: true, plan };
@@ -143,7 +143,7 @@ export async function analyzeAudioBeats(
     return { ok: true, plan, module: mod.name };
   }
 
-  const direct = await analyzeViaVpc(env, audioUrl, req);
+  const direct = await analyzeViaUrl(env, audioUrl, req);
   if (!direct.ok) return direct;
-  return { ok: true, plan: direct.plan, module: "core-vpc" };
+  return { ok: true, plan: direct.plan, module: "core-url" };
 }

@@ -8,7 +8,7 @@
 // No Worker ever holds a multi-minute GPU/cloud render.
 
 import type { Env } from "./platform/orchestrator-context.js";
-import { mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
+import { mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
 import {
   discoverModules,
   invokeModule,
@@ -139,8 +139,6 @@ import { claimFilmAdvance, releaseFilmAdvance, type FilmAdvanceClaim } from "./f
 import { withD1Retry } from "./d1-retry.js";
 import { deriveLoraDestKey } from "./lora-keys.js";
 import { keyframeProvenanceHash, writeProv, provVerdict } from "./clip-provenance.js";
-import { asFetcher } from "./platform/fetcher.js";
-
 export * from "./film-model.js";
 
 /** Cheap existence check for an R2 object (HEAD, no body). Used to derive assemble
@@ -1013,7 +1011,6 @@ export async function callVideoFinish(
     headers: await mediaFinishHeaders(env),
     body: JSON.stringify(payload),
   };
-  // Prefers VIDEO_FINISH_URL (Traefik SUBMIT) when the host set one; else the VPC binding.
   if (!videoFinishReachable(env)) return null;
   let resp: Response | null = null;
   for (let attempt = 0; attempt < retries; attempt++) {
@@ -1040,9 +1037,9 @@ interface AudioMixResult {
   elapsedMs?: number;
 }
 
-/** POST to the always-on fleet audio-mix container (/mix), mirroring callVideoFinish: a private
- *  Workers VPC binding, retry the transient gateway statuses. Returns null when the binding is not
- *  provisioned (#231 is additive -- the caller then degrades to the single-track remux). */
+/** POST to the always-on fleet audio-mix container (/mix), mirroring callVideoFinish: host
+ *  AUDIO_MIX_URL, retry the transient gateway statuses. Returns null when the URL is unset
+ *  (#231 is additive -- the caller then degrades to the single-track remux). */
 export async function callAudioMix(
   env: Env,
   payload: {
@@ -1054,8 +1051,7 @@ export async function callAudioMix(
   },
   opts: { retries?: number; backoffMs?: number } = {},
 ): Promise<Response | null> {
-  const mix = asFetcher(env.AUDIO_MIX_VPC);
-  if (!mix) return null; // not provisioned -> caller degrades to single-track mux
+  if (!mediaDoorUrl(env, "AUDIO_MIX_URL")) return null; // unset -> caller degrades to single-track mux
   const retries = opts.retries ?? 3;
   const backoffMs = opts.backoffMs ?? 1500;
   const init = {
@@ -1066,7 +1062,7 @@ export async function callAudioMix(
   let resp: Response | null = null;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      resp = await mix.fetch("http://audio-mix/mix", init);
+      resp = await mediaDoorFetch(env, "AUDIO_MIX_URL", "/mix", init);
     } catch {
       resp = null;
     }
@@ -1077,11 +1073,11 @@ export async function callAudioMix(
 }
 
 /** Pure: should the mux phase run the multi-track mix (#231)? Only when the film has BOTH dialogue
- *  (baked into the assembled video by lip-sync) AND a music bed, and the audio-mix VPC is bound.
+ *  (baked into the assembled video by lip-sync) AND a music bed, and AUDIO_MIX_URL is set.
  *  Otherwise the single-track remux is correct (and unchanged). */
 export function shouldMultiTrackMix(job: FilmJob, env: Env): boolean {
   const hasDialogue = !!job.dialogue_audio && Object.keys(job.dialogue_audio).length > 0;
-  return hasDialogue && !!job.audio_key && !!job.silent_film_key && !!env.AUDIO_MIX_VPC;
+  return hasDialogue && !!job.audio_key && !!job.silent_film_key && Boolean(mediaDoorUrl(env, "AUDIO_MIX_URL"));
 }
 
 /** #231: mix the film's dialogue (in the assembled video) under-ducked with the music bed + loudnorm via
@@ -1819,8 +1815,8 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
   return r.complete;
 }
 
-/** Emit the loud, structured degrade event when the video-finish tier is UNAVAILABLE (VIDEO_FINISH_VPC
- *  unbound, or the container/tunnel unreachable after the bounded assemble/mux retry) so the film
+/** Emit the loud, structured degrade event when the video-finish tier is UNAVAILABLE (VIDEO_FINISH_URL
+ *  unset, or the container/tunnel unreachable after the bounded assemble/mux retry) so the film
  *  COMPLETES with what was rendered instead of hard-failing after the GPU spend (#519). Mirrors the
  *  scatter.* structured events (docs/observability.md): a Loki-greppable `{"ev":"film.finish_unavailable"}`
  *  line the UI and smoke tests assert on. NEVER emitted for a genuine per-shot / container ERROR -- that
@@ -1856,7 +1852,7 @@ function emitKeyframesIncomplete(job: FilmJob): void {
   });
 }
 
-/** Video-finish tier UNAVAILABLE at assemble (VIDEO_FINISH_VPC unbound, or the concat container
+/** Video-finish tier UNAVAILABLE at assemble (VIDEO_FINISH_URL unset, or the concat container
  *  unreachable after the bounded retry): there is no single concatenated film, but every per-shot clip
  *  is rendered and sitting in R2. COMPLETE the film delivering those clips with a loud, structured
  *  "clips only, finish unavailable" status, rather than hard-failing after the keyframe/i2v/finish GPU
@@ -1873,7 +1869,7 @@ function degradeAssembleUnavailable(
   job.phase = "done"; // no assembled film to finish/notify; the clips ARE the delivered render
 }
 
-/** Video-finish tier UNAVAILABLE at mux (VIDEO_FINISH_VPC unbound, or the remux container unreachable
+/** Video-finish tier UNAVAILABLE at mux (VIDEO_FINISH_URL unset, or the remux container unreachable
  *  after the bounded retry): the SILENT assembled film exists in R2 (silentKey), the audio bed just
  *  could not be muxed onto it. Ship the silent film with a loud, structured status rather than
  *  hard-failing a fully-rendered film (#519). transitionToDone still runs any film.finish cards on the
@@ -1895,7 +1891,7 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
     return;
   }
   if (!videoFinishReachable(env)) {
-    await degradeMuxUnavailable(env, job, silentKey, "video-finish tier not installed (VIDEO_FINISH_URL and VIDEO_FINISH_VPC both unset); shipped silent film", preModules);
+    await degradeMuxUnavailable(env, job, silentKey, "video-finish tier not installed (VIDEO_FINISH_URL unset); shipped silent film", preModules);
     return;
   }
 
@@ -1905,8 +1901,8 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
 
   // #231: a dialogue + music film gets a PROPER multi-track mix first -- duck the music under the
   // dialogue + loudness-normalize via the audio-mix container -- then remux that single mixed track.
-  // Soft-degrades to the bare bed (single-track remux, prior behavior) when the audio-mix VPC is not
-  // bound or the mix fails; an audio-polish miss never fails a fully-rendered film (#249/#77).
+  // Soft-degrades to the bare bed (single-track remux, prior behavior) when AUDIO_MIX_URL is unset
+  // or the mix fails; an audio-polish miss never fails a fully-rendered film (#249/#77).
   let audioToMux = audioKey;
   if (shouldMultiTrackMix(job, env)) {
     const mixed = await mixFilmAudio(env, job, silentKey, audioKey);
@@ -2121,7 +2117,7 @@ async function enterAssemblePhase(
   }
 
   if (!videoFinishReachable(env)) {
-    degradeAssembleUnavailable(job, finalClips, "video-finish tier not installed (VIDEO_FINISH_URL and VIDEO_FINISH_VPC both unset); delivered per-shot clips");
+    degradeAssembleUnavailable(job, finalClips, "video-finish tier not installed (VIDEO_FINISH_URL unset); delivered per-shot clips");
     return;
   }
 
@@ -2984,7 +2980,7 @@ async function advanceFilmJobLocked(
     await advanceMasterPhase(env, job, modules);
     await putFilm(env, job);
   } else if (job.phase === "mux") {
-    // Phase 5: mux the (mastered) audio bed onto the silent film via video-finish (VPC remuxAudioOnly).
+    // Phase 5: mux the (mastered) audio bed onto the silent film via video-finish (remuxAudioOnly).
     await enterMuxPhase(env, job, modules);
     await putFilm(env, job);
   }

@@ -14,7 +14,7 @@ const TERMINAL_OK = new Set(["COMPLETED"]);
 
 export { stageAudioKeyForRenders } from "./audio-stage.js";
 
-/** Mux an audio bed onto a finished silent MP4 via video-finish (VPC). */
+/** Mux an audio bed onto a finished silent MP4 via video-finish. */
 export async function muxAudioOntoVideoKey(
   env: Env,
   videoKey: string,

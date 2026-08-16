@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { mediaFinishHeaders, mediaFinishToken } from "../src/media-finish-auth.js";
-import { callAudioMix, callVideoFinish } from "../src/film-orchestrator.js";
+import {
+  mediaDoorUrl,
+  mediaFinishHeaders,
+  mediaFinishToken,
+  videoFinishReachable,
+  videoFinishUrl,
+} from "../src/media-finish-auth.js";
+import { callAudioMix, callVideoFinish, shouldMultiTrackMix } from "../src/film-orchestrator.js";
 import { callVideoFinishInspect } from "../src/clip-content-validate.js";
+import { callImagePrep } from "../src/bundle-assembler.js";
+import { analyzeAudioBeats } from "../src/beat-analyze.js";
+import type { FilmJob } from "../src/film-model.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
 function envWith(over: Record<string, unknown>): Env {
@@ -111,11 +120,36 @@ describe("callVideoFinish / callAudioMix / callVideoFinishInspect send the beare
 
   it("callAudioMix attaches Authorization when the token is set", async () => {
     const fetch = stubFetch();
-    await callAudioMix(
-      envWith({ AUDIO_MIX_VPC: { fetch }, MEDIA_FINISH_TOKEN: "mix-tok" }),
-      { tracks: [], outputUrl: "u", outputKey: "k" },
-    );
-    expect(authOf(fetch)).toBe("Bearer mix-tok");
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      await callAudioMix(
+        envWith({ AUDIO_MIX_URL: "https://audio-mix.test", MEDIA_FINISH_TOKEN: "mix-tok" }),
+        { tracks: [], outputUrl: "u", outputKey: "k" },
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(String(fetch.mock.calls[0]?.[0])).toBe("https://audio-mix.test/mix");
+      expect(authOf(fetch)).toBe("Bearer mix-tok");
+    } finally {
+      globalThis.fetch = prev;
+    }
+  });
+
+  it("callAudioMix returns null when AUDIO_MIX_URL is unset", async () => {
+    const fetch = stubFetch();
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      const resp = await callAudioMix(envWith({ MEDIA_FINISH_TOKEN: "mix-tok" }), {
+        tracks: [],
+        outputUrl: "u",
+        outputKey: "k",
+      });
+      expect(resp).toBeNull();
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = prev;
+    }
   });
 
   it("callVideoFinishInspect attaches Authorization when the token is set", async () => {
@@ -130,6 +164,113 @@ describe("callVideoFinish / callAudioMix / callVideoFinishInspect send the beare
         { clipUrl: "https://example/clip.mp4" },
       );
       expect(authOf(fetch)).toBe("Bearer ins");
+    } finally {
+      globalThis.fetch = prev;
+    }
+  });
+});
+
+describe("media doors have no default origin", () => {
+  it("empty env is unreachable and has no video-finish URL", () => {
+    const env = envWith({});
+    expect(videoFinishUrl(env)).toBe("");
+    expect(videoFinishReachable(env)).toBe(false);
+    expect(mediaDoorUrl(env, "VIDEO_FINISH_URL")).toBe("");
+    expect(mediaDoorUrl(env, "AUDIO_MIX_URL")).toBe("");
+    expect(mediaDoorUrl(env, "AUDIO_BEAT_SYNC_URL")).toBe("");
+    expect(mediaDoorUrl(env, "IMAGE_PREP_URL")).toBe("");
+  });
+
+  it("reads only the host-set string, stripping a trailing slash", () => {
+    expect(videoFinishUrl(envWith({ VIDEO_FINISH_URL: "https://video-finish.test/" }))).toBe(
+      "https://video-finish.test",
+    );
+    expect(mediaDoorUrl(envWith({ AUDIO_MIX_URL: "https://audio-mix.test/" }), "AUDIO_MIX_URL")).toBe(
+      "https://audio-mix.test",
+    );
+  });
+});
+
+function mixJob(over: Partial<FilmJob> = {}): FilmJob {
+  return {
+    dialogue_audio: { shot_01: { audio_key: "dlg.wav" } },
+    audio_key: "bed.mp3",
+    silent_film_key: "silent.mp4",
+    ...over,
+  } as FilmJob;
+}
+
+describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs", () => {
+  it("shouldMultiTrackMix is false when AUDIO_MIX_URL is unset", () => {
+    expect(shouldMultiTrackMix(mixJob(), envWith({}))).toBe(false);
+  });
+
+  it("shouldMultiTrackMix is true when AUDIO_MIX_URL is set and the film has both tracks", () => {
+    expect(shouldMultiTrackMix(mixJob(), envWith({ AUDIO_MIX_URL: "https://audio-mix.test" }))).toBe(true);
+  });
+
+  it("callImagePrep returns null when IMAGE_PREP_URL is unset", async () => {
+    const fetch = stubFetch();
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      expect(
+        await callImagePrep(envWith({}), {
+          inputUrl: "in",
+          outputUrl: "out",
+          outputKey: "k",
+          background: "alpha",
+        }),
+      ).toBeNull();
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = prev;
+    }
+  });
+
+  it("callImagePrep posts /portrait/prep when IMAGE_PREP_URL is set", async () => {
+    const fetch = stubFetch();
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      const resp = await callImagePrep(
+        envWith({ IMAGE_PREP_URL: "https://image-prep.test" }),
+        { inputUrl: "in", outputUrl: "out", outputKey: "k", background: "alpha" },
+        { retries: 1 },
+      );
+      expect(resp?.status).toBe(200);
+      expect(String(fetch.mock.calls[0]?.[0])).toBe("https://image-prep.test/portrait/prep");
+    } finally {
+      globalThis.fetch = prev;
+    }
+  });
+
+  it("analyzeAudioBeats reports AUDIO_BEAT_SYNC_URL unset when the door is off", async () => {
+    const r = await analyzeAudioBeats(
+      envWith({ PRESIGNER: { presignGet: async () => "https://r2.test/audio.wav" } }),
+      { audioKey: "audio.wav" },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe("AUDIO_BEAT_SYNC_URL unset");
+  });
+
+  it("analyzeAudioBeats fetches AUDIO_BEAT_SYNC_URL /analyze when set", async () => {
+    const fetch = vi.fn<(url: RequestInfo, init?: RequestInit) => Promise<Response>>(
+      async () => new Response(JSON.stringify({ mode: "beat", audio_key: "audio.wav" }), { status: 200 }),
+    );
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      const r = await analyzeAudioBeats(
+        envWith({
+          AUDIO_BEAT_SYNC_URL: "https://audio-beat-sync.test",
+          PRESIGNER: { presignGet: async () => "https://r2.test/audio.wav" },
+        }),
+        { audioKey: "audio.wav" },
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.module).toBe("core-url");
+      expect(String(fetch.mock.calls[0]?.[0])).toBe("https://audio-beat-sync.test/analyze");
     } finally {
       globalThis.fetch = prev;
     }

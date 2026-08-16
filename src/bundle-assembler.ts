@@ -27,6 +27,7 @@
 // Returns the R2 key at bundles/<projectName>.tar.gz on success.
 
 import type { OrchestratorEnv } from "./platform/orchestrator-context.js";
+import { mediaDoorFetch, mediaDoorUrl } from "./media-finish-auth.js";
 import {
   validateStoryboard,
   type SlotId,
@@ -245,16 +246,14 @@ export async function callImagePrep(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   };
-  // image-prep runs always-on on the fleet, reached over a Workers VPC binding
-  // (private, no cold start) -- so the old Container-DO singleton + warm-/health
-  // dance is gone (issue #83). The 503 retry stays as cheap transport insurance.
+  // image-prep runs always-on on the fleet. The host sets IMAGE_PREP_URL; unset
+  // skips rembg (the caller falls back to the original portrait). The 503 retry
+  // stays as cheap transport insurance (issue #83).
+  if (!mediaDoorUrl(env, "IMAGE_PREP_URL")) return null;
   let resp: Response | null = null;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      resp = await (env.IMAGE_PREP_VPC as { fetch(url: string | Request, init?: RequestInit): Promise<Response> }).fetch(
-        "http://image-prep/portrait/prep",
-        init,
-      );
+      resp = await mediaDoorFetch(env, "IMAGE_PREP_URL", "/portrait/prep", init);
     } catch {
       resp = null;
     }

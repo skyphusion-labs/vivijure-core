@@ -54,7 +54,17 @@ export * from "./film-model.js";
 export * from "./render-orchestrator.js";
 export * from "./clip-validate.js";
 export * from "./film-orchestrator.js";
-export { mediaFinishToken, mediaFinishHeaders, videoFinishUrl, videoFinishReachable, videoFinishFetch } from "./media-finish-auth.js";
+export {
+  mediaFinishToken,
+  mediaFinishHeaders,
+  mediaDoorUrl,
+  mediaDoorReachable,
+  mediaDoorFetch,
+  videoFinishUrl,
+  videoFinishReachable,
+  videoFinishFetch,
+  type MediaDoorKey,
+} from "./media-finish-auth.js";
 export * from "./runpod-types.js";
 export * from "./render-module-config.js";
 export * from "./film-render-bridge.js";

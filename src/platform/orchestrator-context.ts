@@ -1,5 +1,5 @@
 // Orchestrator context: Platform -> env-shaped bag for ported vivijure orchestration.
-// Hosts may inject VPC fetchers and other bindings after this builder runs.
+// Hosts may inject module fetchers and other bindings after this builder runs.
 
 import type { Database, ObjectPresigner, Platform } from "./types.js";
 import { platformAsEnv } from "./types.js";
@@ -61,7 +61,7 @@ export interface OrchestratorEnv {
   /**
    * Bearer the fleet media containers check (video-finish / audio-mix / audio-beat-sync;
    * vivijure-cf#613). Optional: unset is fail-open so a self-host with no token keeps the
-   * current unauthenticated VPC path. `unknown` because a host may bind a plaintext string
+   * unauthenticated path. `unknown` because a host may bind a plaintext string
    * or a Secrets Store handle; resolve through `mediaFinishToken`.
    */
   MEDIA_FINISH_TOKEN?: unknown;
@@ -71,19 +71,24 @@ export interface OrchestratorEnv {
    */
   FINISH_DOOR_TOKEN?: unknown;
   /**
-   * Public origin of the video-finish Traefik SUBMIT name
-   * (https://video-finish.skyphusion.org). When set, assemble/mux/inspect use
-   * global fetch to this URL instead of VIDEO_FINISH_VPC.
+   * Public origin of the video-finish SUBMIT door. Assemble/mux/inspect fetch this
+   * URL. Unset or empty disables the tier.
    */
   VIDEO_FINISH_URL?: unknown;
-  /** Plain config vars (FILM_CLIP_DURATION_FLOOR, VPC bindings, etc.). */
+  /** Public origin of the audio-mix door. Unset disables multi-track mix. */
+  AUDIO_MIX_URL?: unknown;
+  /** Public origin of the audio-beat-sync door. Unset = not configured. */
+  AUDIO_BEAT_SYNC_URL?: unknown;
+  /** Public origin of the image-prep door. Unset skips portrait rembg. */
+  IMAGE_PREP_URL?: unknown;
+  /** Plain config vars (FILM_CLIP_DURATION_FLOOR, etc.). */
   [key: string]: unknown;
 }
 
 /** Alias for upstream `import type { Env } from "./env"` at port sites. */
 export type Env = OrchestratorEnv;
 
-/** Build orchestrator env from Platform (no host VPC injection). */
+/** Build orchestrator env from Platform (no host media-door injection). */
 export function orchestratorContextFromPlatform(platform: Platform): OrchestratorEnv {
   const env = platformAsEnv(platform) as OrchestratorEnv;
   env.DB = platform.db;
