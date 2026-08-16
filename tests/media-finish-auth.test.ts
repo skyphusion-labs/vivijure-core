@@ -61,9 +61,20 @@ describe("mediaFinishHeaders", () => {
   });
 });
 
+function stubFetch() {
+  return vi.fn<(url: RequestInfo, init?: RequestInit) => Promise<Response>>(
+    async () => new Response("{}", { status: 200 }),
+  );
+}
+
+function authOf(fetch: ReturnType<typeof stubFetch>): string | undefined {
+  const headers = fetch.mock.calls[0]?.[1]?.headers as Record<string, string> | undefined;
+  return headers?.authorization;
+}
+
 describe("callVideoFinish / callAudioMix / callVideoFinishInspect send the bearer", () => {
   it("callVideoFinish attaches Authorization when the token is set", async () => {
-    const fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const fetch = stubFetch();
     await callVideoFinish(
       envWith({
         VIDEO_FINISH_VPC: { fetch },
@@ -72,38 +83,36 @@ describe("callVideoFinish / callAudioMix / callVideoFinishInspect send the beare
       { clips: [], outputUrl: "u", outputKey: "k" },
     );
     expect(fetch).toHaveBeenCalledTimes(1);
-    const init = fetch.mock.calls[0][1] as RequestInit;
-    expect((init.headers as Record<string, string>).authorization).toBe("Bearer abc");
+    expect(authOf(fetch)).toBe("Bearer abc");
   });
 
   it("callVideoFinish sends no Authorization when the token is unset", async () => {
-    const fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const fetch = stubFetch();
     await callVideoFinish(envWith({ VIDEO_FINISH_VPC: { fetch } }), {
       clips: [],
       outputUrl: "u",
       outputKey: "k",
     });
-    const init = fetch.mock.calls[0][1] as RequestInit;
-    expect((init.headers as Record<string, string>).authorization).toBeUndefined();
+    expect(authOf(fetch)).toBeUndefined();
   });
 
   it("callAudioMix attaches Authorization when the token is set", async () => {
-    const fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const fetch = stubFetch();
     await callAudioMix(
       envWith({ AUDIO_MIX_VPC: { fetch }, MEDIA_FINISH_TOKEN: "mix-tok" }),
       { tracks: [], outputUrl: "u", outputKey: "k" },
     );
-    const init = fetch.mock.calls[0][1] as RequestInit;
-    expect((init.headers as Record<string, string>).authorization).toBe("Bearer mix-tok");
+    expect(authOf(fetch)).toBe("Bearer mix-tok");
   });
 
   it("callVideoFinishInspect attaches Authorization when the token is set", async () => {
-    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const fetch = vi.fn<(url: RequestInfo, init?: RequestInit) => Promise<Response>>(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
     await callVideoFinishInspect(
       envWith({ VIDEO_FINISH_VPC: { fetch }, MEDIA_FINISH_TOKEN: "ins" }),
       { clipUrl: "https://example/clip.mp4" },
     );
-    const init = fetch.mock.calls[0][1] as RequestInit;
-    expect((init.headers as Record<string, string>).authorization).toBe("Bearer ins");
+    expect(authOf(fetch)).toBe("Bearer ins");
   });
 });
