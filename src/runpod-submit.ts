@@ -17,6 +17,8 @@
 // envelope { id, status, output?, error?, executionTime?, delayTime? }.
 
 import type { Env } from "./platform/orchestrator-context.js";
+import type { TenantR2Config } from "./modules/types.js";
+import { tenantR2FromEnv } from "./modules/tenant-r2.js";
 import { secretValue, type SecretsStoreSecret } from "./secret-store.js";
 import { reconcileRunpodEndpointWorkersMax } from "./runpod-endpoint-reconcile.js";
 import {
@@ -172,6 +174,11 @@ export interface TrainLoraArgs {
   // ...), parsed by config.py RenderConfig.from_request on the pod. Lets the
   // cast manager's "train LoRA" button iterate without an image rebuild.
   renderOverrides?: Record<string, unknown>;
+  // Per-job tenant R2 for a pooled Wan-train endpoint. Same four-field shape as
+  // the render invoke envelope. Omitted (never null) when the host has no
+  // R2_S3_* set -- dedicated EP / env R2 still works. Only buildTrainWanLoraPayload
+  // puts this on the wire.
+  r2?: TenantR2Config;
 }
 
 export interface TrainLoraJobInput {
@@ -183,6 +190,9 @@ export interface TrainLoraJobInput {
   // RUNPOD_WAN_TRAIN_ENDPOINT_ID is wired (cf#29 Phase E); explicit "sdxl" keeps the render-endpoint
   // escape hatch. submitTrainWanLoraJob always sets "wan".
   model_family?: "sdxl" | "wan";
+  // Tenant destination for a pooled Wan-train job. Absent = use the endpoint
+  // template env (operator studio / dedicated EP).
+  r2?: TenantR2Config;
 }
 
 // RunPod queue-based job status. The platform uses these literal strings
@@ -322,6 +332,16 @@ export function buildTrainLoraPayload(args: TrainLoraArgs): { input: TrainLoraJo
 export function buildTrainWanLoraPayload(args: TrainLoraArgs): { input: TrainLoraJobInput } {
   const { input } = buildTrainLoraPayload(args);
   input.model_family = "wan";
+  // OMIT, never null: the backend refuses an explicit `"r2": null`. Copy the
+  // four fields so a caller cannot alias the credential object after we build.
+  if (args.r2) {
+    input.r2 = {
+      endpoint: args.r2.endpoint,
+      access_key_id: args.r2.access_key_id,
+      secret_access_key: args.r2.secret_access_key,
+      bucket: args.r2.bucket,
+    };
+  }
   return { input };
 }
 
@@ -1041,11 +1061,15 @@ export async function submitTrainWanLoraJob(
       SecretsStoreSecret | string | undefined,
   );
   if (!endpointId) return runpodMissingWanEndpoint();
+  // Env is authoritative: hosted studio has R2_S3_* so the block is present;
+  // operator studio without those vars omits it (dedicated EP / env R2).
+  const r2 = await tenantR2FromEnv(env);
+  const { r2: _ignored, ...rest } = args;
   return onBackend(
     await submitToRunpodEndpoint(
       env,
       endpointId,
-      JSON.stringify(buildTrainWanLoraPayload(args)),
+      JSON.stringify(buildTrainWanLoraPayload(r2 ? { ...rest, r2 } : rest)),
       "train-wan-lora submit",
       opts,
     ),
