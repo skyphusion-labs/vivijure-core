@@ -1,6 +1,7 @@
 // Scatter/gather render orchestrator: N parallel film jobs (clips_only shards) + one gather assemble.
 
 import type { Env, ExecutionContext } from "./platform/orchestrator-context.js";
+import { videoFinishReachable } from "./media-finish-auth.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 import {
   advanceFilmJob,
@@ -312,9 +313,9 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
     job.phase = "done";
     return;
   }
-  if (!env.VIDEO_FINISH_VPC) {
+  if (!videoFinishReachable(env)) {
     job.phase = "failed";
-    job.error = "video-finish VPC binding not configured";
+    job.error = "video-finish URL not configured";
     return;
   }
   const outKey = job.mux_output_key ?? scatterOutKey(job.scatter_id);
@@ -444,9 +445,9 @@ async function assembleScatterClips(
   job: ScatterJob,
   clips: { shot_id: string; clip_key: string }[],
 ): Promise<void> {
-  if (!env.VIDEO_FINISH_VPC) {
+  if (!videoFinishReachable(env)) {
     job.phase = "failed";
-    job.error = "video-finish VPC binding not configured";
+    job.error = "video-finish URL not configured";
     return;
   }
   const presigned: { url: string }[] = [];

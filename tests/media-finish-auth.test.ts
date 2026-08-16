@@ -75,25 +75,38 @@ function authOf(fetch: ReturnType<typeof stubFetch>): string | undefined {
 describe("callVideoFinish / callAudioMix / callVideoFinishInspect send the bearer", () => {
   it("callVideoFinish attaches Authorization when the token is set", async () => {
     const fetch = stubFetch();
-    await callVideoFinish(
-      envWith({
-        VIDEO_FINISH_VPC: { fetch },
-        MEDIA_FINISH_TOKEN: "abc",
-      }),
-      { clips: [], outputUrl: "u", outputKey: "k" },
-    );
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(authOf(fetch)).toBe("Bearer abc");
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      await callVideoFinish(
+        envWith({
+          VIDEO_FINISH_URL: "https://video-finish.example",
+          MEDIA_FINISH_TOKEN: "abc",
+        }),
+        { clips: [], outputUrl: "u", outputKey: "k" },
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(String(fetch.mock.calls[0]?.[0])).toBe("https://video-finish.example/finish");
+      expect(authOf(fetch)).toBe("Bearer abc");
+    } finally {
+      globalThis.fetch = prev;
+    }
   });
 
   it("callVideoFinish sends no Authorization when the token is unset", async () => {
     const fetch = stubFetch();
-    await callVideoFinish(envWith({ VIDEO_FINISH_VPC: { fetch } }), {
-      clips: [],
-      outputUrl: "u",
-      outputKey: "k",
-    });
-    expect(authOf(fetch)).toBeUndefined();
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      await callVideoFinish(envWith({ VIDEO_FINISH_URL: "https://video-finish.example" }), {
+        clips: [],
+        outputUrl: "u",
+        outputKey: "k",
+      });
+      expect(authOf(fetch)).toBeUndefined();
+    } finally {
+      globalThis.fetch = prev;
+    }
   });
 
   it("callAudioMix attaches Authorization when the token is set", async () => {
@@ -109,10 +122,16 @@ describe("callVideoFinish / callAudioMix / callVideoFinishInspect send the beare
     const fetch = vi.fn<(url: RequestInfo, init?: RequestInit) => Promise<Response>>(
       async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
     );
-    await callVideoFinishInspect(
-      envWith({ VIDEO_FINISH_VPC: { fetch }, MEDIA_FINISH_TOKEN: "ins" }),
-      { clipUrl: "https://example/clip.mp4" },
-    );
-    expect(authOf(fetch)).toBe("Bearer ins");
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      await callVideoFinishInspect(
+        envWith({ VIDEO_FINISH_URL: "https://video-finish.example", MEDIA_FINISH_TOKEN: "ins" }),
+        { clipUrl: "https://example/clip.mp4" },
+      );
+      expect(authOf(fetch)).toBe("Bearer ins");
+    } finally {
+      globalThis.fetch = prev;
+    }
   });
 });
