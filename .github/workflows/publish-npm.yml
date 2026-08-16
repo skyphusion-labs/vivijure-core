@@ -119,6 +119,10 @@ jobs:
             echo "Skip: ${pkg}@${ver} already published"
             exit 0
           fi
+          if [ -z "${NODE_AUTH_TOKEN:+SET}" ] && [ -z "${NPM_TOKEN:+SET}" ]; then
+            echo "::error::NPM_TOKEN is unset -- cannot publish."
+            exit 1
+          fi
           npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
