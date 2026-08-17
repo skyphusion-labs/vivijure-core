@@ -202,6 +202,26 @@ export interface ModuleUi {
   limits?: string[]; // honest capability-ceiling bullets, display only (absent => fall back to config_schema)
 }
 
+/** How we actually call a motion.backend. Sets the ceiling on speaker/look lock. */
+export type MotionVoiceMode = "prompt_lock" | "seed_and_prompt" | "cast_tts" | "prev_clip";
+
+export interface MotionUsageDecl {
+  /** We keep the model's own soundtrack (Flux/Seedance/Veo/...). */
+  native_audio: boolean;
+  /** How the speaker stays the same, given this envelope. */
+  voice: MotionVoiceMode;
+  /** May talking shots scatter? false = one film (needed for prev_clip / v2v). */
+  scatter_native_audio: boolean;
+  min_seconds: number;
+  max_seconds: number;
+  /** Discrete duration grid we snap to (Veo 4/6/8, Kling 5/10). */
+  duration_steps?: number[];
+  /** We pass the next shot's start still as the end frame. */
+  first_last?: boolean;
+  /** Door has a seed knob we pin from the voice lock. */
+  seed?: boolean;
+}
+
 /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`): a finish module's declared
  *  artifact conventions, so the core's R2-authoritative mid-chain recovery (#141/#166) can predict the
  *  module's output key and reconstruct its `applied` marker from the manifest instead of
@@ -283,6 +303,16 @@ export interface ModuleManifest {
    *  ABSENT means no declared constraint -- the module must never fabricate a grid. Tier keys match
    *  the render quality tiers the module accepts (e.g. draft/standard/final). */
   duration_grid?: DurationGridDecl;
+  /**
+   * OPTIONAL, additive (no MODULE_API bump). How WE run this motion door, not the
+   * provider's marketing max. These limits ARE the consistency contract: a door
+   * we scatter cannot hear the previous clip; a door with no seed cannot pin a
+   * speaker; a silent door voices through Cast TTS.
+   *
+   * The module declares the envelope it actually calls. Absent means undeclared
+   * (legacy); the core does not invent one.
+   */
+  usage?: MotionUsageDecl;
   /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable` / `finish_consumes_audio`).
    *  cf#537. Whether this module runs when a render carries NO explicit selection for its hook.
    *

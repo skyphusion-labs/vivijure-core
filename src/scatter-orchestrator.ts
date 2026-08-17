@@ -22,6 +22,8 @@ import {
   type FilmJob,
   type FilmScene,
 } from "./film-orchestrator.js";
+import { applyVoiceSeed, voiceLockFromCast } from "./film-model.js";
+import { generateAudioOn, motionScatterAllowed, usageOf } from "./motion-usage.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
 import { filmJobToPollView, filterScenesByShotIds, orderScenesByShotIds, mapRenderOverridesToModuleConfigs } from "./film-render-bridge.js";
 import { scatterDonePayload } from "./render-output-payload.js";
@@ -142,7 +144,7 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
     throw new Error("no motion.backend module installed");
   }
 
-  const { pretrained, voices, castIds, skipped, skippedDetail } = await resolveCastLoras(env, args.cast_loras);
+  const { pretrained, voices, speakerNames, castIds, skipped, skippedDetail } = await resolveCastLoras(env, args.cast_loras);
   // #739: castLoras is OPTIONAL on scatter. Absent/empty -> shards render generic, exactly like the
   // film/render siblings. The old "castLoras required for scatter" was unintended coupling baked in at
   // the v0.2.0 bulk ship (no rationale anywhere, and nothing downstream needs a non-empty cast). A
@@ -184,8 +186,17 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
   if (shards.length < 2) throw new Error("scatter requires >= 2 shards");
 
   const mapped = mapRenderOverridesToModuleConfigs(args.render_overrides, args.quality_tier, modules);
+  const voiceLock = voiceLockFromCast(speakerNames, voices, args.voice_lock);
+  mapped.motion_config = applyVoiceSeed(mapped.motion_config, voiceLock) ?? mapped.motion_config;
   const motionBackend = args.motion_backend ?? mapped.motion_backend ?? defaultGpuDoorModule(modules)?.name;
   if (!motionBackend) throw new Error('no gpu-door motion.backend module (ui.locality "byo"/"local") is installed');
+  const motionMod = modules.find((m) => m.name === motionBackend);
+  const talking = generateAudioOn(mapped.motion_config);
+  if (!motionScatterAllowed(usageOf(motionMod), talking, motionBackend)) {
+    throw new Error(
+      motionBackend + " stays on one film so voice and look can stay consistent (no scatter)",
+    );
+  }
   const scatterId = scatterParentJobId(crypto.randomUUID());
   const stagedAudio = await resolveStagedAudioKey(env, args.audio_key);
 
@@ -245,7 +256,7 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
       cast_loras: castIds,
       dialogue_lines: shardDialogue,
       style_prefix: args.style_prefix,
-      voice_lock: args.voice_lock,
+      voice_lock: voiceLock || args.voice_lock,
     });
     scatterJob.shard_film_ids.push(film.film_id);
     shardRows.push({ jobId: film.film_id, status: filmJobToPollView(film, null).status });
