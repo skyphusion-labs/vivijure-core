@@ -13,7 +13,7 @@ import type { ScatterJob } from "../src/scatter-orchestrator.js";
 // #33 scatter shard-row self-heal.
 
 describe("#30 contentValidateDoneClips: a transient 'skip' does not lock out re-inspection", () => {
-  const env = { VIDEO_FINISH_URL: "https://video-finish.test" } as unknown as Env;
+  const env = { VIDEO_FINISH_URL: "https://video-finish.test", MEDIA_FINISH_TOKEN: "test-tok" } as unknown as Env;
 
   it("does NOT persist a 'skip' verdict (a later tick can re-inspect)", async () => {
     const job = { job_id: "j1", shots: [{ shot_id: "s1", status: "done", clip_key: "k1" }] } as unknown as ClipJob;

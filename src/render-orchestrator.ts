@@ -57,6 +57,7 @@ import { validateClipArtifact } from "./clip-validate.js";
 import { contentValidateDoneClips } from "./clip-content-validate.js";
 import { clipProvenanceHash, chooseProvenanceMatch, headEtag, writeProv } from "./clip-provenance.js";
 import { BUCKET_KEYFRAME_MOTION_BACKENDS, ensureClipKeyframeInR2 } from "./stage-clip-keyframe.js";
+import { assertProjectKey } from "./key-safety.js";
 
 export type { ClipShotInput, ClipShot, ClipJob, JobSummary };
 export { summarizeJob };
@@ -88,8 +89,8 @@ export function classifyTransientFailure(error: string | undefined): "transient"
 export const CLIP_POLL_MAX_ATTEMPTS = 3;
 
 /** Apply a /poll outcome to a shot (pure): failure -> failed; still pending -> unchanged; output ->
- *  done with the clip key. */
-export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>): void {
+ *  done with the clip key. `project` confines a module-returned clip_key to renders/<project>/. */
+export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, project: string): void {
   if (!r.ok) {
     // #719: one TRANSIENT poll failure must not STICKILY fail a healthy in-flight render. Mirror the
     // finish chain's bounded-attempts contract: tolerate up to CLIP_POLL_MAX_ATTEMPTS CONSECUTIVE
@@ -117,8 +118,14 @@ export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>):
   const output = (r as { output: MotionBackendOutput }).output;
   const violation = hookOutputViolation(shot.motion_backend ?? "motion.backend", "motion.backend", output);
   if (violation) { shot.status = "failed"; shot.error = violation; return; } // envelope-ok but off-contract: fail loud, never advance garbage
+  try {
+    shot.clip_key = assertProjectKey(project, output.clip_key);
+  } catch (e) {
+    shot.status = "failed";
+    shot.error = e instanceof Error ? e.message : String(e);
+    return;
+  }
   shot.status = "done";
-  shot.clip_key = output.clip_key;
   // #707: retain what the backend delivered so the film summary can show delivered-vs-planned. The
   // contract has always carried fps+frames; modules with nothing to report send frames=0 (sentinel) --
   // treat that as absent rather than recording a fabricated 0-frame delivery.
@@ -338,10 +345,15 @@ export async function startClipJob(
       const violation = hookOutputViolation(mb.name, "motion.backend", output);
       if (violation) { shot.status = "failed"; shot.error = violation; }
       else {
-        shot.status = "done";
-        shot.clip_key = output.clip_key;
-        if (typeof output.has_audio === "boolean") shot.has_audio = output.has_audio;
-        await stampClipProvenance(env, args.project, shot);
+        try {
+          shot.clip_key = assertProjectKey(args.project, output.clip_key);
+          shot.status = "done";
+          if (typeof output.has_audio === "boolean") shot.has_audio = output.has_audio;
+          await stampClipProvenance(env, args.project, shot);
+        } catch (e) {
+          shot.status = "failed";
+          shot.error = e instanceof Error ? e.message : String(e);
+        }
       }
     } else {
       shot.status = "failed";
@@ -380,7 +392,7 @@ export async function advanceClipJob(env: Env, jobId: string, preModules?: Regis
       continue;
     }
     const p = await pollModule<MotionBackendOutput>(fetcher, { poll: shot.poll });
-    applyPoll(shot, p);
+    applyPoll(shot, p, job.project);
     polled.push(shot);
   }
   // #767: stamp this render config-provenance for any shot accepted via this pass's poll, so a later

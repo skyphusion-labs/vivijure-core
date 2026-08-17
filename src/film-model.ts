@@ -11,6 +11,14 @@ import { classifyTransientFailure } from "./render-orchestrator.js";
 import { coerceShotId } from "./storyboard-ids.js";
 import { defaultFilmOutputKey } from "./film-output-key.js";
 import { voiceLockHint } from "./voices.js";
+import { assertProjectKey } from "./key-safety.js";
+
+/** Defense-in-depth cap on look/voice lock fields prepended to every motion prompt. */
+export const MOTION_LOCK_FIELD_MAX_CHARS = 500;
+
+function clipLockField(s: string): string {
+  return s.length <= MOTION_LOCK_FIELD_MAX_CHARS ? s : s.slice(0, MOTION_LOCK_FIELD_MAX_CHARS);
+}
 
 export interface FilmScene { shot_id: string; prompt: string; seconds: number; }
 
@@ -21,8 +29,8 @@ export function composeMotionPrompt(
   lock: { style_prefix?: string; voice_lock?: string },
 ): string {
   const parts: string[] = [];
-  const style = (lock.style_prefix || "").trim();
-  const voice = (lock.voice_lock || "").trim();
+  const style = clipLockField((lock.style_prefix || "").trim());
+  const voice = clipLockField((lock.voice_lock || "").trim());
   if (style) parts.push(style);
   if (voice) {
     parts.push(
@@ -62,7 +70,7 @@ export function buildVoiceLock(speakers: VoiceLockSpeaker[], extra?: string): st
   if (seen.size > 1) {
     lines.push("When a named character speaks, use only that character's locked voice. Never invent a new speaker.");
   }
-  return lines.join(" ");
+  return clipLockField(lines.join(" "));
 }
 
 /** Film-level lock from resolveCastLoras maps. Extra (planner textarea) wins
@@ -631,8 +639,8 @@ export function finishOutputIsCsamRefusal(out: FinishOutput): boolean {
  *  record what it applied, advance the chain index; status -> done when the chain is exhausted.
  *  #226: also persist `out.degraded` so the reason is not swallowed. CSAM is refused by the
  *  caller (see applyFinishOutputOrRefuse); this fold never turns a refusal into a degrade. */
-export function applyFinishOutput(fs: FinishShot, out: FinishOutput): void {
-  fs.clip_key = out.clip_key;
+export function applyFinishOutput(fs: FinishShot, out: FinishOutput, project: string): void {
+  fs.clip_key = assertProjectKey(project, out.clip_key);
   const tags = out.applied || [];
   fs.applied.push(...tags);
   // #226: the reason channel, not the tag. A lipsync no-face and an upscale timeout on the same
@@ -652,14 +660,20 @@ export function applyFinishOutput(fs: FinishShot, out: FinishOutput): void {
 
 /** Fold a finish output, or fail the shot if the output is a CSAM refusal. The fold itself must
  *  never record a CSAM reason as a polish miss -- that is the bright line, not a degrade. */
-export function applyFinishOutputOrRefuse(fs: FinishShot, out: FinishOutput): void {
+export function applyFinishOutputOrRefuse(fs: FinishShot, out: FinishOutput, project: string): void {
   if (finishOutputIsCsamRefusal(out)) {
     fs.status = "failed";
     fs.error = typeof out.degraded === "string" && out.degraded.length > 0 ? out.degraded : "csam refusal";
     fs.poll = undefined;
     return;
   }
-  applyFinishOutput(fs, out);
+  try {
+    applyFinishOutput(fs, out, project);
+  } catch (e) {
+    fs.status = "failed";
+    fs.error = e instanceof Error ? e.message : String(e);
+    fs.poll = undefined;
+  }
 }
 
 /** Pure: fold an ADOPTED (reused-from-R2, NOT run this pass) finish-step artifact into the shot. Same

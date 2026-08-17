@@ -24,6 +24,7 @@ function muxEnv(job: object, containerBody: unknown) {
       presignPut: async (key: string) => `https://presigned-put/${key}`,
     },
     VIDEO_FINISH_URL: "https://video-finish.test",
+    MEDIA_FINISH_TOKEN: "test-tok",
   };
   installVfFetch(vfAsyncFinish(containerBody));
   return { env: env as unknown as Env, read: () => JSON.parse(stored) as FilmJob };

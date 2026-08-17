@@ -3,8 +3,11 @@
  *
  * Those images refuse work when LOCAL_FINISH_TOKEN is set (vivijure-cf#613). Assemble
  * and mux go through this package, so the header has to be attached here or arming
- * the token 401s every film. Unset stays fail-open: a self-host with no token keeps
- * the unauthenticated path.
+ * the token 401s every film.
+ *
+ * Fail-closed on a configured public door: if a door URL is set and the token is
+ * empty, headers and fetch THROW. An unauthenticated request to a public origin
+ * is never sent. Self-host with no door URL stays off (fetch returns null).
  *
  * Typed unknown because the host may bind a plaintext string OR a Secrets Store
  * handle. Same resolution shape as tenantR2FromEnv / runpodRoute: a string is used
@@ -17,6 +20,30 @@ export type MediaDoorKey =
   | "AUDIO_MIX_URL"
   | "AUDIO_BEAT_SYNC_URL"
   | "IMAGE_PREP_URL";
+
+const MEDIA_DOOR_KEYS: readonly MediaDoorKey[] = [
+  "VIDEO_FINISH_URL",
+  "AUDIO_MIX_URL",
+  "AUDIO_BEAT_SYNC_URL",
+  "IMAGE_PREP_URL",
+];
+
+/** Thrown when a media door URL is set and the bearer is empty. Assemble treats this as a hard fail. */
+export class MediaFinishAuthError extends Error {
+  readonly code = "MEDIA_FINISH_TOKEN_REQUIRED" as const;
+  constructor(door?: string) {
+    super(
+      door
+        ? `${door} is set but MEDIA_FINISH_TOKEN is empty; refusing unauthenticated door request`
+        : "a media door URL is set but MEDIA_FINISH_TOKEN is empty; refusing unauthenticated door request",
+    );
+    this.name = "MediaFinishAuthError";
+  }
+}
+
+export function isMediaFinishAuthError(e: unknown): e is MediaFinishAuthError {
+  return e instanceof MediaFinishAuthError;
+}
 
 function asGetter(value: unknown): { get: () => Promise<unknown> } | null {
   if (!value || typeof value !== "object") return null;
@@ -49,7 +76,8 @@ export function mediaDoorReachable(env: Env, key: MediaDoorKey): boolean {
   return Boolean(mediaDoorUrl(env, key));
 }
 
-/** POST a path on a host-configured media door. Returns null when the URL is unset. */
+/** POST a path on a host-configured media door. Returns null when the URL is unset.
+ *  Throws MediaFinishAuthError when the URL is set and the bearer is empty. */
 export async function mediaDoorFetch(
   env: Env,
   key: MediaDoorKey,
@@ -58,6 +86,8 @@ export async function mediaDoorFetch(
 ): Promise<Response | null> {
   const url = mediaDoorUrl(env, key);
   if (!url) return null;
+  const token = await mediaFinishToken(env);
+  if (!token) throw new MediaFinishAuthError(key);
   return fetch(url + (path.startsWith("/") ? path : "/" + path), init);
 }
 
@@ -80,13 +110,24 @@ export async function videoFinishFetch(
   return mediaDoorFetch(env, "VIDEO_FINISH_URL", path, init);
 }
 
-/** JSON POST headers, plus Authorization when a token is readable. */
+/** True when the host set any public media-door origin. */
+export function anyMediaDoorUrl(env: Env): MediaDoorKey | "" {
+  for (const key of MEDIA_DOOR_KEYS) {
+    if (mediaDoorUrl(env, key)) return key;
+  }
+  return "";
+}
+
+/** JSON POST headers, plus Authorization when a token is readable.
+ *  Throws when a door URL is set and the token is empty (do not send unauthenticated). */
 export async function mediaFinishHeaders(
   env: Env,
   extra: Record<string, string> = {},
 ): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "content-type": "application/json", ...extra };
   const token = await mediaFinishToken(env);
+  const door = anyMediaDoorUrl(env);
+  if (door && !token) throw new MediaFinishAuthError(door);
   if (token) headers.authorization = "Bearer " + token;
   return headers;
 }

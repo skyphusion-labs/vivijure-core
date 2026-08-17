@@ -12,7 +12,7 @@
  * is not "job gone".
  */
 import type { Env } from "./platform/orchestrator-context.js";
-import { mediaFinishHeaders, videoFinishFetch, videoFinishUrl } from "./media-finish-auth.js";
+import { isMediaFinishAuthError, mediaFinishHeaders, videoFinishFetch, videoFinishUrl } from "./media-finish-auth.js";
 
 export const HOSTED_FINISH_POLL_BOXES = ["jello", "descendents", "badbrains"] as const;
 export const ASSEMBLE_NOTFOUND_STREAK = 12;
@@ -102,7 +102,8 @@ async function submitAsync(env: Env, payload: FinishPayload): Promise<string | n
   let resp: Response | null = null;
   try {
     resp = await videoFinishFetch(env, "/async/finish", init);
-  } catch {
+  } catch (e) {
+    if (isMediaFinishAuthError(e)) throw e;
     return null;
   }
   if (!resp || resp.status !== 202) return null;
@@ -168,6 +169,19 @@ export async function pollVideoFinishAsync(env: Env, jobId: string): Promise<Sta
  * peer replica is pending until ASSEMBLE_NOTFOUND_STREAK misses in a row.
  */
 export async function tickVideoFinishAssemble(
+  env: Env,
+  payload: FinishPayload,
+  pollRaw: string | undefined,
+): Promise<AssembleTick> {
+  try {
+    return await tickVideoFinishAssembleInner(env, payload, pollRaw);
+  } catch (e) {
+    if (isMediaFinishAuthError(e)) return { kind: "failed", error: e.message };
+    throw e;
+  }
+}
+
+async function tickVideoFinishAssembleInner(
   env: Env,
   payload: FinishPayload,
   pollRaw: string | undefined,

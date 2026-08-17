@@ -19,7 +19,7 @@
 // route (which has no downstream spend); Layer 1 covers that route.
 
 import type { Env } from "./platform/orchestrator-context.js";
-import { mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
+import { isMediaFinishAuthError, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
 import type { ClipJob } from "./clip-job-model.js";
 import { presignR2Get } from "./presign.js";
 import { emitStructuredEvent } from "./structured-events.js";
@@ -56,7 +56,8 @@ export async function callVideoFinishInspect(
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       resp = await videoFinishFetch(env, "/inspect", init);
-    } catch {
+    } catch (e) {
+      if (isMediaFinishAuthError(e)) throw e;
       resp = null;
     }
     if (resp && resp.status !== 503 && resp.status !== 504) break;

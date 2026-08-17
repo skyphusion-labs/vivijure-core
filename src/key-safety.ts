@@ -15,6 +15,27 @@ export function isSafeBundleKey(key: unknown): key is string {
   return isSafeRelKey(key) && key.startsWith(BUNDLE_KEY_PREFIX);
 }
 
+/** Project-scoped render prefix. Module-returned artifact keys must stay under this. */
+export function projectKeyPrefix(project: string): string {
+  return `renders/${project}/`;
+}
+
+/** True when key is a safe relative key strictly under renders/<project>/. */
+export function isProjectKey(project: string, key: unknown): key is string {
+  if (typeof project !== "string" || !project || !isSafeRelKey(key)) return false;
+  const prefix = projectKeyPrefix(project);
+  return key.startsWith(prefix) && key.length > prefix.length;
+}
+
+/** Adopt a module-returned artifact key, or throw. Escaping renders/<project>/ is refused.
+ *  Bundle keys are not accepted here: clip/keyframe/lora outputs live under renders/. */
+export function assertProjectKey(project: string, key: string): string {
+  if (!isProjectKey(project, key)) {
+    throw new Error(`refused key outside ${projectKeyPrefix(project || "?")}`);
+  }
+  return key;
+}
+
 export function sanitizeKeySegment(raw: string, fallback = "project"): string {
   const s = raw
     .replace(/[^A-Za-z0-9._\-]/g, "_")

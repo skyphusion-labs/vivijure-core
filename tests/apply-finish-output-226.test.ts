@@ -18,7 +18,7 @@ import type { FilmJob } from "../src/film-model.js";
 function shot(over: Partial<FinishShot> = {}): FinishShot {
   return {
     shot_id: "s1",
-    clip_key: "clips/s1.mp4",
+    clip_key: "renders/p/clips/s1.mp4",
     chain: ["MODULE_LIPSYNC", "MODULE_UPSCALE"],
     configs: [{}, {}],
     idx: 0,
@@ -31,7 +31,7 @@ function shot(over: Partial<FinishShot> = {}): FinishShot {
 function out(over: Partial<FinishOutput> = {}): FinishOutput {
   return {
     shot_id: "s1",
-    clip_key: "clips/s1.mp4",
+    clip_key: "renders/p/clips/s1.mp4",
     out_fps: 24,
     frames: 96,
     applied: ["passthrough:backend-soft-degrade"],
@@ -42,7 +42,7 @@ function out(over: Partial<FinishOutput> = {}): FinishOutput {
 describe("applyFinishOutput persists FinishOutput.degraded (#226)", () => {
   it("copies the reason onto the shot instead of swallowing it", () => {
     const fs = shot();
-    applyFinishOutput(fs, out({ degraded: "backend-soft-degrade: no detectable face in clip" }));
+    applyFinishOutput(fs, out({ degraded: "backend-soft-degrade: no detectable face in clip" }), "p");
     expect(fs.degraded).toEqual(["backend-soft-degrade: no detectable face in clip"]);
     expect(fs.applied).toEqual(["passthrough:backend-soft-degrade"]);
     expect(fs.idx).toBe(1);
@@ -51,11 +51,11 @@ describe("applyFinishOutput persists FinishOutput.degraded (#226)", () => {
 
   it("accumulates two step reasons, so last-write-wins cannot hide a cause", () => {
     const fs = shot();
-    applyFinishOutput(fs, out({ degraded: "backend-soft-degrade: no detectable face in clip" }));
+    applyFinishOutput(fs, out({ degraded: "backend-soft-degrade: no detectable face in clip" }), "p");
     applyFinishOutput(fs, out({
       applied: ["passthrough:backend-soft-degrade"],
       degraded: "backend-soft-degrade: wall-clock guard expired after 900s",
-    }));
+    }), "p");
     expect(fs.degraded).toEqual([
       "backend-soft-degrade: no detectable face in clip",
       "backend-soft-degrade: wall-clock guard expired after 900s",
@@ -69,7 +69,7 @@ describe("applyFinishOutput persists FinishOutput.degraded (#226)", () => {
 
   it("does not invent a degraded list on a real success", () => {
     const fs = shot();
-    applyFinishOutput(fs, out({ applied: ["lipsync:v15"], degraded: undefined }));
+    applyFinishOutput(fs, out({ applied: ["lipsync:v15"], degraded: undefined }), "p");
     expect(fs.degraded).toBeUndefined();
     expect(fs.applied).toEqual(["lipsync:v15"]);
   });
@@ -93,7 +93,7 @@ describe("CSAM refusals stay a hard fail, never a degrade", () => {
 
   it("applyFinishOutputOrRefuse fails the shot and does not record a polish degrade", () => {
     const fs = shot();
-    applyFinishOutputOrRefuse(fs, out({ degraded: "csam detected" }));
+    applyFinishOutputOrRefuse(fs, out({ degraded: "csam detected" }), "p");
     expect(fs.status).toBe("failed");
     expect(fs.error).toBe("csam detected");
     expect(fs.degraded).toBeUndefined();
@@ -103,10 +103,19 @@ describe("CSAM refusals stay a hard fail, never a degrade", () => {
 
   it("CONTROL: a no-face degrade still folds, so the refusal is a distinction", () => {
     const fs = shot();
-    applyFinishOutputOrRefuse(fs, out({ degraded: "backend-soft-degrade: no detectable face in clip" }));
+    applyFinishOutputOrRefuse(fs, out({ degraded: "backend-soft-degrade: no detectable face in clip" }), "p");
     expect(fs.status).toBe("pending");
     expect(fs.degraded).toEqual(["backend-soft-degrade: no detectable face in clip"]);
     expect(fs.error).toBeUndefined();
+  });
+
+  it("applyFinishOutputOrRefuse fails the shot when clip_key escapes the project", () => {
+    const fs = shot();
+    applyFinishOutputOrRefuse(fs, out({ clip_key: "renders/other/clips/s1.mp4", degraded: undefined, applied: ["lipsync:v15"] }), "p");
+    expect(fs.status).toBe("failed");
+    expect(fs.clip_key).toBe("renders/p/clips/s1.mp4");
+    expect(fs.error).toMatch(/refused key outside renders\/p\//);
+    expect(fs.idx).toBe(0);
   });
 });
 
