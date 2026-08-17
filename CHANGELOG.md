@@ -3,7 +3,64 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.21.7
+## [1.21.7] -- 2026-08-17
+
+### fix(finish): omit clip_key when presigns attach
+
+`attachFinishPresigns` / `attachSpeechPresigns` minted GET/PUT URLs and
+left `clip_key` / `audio_key` on the invoke body. Satellites select
+R2 vs presigned on key presence, so the credentialless branch never
+ran. After a complete all-or-nothing presign the keys are deleted;
+a skip or a missing dialogue `audio_url` keeps them (R2 fallback).
+
+### fix(registry): thread preModules through remaining discover sites
+
+Five orchestrator sites still called `discoverModules()` instead of
+taking a request-scoped registry. Request-entry still discovers once
+(`startScatterRender`, `advanceScatterJob`, `cancelFilmJob`) and
+threads the result down. Callers below that boundary take `preModules`
+and discover only if it is absent. A grep test pins the allowlist.
+
+### fix(core): install batch fallback; CAS give-up is falsy
+
+`setInstallConfig` goes through `runPreparedWrites`, so a host without
+`Database.batch` writes sequentially instead of throwing (core#221).
+`casUpdateImageList` / `addRefs` return a falsy row after giving up on
+CAS contention, so an abandoned write is not a success (core#234).
+`setRenderAudioOutput` merge is pinned: a partial audio update cannot
+clobber sibling `output_json` fields (core#225). The D1 test harness now
+returns rows from `INSERT`/`UPDATE ... RETURNING` so those paths can be
+driven against a real engine.
+
+### feat(conformance): require max_invocation_seconds on finish/speech
+
+`checkManifest` now fails a module serving `finish` or `speech` that
+omits `max_invocation_seconds`. Load stays permissive: `validateManifest`
+still accepts an absent value so a third-party module is not our gate
+to fail. Notify and other non-ceiling-derived hooks stay silent. Not a
+warning and not an override.
+
+### feat(ready): shared /ready type and classifier
+
+The module GET /ready contract lived as prose in two repos. Core now
+owns the wire type and `classifyReadyResponse` (cp#468 rules: ask the
+module which credentials it needs; door-backed and public-slug must
+not be required to show `runpod_endpoint_id`; 404 is unverifiable;
+module-echo mismatch is misconfigured). Control-plane keeps its local
+copy until a core release. Does not publish.
+
+### feat(motion): storyboard line rides the i2v prompt
+
+composeMotionPrompt now prepends SPOKEN LINE so Veo / Seedance / Flux
+say the words from the storyboard, not a invented line. Voice lock is
+unchanged (same speaker every shot).
+
+### feat(train): pass train_overrides to wan-train
+
+The worker allow-list (batch_size, resolution, steps) was live and
+unreachable. POST /api/cast/:id/train-wan-lora now accepts
+train_overrides / trainOverrides; unknown keys are dropped so a typo
+cannot fail a train. SDXL /train-lora does not emit the field.
 
 ## [1.21.6] -- 2026-08-17
 
