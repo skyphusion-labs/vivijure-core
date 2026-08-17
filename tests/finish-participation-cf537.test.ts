@@ -314,6 +314,7 @@ describe("cf#537 manifest contract", () => {
     for (const p of ["default", "opt_in"] as const) {
       const checks = checkManifest({
         name: "m", version: "1.0.0", api: MODULE_API, hooks: ["finish"], participation: p,
+        max_invocation_seconds: 1200,
       });
       expect(allPass(checks), JSON.stringify(failures(checks))).toBe(true);
     }

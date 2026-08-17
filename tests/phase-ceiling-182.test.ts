@@ -14,8 +14,8 @@
 //     effective = max(PHASE_HARD_DEADLINE_SECONDS, FINISH_STEP_MAX_ATTEMPTS * max declared in play)
 //
 // so the 90 minutes is a FLOOR rather than a guess, and no new constant exists. The CONFORMANCE
-// requirement that forces a module to declare is SEQUENCED to core#223, to land with the
-// declarations that satisfy it rather than red in a shared repo.
+// requirement that forces a finish/speech module to declare is ON (core#223). Load stays
+// permissive so a third-party module without the field still loads.
 //
 // WHAT THESE TESTS ARE CAREFUL ABOUT. Every declared value here is NON-DEFAULT and distinct from
 // every other, because on a default an honoured declaration and a substituted one are byte-identical.
@@ -263,17 +263,27 @@ describe("core#182 the declaration is refused at LOAD when malformed, and requir
     }
   });
 
-  // THE GATE IS NOT IN THIS PR, and its absence is deliberate rather than an oversight. Not one
-  // first-party `finish` door can declare a value honestly today, so a conformance requirement would
-  // land RED in a shared repo and block every other lane -- and a gate that blocks correct work is a
-  // gate that gets switched off. It lands with the declarations that satisfy it (core#223).
-  //
-  // What IS asserted here is that `checkManifest` stays SILENT on this field for now, so the day the
-  // gate lands it is a visible change rather than something that was quietly half-present.
-  it("MEASURED: conformance does not yet speak about this field, and that is the sequencing, not a softening", () => {
-    for (const hooks of [["finish"], ["speech"], ["notify"]]) {
+  // THE GATE IS ON (core#223). Omitting the field is a conformance failure for finish and speech.
+  // Load stays permissive (the test above). Notify and other non-ceiling-derived hooks stay silent
+  // so the gate does not become a whole-catalogue cutover.
+  it("MEASURED: finish/speech without the field fail conformance as max-invocation-seconds", () => {
+    for (const hooks of [["finish"], ["speech"]]) {
       const checks = checkManifest({ ...base, hooks, participation: "default" });
-      expect(checks.some((x) => x.name === "max-invocation-seconds"), hooks.join()).toBe(false);
+      expect(checks.some((x) => x.name === "max-invocation-seconds" && !x.pass), hooks.join()).toBe(true);
     }
+  });
+
+  it("MEASURED: finish/speech with a positive number pass that check", () => {
+    for (const hooks of [["finish"], ["speech"]]) {
+      const checks = checkManifest({ ...base, hooks, participation: "default", max_invocation_seconds: 1200 });
+      const named = checks.filter((x) => x.name === "max-invocation-seconds");
+      expect(named.length, hooks.join()).toBe(1);
+      expect(named[0].pass, hooks.join()).toBe(true);
+    }
+  });
+
+  it("MEASURED: notify without the field still has no max-invocation-seconds check", () => {
+    const checks = checkManifest({ ...base, hooks: ["notify"] });
+    expect(checks.some((x) => x.name === "max-invocation-seconds")).toBe(false);
   });
 });

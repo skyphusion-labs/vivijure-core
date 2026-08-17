@@ -11,7 +11,7 @@
 // .test.ts) drives them against a deployed module URL. This is the conformance half of the module
 // SDK: the contract is the law, and this is how a contributor proves they obey it.
 
-import { SELECTABLE_HOOKS, SUPPORTED_MODULE_APIS, type HookName } from "./types.js";
+import { CEILING_DERIVED_HOOKS, SELECTABLE_HOOKS, SUPPORTED_MODULE_APIS, type HookName } from "./types.js";
 import { validateManifest } from "./manifest-validate.js";
 
 export interface ConformanceCheck {
@@ -76,6 +76,17 @@ export function checkManifest(raw: unknown): ConformanceCheck[] {
     checks.push(p === "default" || p === "opt_in"
       ? ok("participation", String(p))
       : bad("participation", `a module serving ${selectable.join(", ")} must declare participation: "default" | "opt_in" (cf#537); got ${JSON.stringify(p)}`));
+  }
+  // core#223: a module serving a ceiling-derived hook must declare max_invocation_seconds.
+  // Fails CONFORMANCE, not LOAD: validateManifest still accepts an absent value, so a third-party
+  // manifest keeps working while ours have to be explicit. Notify and other non-ceiling-derived
+  // hooks are not asked (a whole-catalogue cutover by the back door is what cf#537 already refused).
+  const ceilingDerived = m.hooks.filter((h) => (CEILING_DERIVED_HOOKS as ReadonlySet<string>).has(h));
+  if (ceilingDerived.length) {
+    const v = m.max_invocation_seconds;
+    checks.push(typeof v === "number"
+      ? ok("max-invocation-seconds", String(v))
+      : bad("max-invocation-seconds", `a module serving ${ceilingDerived.join(", ")} must declare max_invocation_seconds (core#223)`));
   }
   if (m.config_schema) {
     for (const [k, f] of Object.entries(m.config_schema)) checks.push(checkConfigField(k, f));
