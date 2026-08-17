@@ -59,6 +59,16 @@ describe("composeMotionPrompt", () => {
     expect(seedFromVoiceLock("")).toBe(-1);
   });
 
+  it("puts the storyboard line in the motion prompt", () => {
+    const p = composeMotionPrompt("she turns", {
+      spoken_line: "Don't open that.",
+      speaker: "clear mid female, American",
+    });
+    expect(p).toContain("SPOKEN LINE (clear mid female, American)");
+    expect(p).toContain("Don't open that.");
+    expect(p).toContain("she turns");
+  });
+
   it("omits the lock clause when voice_lock is empty", () => {
     const p = composeMotionPrompt("she turns", { style_prefix: "35mm", voice_lock: "  " });
     expect(p).toBe("35mm she turns");
