@@ -268,7 +268,9 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
   const { matched, missing } = joinKeyframesToScenes(job.scenes, kfOut.keyframes || []);
   if (!matched.length) {
     job.phase = "failed";
-    job.error = `keyframe stage produced none of the requested shots (missing: ${missing.join(", ")})`;
+    job.error = job.scenes.length
+      ? `keyframe stage produced none of the requested shots (missing: ${missing.join(", ")})`
+      : "keyframe stage produced none of the requested shots (this film has no scenes; the bundle storyboard is empty or shot ids did not match)";
     return;
   }
   if (missing.length && !job.keyframes_incomplete) {
@@ -2372,6 +2374,9 @@ export async function startFilmJob(
   );
   if (guard.duplicate) return guard.duplicate;
   const scenes = coerceSceneIds(args.scenes ?? []);
+  if (!scenes.length && !args.keyframes_only) {
+    throw new Error("film has no scenes (bundle storyboard empty or shot ids did not match)");
+  }
   // Dialogue lines must join on the SAME coerced ids as the scenes, or a caller-supplied id scheme
   // (`s1`/`s2`) strands the TTS audio under keys no consumer reads (silent + uncaptioned film, #563).
   const dialogueLines = coerceDialogueLineIds(args.scenes ?? [], args.dialogue_lines);

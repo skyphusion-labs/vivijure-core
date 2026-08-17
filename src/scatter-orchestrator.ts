@@ -99,6 +99,8 @@ export interface StartScatterArgs {
   audio_key?: string;
   film_titles?: { title?: { text: string; subtitle?: string }; credits?: { lines: string[] } };
   project_id?: number | null;
+  /** Planner scenes. Used when the bundle tar has no parseable storyboard.yaml. */
+  scenes?: FilmScene[];
 }
 
 /** Resolve per-shot dialogue for scatter (vivijure-core#122).
@@ -151,11 +153,22 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
   }
 
   const parsed = await readBundleScenes(env, args.bundle_key);
-  const scenes: FilmScene[] = parsed.map((s) => ({
+  const fromBundle: FilmScene[] = parsed.map((s) => ({
     shot_id: s.shot_id,
     prompt: s.prompt,
     seconds: s.seconds,
   }));
+  const fromRequest = (args.scenes || [])
+    .filter((s) => s && typeof s.shot_id === "string" && s.shot_id && typeof s.prompt === "string")
+    .map((s) => ({
+      shot_id: s.shot_id,
+      prompt: s.prompt,
+      seconds: typeof s.seconds === "number" && s.seconds > 0 ? s.seconds : 4,
+    }));
+  const scenes: FilmScene[] = fromBundle.length ? fromBundle : fromRequest;
+  if (!scenes.length) {
+    throw new Error("scatter: bundle has no storyboard scenes (re-bundle after planning)");
+  }
   const expected = args.shot_ids.filter((s) => typeof s === "string" && s.length > 0);
   if (expected.length < 2) throw new Error("scatter requires >= 2 shots");
 
@@ -203,6 +216,11 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
   const shardRows: { jobId: string; status: string }[] = [];
   for (const shard of shards) {
     const shardScenes = filterScenesByShotIds(scenes, shard.shots);
+    if (!shardScenes.length) {
+      throw new Error(
+        "scatter: none of [" + shard.shots.join(", ") + "] are in the storyboard",
+      );
+    }
     // Each shard runs its own finish chain (incl. lip-sync), so it carries only its shots' dialogue.
     const shardShotSet = new Set(shard.shots);
     const shardDialogue = dialogueLines.filter((l) => shardShotSet.has(l.shot_id));
