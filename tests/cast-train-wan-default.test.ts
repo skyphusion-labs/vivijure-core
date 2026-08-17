@@ -57,6 +57,14 @@ describe("parseCastTrainBodyFields", () => {
     expect(parseCastTrainBodyFields({ renderOverrides: {} }, false).modelFamily)
       .toBeUndefined();
   });
+
+  it("clamps train_overrides to the worker allow-list (wan-train#37)", () => {
+    const body = parseCastTrainBodyFields(
+      { train_overrides: { batch_size: 2, steps: 1000, no_such: 9 } },
+      true,
+    );
+    expect(body.trainOverrides).toEqual({ batch_size: 2, steps: 1000 });
+  });
 });
 
 describe("resolveCastTrainFamily -- DEFAULT path (no preference expressed)", () => {

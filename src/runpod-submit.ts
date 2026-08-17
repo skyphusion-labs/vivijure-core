@@ -179,7 +179,20 @@ export interface TrainLoraArgs {
   // R2_S3_* set -- dedicated EP / env R2 still works. Only buildTrainWanLoraPayload
   // puts this on the wire.
   r2?: TenantR2Config;
+  // wan-train#37: knobs the worker allow-lists (batch_size, resolution, steps).
+  // Unknown keys are dropped here so a typo cannot fail a train (the worker
+  // refuses unknown keys). Only buildTrainWanLoraPayload emits them.
+  trainOverrides?: TrainOverrides;
 }
+
+/** Allow-list matching vivijure-wan-train knobs.py. */
+export interface TrainOverrides {
+  batch_size?: number;
+  resolution?: number;
+  steps?: number;
+}
+
+export const TRAIN_OVERRIDE_KEYS = ["batch_size", "resolution", "steps"] as const;
 
 export interface TrainLoraJobInput {
   action: "train_lora";
@@ -193,6 +206,18 @@ export interface TrainLoraJobInput {
   // Tenant destination for a pooled Wan-train job. Absent = use the endpoint
   // template env (operator studio / dedicated EP).
   r2?: TenantR2Config;
+  train_overrides?: TrainOverrides;
+}
+
+export function clampTrainOverrides(raw: unknown): TrainOverrides | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const src = raw as Record<string, unknown>;
+  const out: TrainOverrides = {};
+  for (const k of TRAIN_OVERRIDE_KEYS) {
+    const v = src[k];
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 // RunPod queue-based job status. The platform uses these literal strings
@@ -342,6 +367,8 @@ export function buildTrainWanLoraPayload(args: TrainLoraArgs): { input: TrainLor
       bucket: args.r2.bucket,
     };
   }
+  const to = clampTrainOverrides(args.trainOverrides);
+  if (to) input.train_overrides = to;
   return { input };
 }
 

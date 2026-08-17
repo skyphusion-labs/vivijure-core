@@ -12,11 +12,13 @@ import {
 } from "./cast-db.js";
 import { assembleBundle } from "./bundle-assembler.js";
 import {
+  clampTrainOverrides,
   pollCastLoraJob,
   submitTrainLoraJob,
   submitTrainWanLoraJob,
   type RunpodJobBackend,
   type RunpodResult,
+  type TrainOverrides,
 } from "./runpod-submit.js";
 import {
   parseRunpodErrorType,
@@ -148,6 +150,7 @@ export type CastTrainModelFamily = "sdxl" | "wan";
 export interface CastTrainRequestBody {
   renderOverrides?: Record<string, unknown>;
   modelFamily?: CastTrainModelFamily;
+  trainOverrides?: TrainOverrides;
 }
 
 // True when the host wired RUNPOD_WAN_TRAIN_ENDPOINT_ID (the dedicated Wan train endpoint).
@@ -195,11 +198,14 @@ export function parseCastTrainBodyFields(
     renderOverrides?: unknown;
     model_family?: unknown;
     modelFamily?: unknown;
+    train_overrides?: unknown;
+    trainOverrides?: unknown;
   } | null | undefined,
   wanConfigured: boolean,
 ): CastTrainRequestBody {
   let renderOverrides: Record<string, unknown> | undefined;
   let modelFamily: CastTrainModelFamily | undefined;
+  const trainOverrides = clampTrainOverrides(parsed?.train_overrides ?? parsed?.trainOverrides);
   if (
     parsed?.renderOverrides &&
     typeof parsed.renderOverrides === "object" &&
@@ -215,7 +221,7 @@ export function parseCastTrainBodyFields(
   if (typeof topFamily === "string") {
     modelFamily = resolveCastTrainFamily(wanConfigured, topFamily);
   }
-  return { renderOverrides, modelFamily };
+  return { renderOverrides, modelFamily, trainOverrides };
 }
 
 async function parseCastTrainRequestBody(
@@ -229,6 +235,8 @@ async function parseCastTrainRequestBody(
         renderOverrides?: unknown;
         model_family?: unknown;
         modelFamily?: unknown;
+        train_overrides?: unknown;
+        trainOverrides?: unknown;
       };
       return parseCastTrainBodyFields(parsed, wanConfigured);
     }
@@ -447,7 +455,7 @@ export async function handleCastTrainLora(
   const wanConfigured = await wanTrainEndpointConfigured(env);
   const body = await parseCastTrainRequestBody(request, wanConfigured);
   const family = body.modelFamily ?? resolveCastTrainFamily(wanConfigured);
-  return executeCastTrain(env, id, body.renderOverrides, family);
+  return executeCastTrain(env, id, body.renderOverrides, family, body.trainOverrides);
 }
 
 // Explicit Wan route (cf#29): always submits to RUNPOD_WAN_TRAIN_ENDPOINT_ID. Kept as a stable alias
@@ -459,7 +467,7 @@ export async function handleCastTrainWanLora(
 ): Promise<Response> {
   const wanConfigured = await wanTrainEndpointConfigured(env);
   const body = await parseCastTrainRequestBody(request, wanConfigured);
-  return executeCastTrain(env, id, body.renderOverrides, "wan");
+  return executeCastTrain(env, id, body.renderOverrides, "wan", body.trainOverrides);
 }
 
 async function executeCastTrain(
@@ -467,6 +475,7 @@ async function executeCastTrain(
   id: number,
   bodyRenderOverrides: Record<string, unknown> | undefined,
   family: CastTrainModelFamily,
+  trainOverrides?: TrainOverrides,
 ): Promise<Response> {
   const cast = await getCastById(env, id);
   if (!cast) return json({ error: "cast not found" }, 404);
@@ -523,6 +532,7 @@ async function executeCastTrain(
       project: args.storyboard.projectName,
       bundleKey: bundleResult.bundleKey,
       renderOverrides: bodyRenderOverrides,
+      trainOverrides,
     });
     if (!submit.ok) {
       return json({ error: submit.error }, 502);

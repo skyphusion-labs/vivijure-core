@@ -102,6 +102,28 @@ describe("buildTrainWanLoraPayload", () => {
     const { input } = buildTrainLoraPayload({ project: "p", bundleKey: "b", r2: TENANT_R2 });
     expect("r2" in input).toBe(false);
   });
+  it("emits allow-listed train_overrides and drops unknown keys", () => {
+    const { input } = buildTrainWanLoraPayload({
+      project: "p",
+      bundleKey: "bundles/p.tar.gz",
+      trainOverrides: { batch_size: 2, steps: 1000, resolution: 512, bogus: 1 } as {
+        batch_size: number;
+        steps: number;
+        resolution: number;
+        bogus: number;
+      },
+    });
+    expect(input.train_overrides).toEqual({ batch_size: 2, steps: 1000, resolution: 512 });
+    expect(input.train_overrides && "bogus" in input.train_overrides).toBe(false);
+  });
+  it("omits train_overrides when empty or invalid", () => {
+    const { input } = buildTrainWanLoraPayload({
+      project: "p",
+      bundleKey: "b",
+      trainOverrides: { steps: 0, batch_size: -1 } as { steps: number; batch_size: number },
+    });
+    expect("train_overrides" in input).toBe(false);
+  });
 });
 
 describe("submitTrainWanLoraJob endpoint binding", () => {
