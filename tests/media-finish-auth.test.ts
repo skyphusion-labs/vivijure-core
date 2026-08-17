@@ -152,6 +152,28 @@ describe("callVideoFinish / callAudioMix / callVideoFinishInspect send the beare
     }
   });
 
+  it("callVideoFinish ignores a leftover VIDEO_FINISH_VPC Fetcher", async () => {
+    const vpc = { fetch: vi.fn(async () => new Response("vpc", { status: 200 })) };
+    const fetch = stubFetch();
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      await callVideoFinish(
+        envWith({
+          VIDEO_FINISH_URL: "https://video-finish.example",
+          VIDEO_FINISH_VPC: vpc,
+          MEDIA_FINISH_TOKEN: "abc",
+        }),
+        { clips: [], outputUrl: "u", outputKey: "k" },
+      );
+      expect(vpc.fetch).not.toHaveBeenCalled();
+      expect(String(fetch.mock.calls[0]?.[0])).toBe("https://video-finish.example/finish");
+      expect(authOf(fetch)).toBe("Bearer abc");
+    } finally {
+      globalThis.fetch = prev;
+    }
+  });
+
   it("callVideoFinishInspect attaches Authorization when the token is set", async () => {
     const fetch = vi.fn<(url: RequestInfo, init?: RequestInit) => Promise<Response>>(
       async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
@@ -240,6 +262,22 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
       );
       expect(resp?.status).toBe(200);
       expect(String(fetch.mock.calls[0]?.[0])).toBe("https://image-prep.test/portrait/prep");
+    } finally {
+      globalThis.fetch = prev;
+    }
+  });
+
+  it("callImagePrep attaches Authorization when the token is set", async () => {
+    const fetch = stubFetch();
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      await callImagePrep(
+        envWith({ IMAGE_PREP_URL: "https://image-prep.test", MEDIA_FINISH_TOKEN: "prep-tok" }),
+        { inputUrl: "in", outputUrl: "out", outputKey: "k", background: "alpha" },
+        { retries: 1 },
+      );
+      expect(authOf(fetch)).toBe("Bearer prep-tok");
     } finally {
       globalThis.fetch = prev;
     }

@@ -27,7 +27,7 @@
 // Returns the R2 key at bundles/<projectName>.tar.gz on success.
 
 import type { OrchestratorEnv } from "./platform/orchestrator-context.js";
-import { mediaDoorFetch, mediaDoorUrl } from "./media-finish-auth.js";
+import { mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders } from "./media-finish-auth.js";
 import {
   validateStoryboard,
   type SlotId,
@@ -243,7 +243,7 @@ export async function callImagePrep(
   const backoffMs = opts.backoffMs ?? 1500;
   const init = {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: await mediaFinishHeaders(env),
     body: JSON.stringify(payload),
   };
   // image-prep runs always-on on the fleet. The host sets IMAGE_PREP_URL; unset

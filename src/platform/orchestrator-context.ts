@@ -59,9 +59,9 @@ export interface OrchestratorEnv {
   RUNPOD_PROXY_BASE?: unknown;
   RUNPOD_PROXY_TOKEN?: unknown;
   /**
-   * Bearer the fleet media containers check (video-finish / audio-mix / audio-beat-sync;
-   * vivijure-cf#613). Optional: unset is fail-open so a self-host with no token keeps the
-   * unauthenticated path. `unknown` because a host may bind a plaintext string
+   * Bearer the fleet media containers check (video-finish / audio-mix / audio-beat-sync /
+   * image-prep; vivijure-cf#613). Optional: unset is fail-open so a self-host with no token
+   * keeps the unauthenticated path. `unknown` because a host may bind a plaintext string
    * or a Secrets Store handle; resolve through `mediaFinishToken`.
    */
   MEDIA_FINISH_TOKEN?: unknown;

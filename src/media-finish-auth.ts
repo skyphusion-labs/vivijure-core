@@ -1,5 +1,5 @@
 /**
- * Bearer for the fleet media containers (video-finish, audio-mix, audio-beat-sync).
+ * Bearer for the fleet media containers (video-finish, audio-mix, audio-beat-sync, image-prep).
  *
  * Those images refuse work when LOCAL_FINISH_TOKEN is set (vivijure-cf#613). Assemble
  * and mux go through this package, so the header has to be attached here or arming
