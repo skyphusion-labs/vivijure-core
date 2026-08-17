@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { installVfFetch } from "./install-vf-fetch.js";
+import { installVfFetch, vfAsyncFinish } from "./install-vf-fetch.js";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
@@ -13,8 +13,6 @@ import type { Env } from "../src/platform/orchestrator-context.js";
 function muxEnv(job: object, containerBody: unknown) {
   const filmId = (job as { film_id: string }).film_id;
   let stored = JSON.stringify(job);
-  const jsonResp = (b: unknown) =>
-    new Response(JSON.stringify(b), { status: 200, headers: { "content-type": "application/json" } });
   const env: Record<string, unknown> = {
     R2_RENDERS: {
       get: async (key: string) => (key === filmJobDocKey(filmId) ? { text: async () => stored } : null),
@@ -27,7 +25,7 @@ function muxEnv(job: object, containerBody: unknown) {
     },
     VIDEO_FINISH_URL: "https://video-finish.test",
   };
-  installVfFetch(async () => jsonResp(containerBody));
+  installVfFetch(vfAsyncFinish(containerBody));
   return { env: env as unknown as Env, read: () => JSON.parse(stored) as FilmJob };
 }
 

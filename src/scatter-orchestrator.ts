@@ -2,12 +2,11 @@
 
 import type { Env, ExecutionContext } from "./platform/orchestrator-context.js";
 import { videoFinishReachable } from "./media-finish-auth.js";
+import { encodeAssemblePoll, tickVideoFinishAssemble } from "./video-finish-assemble.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 import {
   advanceFilmJob,
-  callVideoFinish,
   cancelFilmJob,
-  classifyAssembleTransport,
   clipKeysFromFilmJob,
   filmJobDocKey,
   filmPhaseToShardStatus,
@@ -65,7 +64,6 @@ import { isTransientD1Error, withD1Retry, d1ErrorCode } from "./d1-retry.js";
 export type { ScatterJob } from "./scatter-orchestrator-types.js";
 export { isScatterParentJobId as isScatterJobId };
 
-const MAX_ASSEMBLE_ATTEMPTS = 6;
 const scatterDocKey = (id: string) => `renders/${id}/scatter-job.json`;
 const scatterOutKey = (id: string) => `renders/${id}/film.mp4`;
 
@@ -338,26 +336,35 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
   }
   const outKey = job.mux_output_key ?? scatterOutKey(job.scatter_id);
   job.mux_output_key = outKey;
-  const resp = await callVideoFinish(env, {
-    clips: [{ url: await presignR2Get(env, silentKey, 1800) }],
-    outputUrl: await presignR2Put(env, outKey, 1800),
+  let payload = {
+    clips: [] as { url: string }[],
+    outputUrl: "https://invalid.invalid/mux",
     outputKey: outKey,
-    audioUrl: await presignR2Get(env, audioKey, 1800),
+    audioUrl: undefined as string | undefined,
     remuxAudioOnly: true,
-  });
-  if (!resp || !resp.ok) {
-    job.phase = "failed";
-    job.error = `scatter audio mux failed: HTTP ${resp?.status ?? "?"}`;
+  };
+  if (!job.assemble_poll) {
+    payload = {
+      ...payload,
+      clips: [{ url: await presignR2Get(env, silentKey, 1800) }],
+      outputUrl: await presignR2Put(env, outKey, 1800),
+      audioUrl: await presignR2Get(env, audioKey, 1800),
+    };
+  }
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll);
+  if (tick.kind === "pending") {
+    job.assemble_poll = encodeAssemblePoll(tick.poll);
+    job.phase = "mux";
+    job.error = undefined;
     return;
   }
-  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number; elapsedMs?: number };
-  try {
-    body = (await resp.json()) as typeof body;
-  } catch {
+  job.assemble_poll = undefined;
+  if (tick.kind === "failed") {
     job.phase = "failed";
-    job.error = "scatter mux returned non-JSON";
+    job.error = tick.error;
     return;
   }
+  const body = tick.result;
   if (!body.ok) {
     job.phase = "failed";
     job.error = `scatter mux failed: ${body.error || "unknown"}`;
@@ -468,47 +475,38 @@ async function assembleScatterClips(
     job.error = "video-finish URL not configured";
     return;
   }
-  const presigned: { url: string }[] = [];
-  for (const c of clips) {
-    presigned.push({ url: await presignR2Get(env, c.clip_key, 1800) });
-  }
   const outputKey = scatterOutKey(job.scatter_id);
-  // Talking film: the shards' lip-sync baked per-shot audio into each clip, so preserve it through the
-  // concat (the container then silent-pads any audio-less clip to a uniform track). Without this the
-  // gather strips ALL clip audio (-an) and the film comes out silent -- mirrors film-orchestrator's
-  // single-film assemble (keepClipAudio on dialogue). Also keeps the audio of the clips that DID
-  // lip-sync even when a sibling clip didn't, so one short finish chain can't silence the whole film.
-  const resp = await callVideoFinish(env, {
-    clips: presigned,
-    outputUrl: await presignR2Put(env, outputKey, 1800),
+  let payload = {
+    clips: [] as { url: string }[],
+    outputUrl: "https://invalid.invalid/gather",
     outputKey,
     keepClipAudio: !!job.has_dialogue,
-  });
-  const transport = classifyAssembleTransport(resp ? resp.status : null, job.assemble_attempts ?? 0, MAX_ASSEMBLE_ATTEMPTS);
-  job.assemble_attempts = transport.attempts;
-  if (transport.state === "retry") {
+  };
+  if (!job.assemble_poll) {
+    const presigned: { url: string }[] = [];
+    for (const c of clips) {
+      presigned.push({ url: await presignR2Get(env, c.clip_key, 1800) });
+    }
+    payload = {
+      ...payload,
+      clips: presigned,
+      outputUrl: await presignR2Put(env, outputKey, 1800),
+    };
+  }
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll);
+  if (tick.kind === "pending") {
+    job.assemble_poll = encodeAssemblePoll(tick.poll);
     job.phase = "gather";
-    job.error = transport.error;
+    job.error = undefined;
     return;
   }
-  if (transport.state === "exhausted") {
+  job.assemble_poll = undefined;
+  if (tick.kind === "failed") {
     job.phase = "failed";
-    job.error = transport.error;
+    job.error = tick.error;
     return;
   }
-  if (!resp || !resp.ok) {
-    job.phase = "failed";
-    job.error = `video-finish gather returned ${resp?.status ?? "?"}`;
-    return;
-  }
-  let body: { ok?: boolean; error?: string; durationSeconds?: number; shots?: number; clipsReceived?: number; clipDurations?: number[]; elapsedMs?: number };
-  try {
-    body = (await resp.json()) as typeof body;
-  } catch {
-    job.phase = "failed";
-    job.error = "video-finish gather returned non-JSON";
-    return;
-  }
+  const body = tick.result;
   if (!body.ok) {
     job.phase = "failed";
     job.error = `video-finish gather failed: ${body.error || "unknown"}`;

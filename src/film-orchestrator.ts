@@ -9,6 +9,7 @@
 
 import type { Env } from "./platform/orchestrator-context.js";
 import { mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
+import { encodeAssemblePoll, tickVideoFinishAssemble } from "./video-finish-assemble.js";
 import {
   discoverModules,
   invokeModule,
@@ -59,7 +60,6 @@ import {
   finishStepOutputKey,
   finishStepAppliedTag,
   finishShotLedgerReconciles,
-  classifyAssembleTransport,
   MASTER_STEP_MAX_ATTEMPTS,
   MASTER_STALL_SECONDS,
   filmSeconds,
@@ -1127,9 +1127,6 @@ async function mixFilmAudio(env: Env, job: FilmJob, videoKey: string, bedKey: st
   return mixKey; // mixed dialogue + ducked music + loudnorm; remux this in place of the bare bed
 }
 
-// Cap on across-polls assemble re-attempts before a transient failure goes terminal (issue #82).
-const MAX_ASSEMBLE_ATTEMPTS = 6;
-
 // #600 film.finish in-flight window (s): a deterministic step key still absent from R2 whose last
 // dispatch is within this window is treated as STILL ENCODING and is NOT re-dispatched (no duplicate
 // encode). Set above the longest single film.finish encode; the driver 90-min phase deadline is the
@@ -1913,50 +1910,35 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
     if (mixed) audioToMux = mixed;
   }
 
-  const [videoUrl, audioUrl, outputUrl] = await Promise.all([
-    presignR2Get(env, silentKey, 1800),
-    presignR2Get(env, audioToMux, 1800),
-    presignR2Put(env, outKey, 1800),
-  ]);
-
-  const resp = await callVideoFinish(env, {
-    clips: [{ url: videoUrl }],
-    outputUrl,
+  let payload = {
+    clips: [] as { url: string }[],
+    outputUrl: "https://invalid.invalid/mux",
     outputKey: outKey,
-    audioUrl,
+    audioUrl: undefined as string | undefined,
     remuxAudioOnly: true,
-  });
+  };
+  if (!job.assemble_poll) {
+    const [videoUrl, audioUrl, outputUrl] = await Promise.all([
+      presignR2Get(env, silentKey, 1800),
+      presignR2Get(env, audioToMux, 1800),
+      presignR2Put(env, outKey, 1800),
+    ]);
+    payload = { ...payload, clips: [{ url: videoUrl }], outputUrl, audioUrl };
+  }
 
-  const transport = classifyAssembleTransport(resp ? resp.status : null, job.mux_attempts ?? 0, MAX_ASSEMBLE_ATTEMPTS);
-  job.mux_attempts = transport.attempts;
-  if (transport.state === "retry") {
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll);
+  if (tick.kind === "pending") {
+    job.assemble_poll = encodeAssemblePoll(tick.poll);
     job.phase = "mux";
-    job.error = transport.error;
+    job.error = undefined;
     return;
   }
-  if (transport.state === "exhausted") {
-    await degradeMuxUnavailable(env, job, silentKey, transport.error, preModules);
+  job.assemble_poll = undefined;
+  if (tick.kind === "failed") {
+    await degradeMuxUnavailable(env, job, silentKey, tick.error, preModules);
     return;
   }
-  if (!resp) {
-    await degradeMuxUnavailable(env, job, silentKey, "video-finish container unreachable; shipped silent film", preModules);
-    return;
-  }
-  if (!resp.ok) {
-    let detail = "";
-    try { detail = (await resp.text()).slice(0, 400); } catch { /* body unreadable */ }
-    job.phase = "failed";
-    job.error = `video-finish mux returned ${resp.status}${detail ? `: ${detail}` : ""}`;
-    return;
-  }
-  let body: FinishContainerResult;
-  try {
-    body = (await resp.json()) as FinishContainerResult;
-  } catch {
-    job.phase = "failed";
-    job.error = "video-finish returned a non-JSON response";
-    return;
-  }
+  const body = tick.result as FinishContainerResult;
   if (!body.ok) {
     job.phase = "failed";
     job.error = `video-finish mux failed: ${body.error || "unknown error"}`;
@@ -2125,71 +2107,43 @@ async function enterAssemblePhase(
     return;
   }
 
-  const clips: { url: string }[] = [];
-  for (const c of finalClips) {
-    clips.push({ url: await presignR2Get(env, c.clip_key, 1800) }); // 30min: covers a multi-clip concat
-  }
-  const outputUrl = await presignR2Put(env, outputKey, 1800);
-
-  // Talking film: when shots carry per-shot dialogue, the lip-sync module baked that audio into each
-  // clip. Tell the container to preserve per-clip audio through the concat (keepClipAudio) instead of
-  // stripping it (-an) -- otherwise the assembled film comes out silent despite the spoken clips.
   const keepClipAudio = !!job.dialogue_audio && Object.keys(job.dialogue_audio).length > 0;
-
-  // cf#507b: the container defaults to 1920x1080 when told nothing (containers/video-finish
-  // app.py) and letterboxes every clip into whatever geometry it is handed. Telling it the film's
-  // DELIVERY TARGET makes that geometry a decision rather than a coincidence of two defaults
-  // agreeing.
-  //
-  // The prior comment here said "the motion output does not carry width/height, so matching the
-  // source resolution is a later polish". That premise does not hold: validateDoneClips probes
-  // every done clip's tkhd and now persists delivered_width/height. It is also the wrong quantity
-  // -- assembling at the CLIPS' size ships whatever the upscale produced (2560x1440) instead of
-  // the delivery resolution, which is the opposite of shipping 1080p. Source dimensions choose the
-  // upscale factor; the target is what assemble is told.
   const delivery = resolveDeliveryResolution(job);
-  const resp = await callVideoFinish(env, {
-    clips, outputUrl, outputKey, keepClipAudio,
+  let payload = {
+    clips: [] as { url: string }[],
+    outputUrl: "https://invalid.invalid/assemble",
+    outputKey,
+    keepClipAudio,
     width: delivery.width,
     height: delivery.height,
-  });
-  // A transient gateway outcome (unreachable / 502 / 503 / 504) auto-recovers across polls instead of
-  // going terminal: the clips are intact in R2 and re-PUTting the same film key is idempotent, so keep
-  // phase="assemble" and let the next poll re-attempt against a (by then) warmer container -- bounded so
-  // a genuinely stuck assemble still fails loudly (issue #82).
-  const transport = classifyAssembleTransport(resp ? resp.status : null, job.assemble_attempts ?? 0, MAX_ASSEMBLE_ATTEMPTS);
-  // One assignment for every outcome: the helper returns the next counter value (prior+1 on a transient
-  // failure, 0 once the container gives a definitive answer -- so a slow-but-successful finish never
-  // carries stale attempts toward the cap, and a manual phase-reset starts from a full budget).
-  job.assemble_attempts = transport.attempts;
-  if (transport.state === "retry") {
-    job.phase = "assemble"; // unchanged; next advanceFilmJob poll re-enters this leg
-    job.error = transport.error;
+  };
+  if (!job.assemble_poll) {
+    const clips: { url: string }[] = [];
+    for (const c of finalClips) {
+      clips.push({ url: await presignR2Get(env, c.clip_key, 1800) });
+    }
+    payload = {
+      ...payload,
+      clips,
+      outputUrl: await presignR2Put(env, outputKey, 1800),
+    };
+  }
+  // Async /finish: the Worker must not sit on a 17-shot concat. 524 is what
+  // that wait looks like. Submit 202s; later ticks poll.
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll);
+  if (tick.kind === "pending") {
+    job.assemble_poll = encodeAssemblePoll(tick.poll);
+    job.phase = "assemble";
+    job.error = undefined;
     return;
   }
-  if (transport.state === "exhausted") {
-    degradeAssembleUnavailable(job, finalClips, transport.error);
-    return;
-  }
-  // state === "ok": a transient status is never null, so resp is non-null here. The guard keeps the
-  // compiler happy and is a defensive backstop.
-  if (!resp) { degradeAssembleUnavailable(job, finalClips, "video-finish container unreachable; delivered per-shot clips"); return; }
-  if (!resp.ok) {
-    // A non-transient error status: the container's own failure (e.g. a 500 with an ffmpeg/assemble
-    // error body). Surface the body -- an opaque "returned 500" is undiagnosable -- and go terminal;
-    // retrying a real assemble error would only loop.
-    let detail = "";
-    try { detail = (await resp.text()).slice(0, 400); } catch { /* body unreadable */ }
+  job.assemble_poll = undefined;
+  if (tick.kind === "failed") {
     job.phase = "failed";
-    job.error = `video-finish container returned ${resp.status}${detail ? `: ${detail}` : ""}`;
+    job.error = tick.error;
     return;
   }
-  let body: FinishContainerResult;
-  try {
-    body = (await resp.json()) as FinishContainerResult;
-  } catch {
-    job.phase = "failed"; job.error = "video-finish returned a non-JSON response"; return;
-  }
+  const body = tick.result as FinishContainerResult;
   if (!body.ok) { job.phase = "failed"; job.error = `video-finish failed: ${body.error || "unknown error"}`; return; }
   // Record the assembled artifact`s measured length against ITS key. A film with no film.finish step
   // installed never reaches the chain, so without this the delivered length would be unknown for the

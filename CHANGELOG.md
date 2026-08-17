@@ -3,6 +3,16 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.21.2] -- 2026-08-17
+
+### fix(assemble): gather is async submit+poll, not a sync /finish
+
+A 17-shot concat outlives the Cloudflare Worker fetch budget. The
+Worker is still Cloudflare even when door DNS is grey, so gather
+returned 524 and failed a fully-rendered film. Assemble and mux now
+POST `/async/finish` and poll `/async/status` across ticks. 524 is
+also a transient status if a leftover sync caller remains.
+
 ## [1.21.1] -- 2026-08-17
 
 ### fix(scatter): fail loud when the bundle has no storyboard scenes

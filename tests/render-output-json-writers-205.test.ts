@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { installVfFetch } from "./install-vf-fetch.js";
+import { installVfFetch, vfAsyncFinish } from "./install-vf-fetch.js";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
 import { advanceScatterJob } from "../src/scatter-orchestrator.js";
 import { handleAdoptRender } from "../src/render-adopt.js";
@@ -116,7 +116,7 @@ function filmEnv(job: Record<string, unknown> = filmJob()) {
     },
     VIDEO_FINISH_URL: "https://video-finish.test",
   } as unknown as Env;
-  installVfFetch(async () => jr({ ok: true, key: MUXED, hasAudio: true }));
+  installVfFetch(vfAsyncFinish({ ok: true, key: MUXED, hasAudio: true }));
   return { env, writes: rec.writes, read: () => JSON.parse(stored) as FilmJob };
 }
 
