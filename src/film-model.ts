@@ -13,6 +13,27 @@ import { defaultFilmOutputKey } from "./film-output-key.js";
 
 export interface FilmScene { shot_id: string; prompt: string; seconds: number; }
 
+/** Same look + same speaker on every motion call. Native AV (Flux/Seedance)
+ *  invents a new voice per shot unless this is prepended. */
+export function composeMotionPrompt(
+  scenePrompt: string,
+  lock: { style_prefix?: string; voice_lock?: string },
+): string {
+  const parts: string[] = [];
+  const style = (lock.style_prefix || "").trim();
+  const voice = (lock.voice_lock || "").trim();
+  if (style) parts.push(style);
+  if (voice) {
+    parts.push(
+      "The speaking voice is locked for the whole film: " + voice
+      + ". Same speaker, same timbre, same accent, every shot. Do not invent a new voice.",
+    );
+  }
+  const scene = (scenePrompt || "").trim();
+  if (scene) parts.push(scene);
+  return parts.join(" ");
+}
+
 /** One clip moving through the `finish` chain (post-clips). `chain` is the finish module bindings in
  *  ui.order; `idx` walks through them, each consuming the previous module's output clip. `configs` is
  *  the validated config for each chain step (parallel to `chain`), so each module gets its
@@ -111,6 +132,8 @@ export interface FilmJob {
   project: string;
   bundle_key: string;
   scenes: FilmScene[];
+  style_prefix?: string;
+  voice_lock?: string;
   motion_backend: string | null;
   motion_config: Record<string, unknown>;
   // cf#393: RESOLVED keyframe module name at submit (e.g. "keyframe", "cloud-keyframe"). Distinct from

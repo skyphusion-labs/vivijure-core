@@ -97,6 +97,8 @@ export interface StoryboardInput {
   duration_seconds?: number;
   clip_seconds?: number;
   style_prefix?: string;
+  /** Same speaker on every native-AV shot. Prepended to motion prompts. */
+  voice_lock?: string;
   style_category?: string | null;
   style_preset?: string | null;
   use_characters?: SlotId[];
@@ -117,6 +119,7 @@ export interface StoryboardValidated {
   duration_seconds: number | undefined;
   clip_seconds: number | undefined;
   style_prefix: string;
+  voice_lock?: string;
   style_category: string;
   style_preset: string;
   use_characters: SlotId[];
@@ -658,6 +661,7 @@ export function validateStoryboard(input: unknown): ValidationResult {
     duration_seconds: durationSeconds,
     clip_seconds: clipSeconds,
     style_prefix: stylePrefix,
+    voice_lock: typeof input.voice_lock === "string" ? input.voice_lock : "",
     style_category: styleCategory,
     style_preset: stylePreset,
     use_characters: useCharacters,

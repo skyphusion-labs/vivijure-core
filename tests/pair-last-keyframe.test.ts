@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pairLastKeyframeKeys } from "../src/film-model.js";
+import { composeMotionPrompt, pairLastKeyframeKeys } from "../src/film-model.js";
 
 describe("pairLastKeyframeKeys", () => {
   it("gives each shot the next shot's start still as the end frame", () => {
@@ -16,5 +16,18 @@ describe("pairLastKeyframeKeys", () => {
   it("is a no-op on a single shot", () => {
     const out = pairLastKeyframeKeys([{ shot_id: "only", keyframe_key: "k/only.png" }]);
     expect(out[0].last_keyframe_key).toBeUndefined();
+  });
+});
+
+describe("composeMotionPrompt", () => {
+  it("locks look and voice onto every shot prompt", () => {
+    const p = composeMotionPrompt("she turns to the window", {
+      style_prefix: "35mm tungsten",
+      voice_lock: "low alto, calm Texas",
+    });
+    expect(p).toContain("35mm tungsten");
+    expect(p).toContain("low alto, calm Texas");
+    expect(p).toContain("Same speaker");
+    expect(p).toContain("she turns to the window");
   });
 });

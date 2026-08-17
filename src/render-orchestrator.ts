@@ -22,6 +22,24 @@ import {
 import { tenantR2FromEnv, withTenantR2 } from "./modules/tenant-r2.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
+
+/** Reroll must not destroy the last take. Copy live clip objects aside before overwrite. */
+async function archiveExistingClipTakes(env: Env, project: string, shot: ClipShot): Promise<void> {
+  const prefix = `renders/${project}/clips/${shot.shot_id}`;
+  const listed = await env.R2_RENDERS.list({ prefix, limit: 20 });
+  const now = Date.now();
+  const takes = shot.takes ? shot.takes.slice() : [];
+  for (const obj of listed.objects) {
+    if (/_take\d+/.test(obj.key)) continue;
+    if (!/\.(mp4|webm)$/i.test(obj.key)) continue;
+    const takeKey = obj.key.replace(/(\.[a-z0-9]+)$/i, `_take${now}$1`);
+    const body = await env.R2_RENDERS.get(obj.key);
+    if (!body) continue;
+    await env.R2_RENDERS.put(takeKey, await body.arrayBuffer());
+    takes.push({ key: takeKey, at: now });
+  }
+  if (takes.length) shot.takes = takes;
+}
 import {
   summarizeJob,
   type ClipShot,
@@ -281,6 +299,9 @@ export async function startClipJob(
         continue;
       }
     }
+    try {
+      await archiveExistingClipTakes(env, args.project, shot);
+    } catch { /* archive is best-effort; a failed copy must not block the new take */ }
     // cp#270: `own-gpu` submits to the vivijure-backend endpoint, which may be POOLED across
     // tenants, so it declares `needs_tenant_r2` and gets the tenant credential attached here.
     // withTenantR2 is what enforces the declaration -- a module that does not ask for it (every
