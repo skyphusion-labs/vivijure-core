@@ -3,7 +3,22 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.21.0
+## [1.21.0] -- 2026-08-17
+
+### fix(finish): persist FinishOutput.degraded so a panel can show the cause (core#226)
+
+`applyFinishOutput` copied `clip_key` and `applied` and swallowed `degraded`.
+The only signal that survived was the `passthrough:` tag, so a no-face degrade
+and a door timeout were one literal. The fold now keeps the reason; the
+summary exposes `reasons[]`; the done payload carries `{ degraded, reasons }`
+when a finish chain ran. CSAM refusals fail the shot. They never degrade.
+
+### fix(media): send MEDIA_FINISH_TOKEN on image-prep
+
+`callImagePrep` posted `/portrait/prep` with content-type only. The other
+CPU media doors already send `Authorization: Bearer` via `mediaFinishHeaders`.
+Image-prep now does the same. Unset stays fail-open. A leftover `*_VPC`
+Fetcher is never the transport.
 
 ## [1.20.0] -- 2026-08-16
 
