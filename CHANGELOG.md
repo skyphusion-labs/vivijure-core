@@ -3,6 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.21.4] -- 2026-08-17
+
+### feat(motion): voice lock + look lock on every shot
+
+Native AV invents a new speaker per shot unless the same lock is
+prepended. composeMotionPrompt applies style_prefix + voice_lock
+to every motion prompt. Film jobs persist both.
+
 ## [1.21.3] -- 2026-08-17
 
 ### feat(motion): first+last frame and native clip audio

@@ -38,6 +38,8 @@ export interface ClipShot extends ClipShotInput {
   distilled?: boolean;
   /** Motion backend said the mp4 already has a soundtrack (native AV). */
   has_audio?: boolean;
+  /** Previous takes of this shot (reroll archives, does not delete). */
+  takes?: { key: string; at: number }[];
   // #719: consecutive TRANSIENT poll-error count (see applyPoll). Reset on any successful poll;
   // the shot fails loud at CLIP_POLL_MAX_ATTEMPTS instead of on the first blip.
   poll_attempts?: number;

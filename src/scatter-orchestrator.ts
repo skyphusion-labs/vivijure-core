@@ -99,6 +99,8 @@ export interface StartScatterArgs {
   project_id?: number | null;
   /** Planner scenes. Used when the bundle tar has no parseable storyboard.yaml. */
   scenes?: FilmScene[];
+  style_prefix?: string;
+  voice_lock?: string;
 }
 
 /** Resolve per-shot dialogue for scatter (vivijure-core#122).
@@ -242,6 +244,8 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
       pretrained_loras: shard.pretrainedLoras,
       cast_loras: castIds,
       dialogue_lines: shardDialogue,
+      style_prefix: args.style_prefix,
+      voice_lock: args.voice_lock,
     });
     scatterJob.shard_film_ids.push(film.film_id);
     shardRows.push({ jobId: film.film_id, status: filmJobToPollView(film, null).status });

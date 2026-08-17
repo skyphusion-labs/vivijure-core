@@ -45,6 +45,7 @@ import {
   summarizeFilm,
   orderFinalClips,
   joinKeyframesToScenes,
+  composeMotionPrompt,
   filmPhaseToShardStatus,
   applyFinishOutput,
   applyFinishOutputOrRefuse,
@@ -300,7 +301,10 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
       keyframe_key: m.keyframe_key,
       last_keyframe_url,
       last_keyframe_key: next?.keyframe_key,
-      prompt: m.prompt,
+      prompt: composeMotionPrompt(m.prompt, {
+        style_prefix: job.style_prefix,
+        voice_lock: job.voice_lock,
+      }),
       seconds: m.seconds,
     });
   }
@@ -2227,6 +2231,8 @@ export async function startFilmFromKeyframes(
     // chain reads job.dialogue_lines (enterFinishPhase -> enterDialogueOrFinish), and a from-keyframes
     // job enters at phase "clips" and reaches both, so the field was read and never written.
     dialogue_lines?: DialogueLine[];
+    style_prefix?: string;
+    voice_lock?: string;
     /** cf#518 option C: the client's declared idempotency key. Present -> it REPLACES the
      *  natural key, so the same declared key is the same submit whatever the inputs. */
     idempotency_key?: string;
@@ -2254,6 +2260,8 @@ export async function startFilmFromKeyframes(
     scenes,
     motion_backend: args.motion_backend ?? null,
     motion_config: args.motion_config ?? {},
+    style_prefix: typeof args.style_prefix === "string" ? args.style_prefix : undefined,
+    voice_lock: typeof args.voice_lock === "string" ? args.voice_lock : undefined,
     finish_config: args.finish_config ?? {},
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
@@ -2292,7 +2300,10 @@ export async function startFilmFromKeyframes(
       keyframe_key: m.keyframe_key,
       last_keyframe_url,
       last_keyframe_key: next?.keyframe_key,
-      prompt: m.prompt,
+      prompt: composeMotionPrompt(m.prompt, {
+        style_prefix: job.style_prefix,
+        voice_lock: job.voice_lock,
+      }),
       seconds: m.seconds,
       motion_backend: args.per_shot_motion?.[m.shot_id],
     });
@@ -2326,6 +2337,9 @@ export async function startFilmJob(
     speech_config?: Record<string, Record<string, unknown>>;
     film_finish_config?: Record<string, Record<string, unknown>>;
     master_config?: Record<string, Record<string, unknown>>;
+    /** Same look / same speaker on every motion shot (native AV consistency). */
+    style_prefix?: string;
+    voice_lock?: string;
     keyframes_only?: boolean;
     clips_only?: boolean;
     pretrained_loras?: Record<string, string>;
@@ -2381,6 +2395,8 @@ export async function startFilmJob(
     film_id: filmId,
     project: args.project, bundle_key: args.bundle_key, scenes,
     motion_backend: motionBackend ?? null, motion_config: args.motion_config ?? {},
+    style_prefix: typeof args.style_prefix === "string" ? args.style_prefix : undefined,
+    voice_lock: typeof args.voice_lock === "string" ? args.voice_lock : undefined,
     // cf#393: module NAME (not binding) so the renders-row seed can audit which keyframe backend ran.
     keyframe_backend: kf ? kf.name : null,
     keyframe_config: args.keyframe_config ?? {},
