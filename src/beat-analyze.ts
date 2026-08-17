@@ -5,7 +5,7 @@
 // when the module is not installed (legacy path).
 
 import type { Env } from "./platform/orchestrator-context.js";
-import { mediaDoorFetch, mediaFinishHeaders } from "./media-finish-auth.js";
+import { isMediaFinishAuthError, mediaDoorFetch, mediaFinishHeaders } from "./media-finish-auth.js";
 import {
   discoverModules,
   invokeModule,
@@ -73,19 +73,25 @@ async function analyzeViaUrl(
   audioUrl: string,
   req: AudioAnalyzeRequest,
 ): Promise<{ ok: true; plan: AudioBeatPlan } | { ok: false; error: string }> {
-  const resp = await mediaDoorFetch(env, "AUDIO_BEAT_SYNC_URL", "/analyze", {
-    method: "POST",
-    headers: await mediaFinishHeaders(env),
-    body: JSON.stringify({
-      audioUrl,
-      audioKey: req.audioKey,
-      clipSeconds: req.clipSeconds ?? 8,
-      mode: req.mode ?? "beat",
-      minSceneS: req.minSceneS ?? 2.5,
-      maxSceneS: req.maxSceneS ?? 12,
-      forceShots: req.forceShots,
-    }),
-  });
+  let resp: Response | null;
+  try {
+    resp = await mediaDoorFetch(env, "AUDIO_BEAT_SYNC_URL", "/analyze", {
+      method: "POST",
+      headers: await mediaFinishHeaders(env),
+      body: JSON.stringify({
+        audioUrl,
+        audioKey: req.audioKey,
+        clipSeconds: req.clipSeconds ?? 8,
+        mode: req.mode ?? "beat",
+        minSceneS: req.minSceneS ?? 2.5,
+        maxSceneS: req.maxSceneS ?? 12,
+        forceShots: req.forceShots,
+      }),
+    });
+  } catch (e) {
+    if (isMediaFinishAuthError(e)) return { ok: false, error: e.message };
+    throw e;
+  }
   if (!resp) return { ok: false, error: "AUDIO_BEAT_SYNC_URL unset" };
   const plan = parseAudioBeatPlan(await resp.json());
   if (!plan) return { ok: false, error: "beat-sync container returned an unrecognized plan" };

@@ -280,7 +280,8 @@ export interface ModuleManifest {
    * SET IT ONLY IF THE MODULE ACTUALLY NEEDS IT. Declaring it hands a live tenant credential to a
    * worker that has no use for one, which is a widening with nothing bought. Absent is the right
    * default and every module that reaches a non-RunPod provider, or a credentialless presigned
-   * endpoint, should leave it absent.
+   * endpoint, should leave it absent. The core still refuses to attach the block to a dispatch
+   * (community) module even when this flag is set.
    */
   needs_tenant_r2?: boolean;
   /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`). A finish module sets this

@@ -76,10 +76,25 @@ export async function tenantR2FromEnv(env: Record<string, unknown>): Promise<Ten
   };
 }
 
-/** Does this module's manifest ASK for the tenant credential? Data from the module, never a name
- *  check here -- the registry-projection rule: core must not branch on module identity. */
+/** Matches registry DISPATCH_REF_PREFIX. Duplicated here because registry imports this file. */
+const DISPATCH_BINDING_PREFIX = "dispatch:";
+
+const FIRST_PARTY_LOCALITY = new Set(["local", "byo", "cloud"]);
+
+/** First-party = service-bound (not WfP dispatch / community) and a known door locality
+ *  (or undeclared, which classifies as cloud). Dispatch modules never get tenant R2. */
+export function isFirstPartyModule(m: ModuleManifest | RegisteredModule): boolean {
+  const binding = (m as RegisteredModule).binding;
+  if (typeof binding === "string" && binding.startsWith(DISPATCH_BINDING_PREFIX)) return false;
+  const loc = m.ui?.locality;
+  if (loc !== undefined && !FIRST_PARTY_LOCALITY.has(loc)) return false;
+  return true;
+}
+
+/** Does this module's manifest ASK for the tenant credential, AND is it first-party?
+ *  A dispatch/community module that sets needs_tenant_r2 still does not receive the block. */
 export const needsTenantR2 = (m: ModuleManifest | RegisteredModule): boolean =>
-  Boolean((m as ModuleManifest).needs_tenant_r2);
+  Boolean((m as ModuleManifest).needs_tenant_r2) && isFirstPartyModule(m);
 
 /**
  * Attach the block to an invoke request, for a module that declares it needs one.

@@ -9,7 +9,7 @@ import {
 import type { Env } from "../src/platform/orchestrator-context.js";
 
 function envWith(over: Record<string, unknown>): Env {
-  return over as unknown as Env;
+  return { MEDIA_FINISH_TOKEN: "test-tok", ...over } as unknown as Env;
 }
 
 const payload = {

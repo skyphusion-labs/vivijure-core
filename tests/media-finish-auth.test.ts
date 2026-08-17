@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  mediaDoorFetch,
   mediaDoorUrl,
   mediaFinishHeaders,
   mediaFinishToken,
+  MediaFinishAuthError,
   videoFinishReachable,
   videoFinishUrl,
 } from "../src/media-finish-auth.js";
+import { tickVideoFinishAssemble } from "../src/video-finish-assemble.js";
 import { callAudioMix, callVideoFinish, shouldMultiTrackMix } from "../src/film-orchestrator.js";
 import { callVideoFinishInspect } from "../src/clip-content-validate.js";
 import { callImagePrep } from "../src/bundle-assembler.js";
@@ -58,7 +61,7 @@ describe("mediaFinishToken", () => {
 });
 
 describe("mediaFinishHeaders", () => {
-  it("omits Authorization when no token is bound", async () => {
+  it("omits Authorization when no token is bound and no door URL is set", async () => {
     expect(await mediaFinishHeaders(envWith({}))).toEqual({ "content-type": "application/json" });
   });
 
@@ -67,6 +70,45 @@ describe("mediaFinishHeaders", () => {
       "content-type": "application/json",
       authorization: "Bearer abc",
     });
+  });
+
+  it("throws when a door URL is set and the token is empty", async () => {
+    await expect(
+      mediaFinishHeaders(envWith({ VIDEO_FINISH_URL: "https://video-finish.example" })),
+    ).rejects.toBeInstanceOf(MediaFinishAuthError);
+  });
+});
+
+describe("mediaDoorFetch fail-closed", () => {
+  it("returns null when the door URL is unset (self-host off)", async () => {
+    const fetch = stubFetch();
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      expect(await mediaDoorFetch(envWith({}), "VIDEO_FINISH_URL", "/finish", { method: "POST" })).toBeNull();
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = prev;
+    }
+  });
+
+  it("throws and does not fetch when the URL is set and the token is empty", async () => {
+    const fetch = stubFetch();
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      await expect(
+        mediaDoorFetch(
+          envWith({ VIDEO_FINISH_URL: "https://video-finish.example" }),
+          "VIDEO_FINISH_URL",
+          "/finish",
+          { method: "POST" },
+        ),
+      ).rejects.toBeInstanceOf(MediaFinishAuthError);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = prev;
+    }
   });
 });
 
@@ -102,17 +144,37 @@ describe("callVideoFinish / callAudioMix / callVideoFinishInspect send the beare
     }
   });
 
-  it("callVideoFinish sends no Authorization when the token is unset", async () => {
+  it("callVideoFinish refuses when the URL is set and the token is empty", async () => {
     const fetch = stubFetch();
     const prev = globalThis.fetch;
     globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
     try {
-      await callVideoFinish(envWith({ VIDEO_FINISH_URL: "https://video-finish.example" }), {
-        clips: [],
-        outputUrl: "u",
-        outputKey: "k",
-      });
-      expect(authOf(fetch)).toBeUndefined();
+      await expect(
+        callVideoFinish(envWith({ VIDEO_FINISH_URL: "https://video-finish.example" }), {
+          clips: [],
+          outputUrl: "u",
+          outputKey: "k",
+        }),
+      ).rejects.toBeInstanceOf(MediaFinishAuthError);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = prev;
+    }
+  });
+
+  it("assemble treats a configured door without a token as a hard fail", async () => {
+    const fetch = stubFetch();
+    const prev = globalThis.fetch;
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    try {
+      const tick = await tickVideoFinishAssemble(
+        envWith({ VIDEO_FINISH_URL: "https://video-finish.example" }),
+        { clips: [], outputUrl: "u", outputKey: "k" },
+        undefined,
+      );
+      expect(tick.kind).toBe("failed");
+      if (tick.kind === "failed") expect(tick.error).toMatch(/MEDIA_FINISH_TOKEN is empty/);
+      expect(fetch).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = prev;
     }
@@ -256,7 +318,7 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
     globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
     try {
       const resp = await callImagePrep(
-        envWith({ IMAGE_PREP_URL: "https://image-prep.test" }),
+        envWith({ IMAGE_PREP_URL: "https://image-prep.test", MEDIA_FINISH_TOKEN: "prep-tok" }),
         { inputUrl: "in", outputUrl: "out", outputKey: "k", background: "alpha" },
         { retries: 1 },
       );
@@ -302,6 +364,7 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
       const r = await analyzeAudioBeats(
         envWith({
           AUDIO_BEAT_SYNC_URL: "https://audio-beat-sync.test",
+          MEDIA_FINISH_TOKEN: "beat-tok",
           PRESIGNER: { presignGet: async () => "https://r2.test/audio.wav" },
         }),
         { audioKey: "audio.wav" },

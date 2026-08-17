@@ -5,14 +5,14 @@
 //   1. OMIT, never null. The backend REFUSES an explicit `"r2": null` rather than reading it as
 //      absent, so a producer that emits null fails every job at the far end with a message about a
 //      malformed block. Serialisation is asserted, not just the object shape.
-//   2. Only a module that DECLARES `needs_tenant_r2` receives it. Attaching it to a module that does
-//      not need one hands a live tenant credential to a worker with no use for it.
+//   2. Only a first-party module that DECLARES `needs_tenant_r2` receives it. A dispatch module
+//      that sets the flag still does not get the block.
 //   3. A receiver STRIPS it. The credential must not survive past the point that consumes it, or a
 //      future log line downstream serialises an object that still contains it.
 
 import { describe, it, expect } from "vitest";
-import { tenantR2FromEnv, withTenantR2, takeTenantR2, needsTenantR2 } from "../src/modules/tenant-r2.js";
-import type { InvokeRequest, ModuleManifest, TenantR2Config } from "../src/modules/types.js";
+import { tenantR2FromEnv, withTenantR2, takeTenantR2, needsTenantR2, isFirstPartyModule } from "../src/modules/tenant-r2.js";
+import type { InvokeRequest, ModuleManifest, RegisteredModule, TenantR2Config } from "../src/modules/types.js";
 
 const CRED: TenantR2Config = {
   endpoint: "https://acct.r2.cloudflarestorage.com",
@@ -161,5 +161,26 @@ describe("needsTenantR2", () => {
     expect(needsTenantR2(manifest({ needs_tenant_r2: true }))).toBe(true);
     expect(needsTenantR2(manifest({ needs_tenant_r2: false }))).toBe(false);
     expect(needsTenantR2(manifest())).toBe(false);
+  });
+
+  it("does not attach tenant R2 to a dispatch/community module even when it asks", () => {
+    const dispatched = {
+      ...manifest({ needs_tenant_r2: true, ui: { locality: "cloud" } }),
+      binding: "dispatch:community-own-gpu",
+    } as RegisteredModule;
+    expect(isFirstPartyModule(dispatched)).toBe(false);
+    expect(needsTenantR2(dispatched)).toBe(false);
+    const req = withTenantR2(envelope(), dispatched, CRED);
+    expect("r2" in req).toBe(false);
+  });
+
+  it("still attaches for a first-party service-bound module that declares it", () => {
+    const firstParty = {
+      ...manifest({ needs_tenant_r2: true, ui: { locality: "cloud" } }),
+      binding: "MODULE_OWN_GPU",
+    } as RegisteredModule;
+    expect(isFirstPartyModule(firstParty)).toBe(true);
+    expect(needsTenantR2(firstParty)).toBe(true);
+    expect(withTenantR2(envelope(), firstParty, CRED).r2).toEqual(CRED);
   });
 });

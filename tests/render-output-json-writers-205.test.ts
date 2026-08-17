@@ -115,6 +115,7 @@ function filmEnv(job: Record<string, unknown> = filmJob()) {
       presignPut: async (k: string) => `https://presigned-put/${k}`,
     },
     VIDEO_FINISH_URL: "https://video-finish.test",
+    MEDIA_FINISH_TOKEN: "test-tok",
   } as unknown as Env;
   installVfFetch(vfAsyncFinish({ ok: true, key: MUXED, hasAudio: true }));
   return { env, writes: rec.writes, read: () => JSON.parse(stored) as FilmJob };

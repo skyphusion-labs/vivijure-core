@@ -30,6 +30,7 @@ function assembleEnv(job: object) {
       presignPut: async (key: string) => `https://presigned-put/${key}`,
     },
     VIDEO_FINISH_URL: "https://video-finish.test",
+    MEDIA_FINISH_TOKEN: "test-tok",
   };
   const asyncVf = vfAsyncFinish({ ok: true, key: OUT, durationSeconds: 4, shots: 1, clipDurations: [4.0] });
   installVfFetch(async (url, init) => {

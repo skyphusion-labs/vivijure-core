@@ -3,6 +3,7 @@ import {
   applyVoiceSeed,
   buildVoiceLock,
   composeMotionPrompt,
+  MOTION_LOCK_FIELD_MAX_CHARS,
   pairLastKeyframeKeys,
   seedFromVoiceLock,
   voiceLockFromCast,
@@ -93,5 +94,17 @@ describe("composeMotionPrompt", () => {
     expect(applyVoiceSeed({ seed: 42, steps: 8 }, lock)).toEqual({ seed: 42, steps: 8 });
     expect(applyVoiceSeed({ steps: 8 }, "")).toEqual({ steps: 8 });
     expect(applyVoiceSeed(undefined, "")).toBeUndefined();
+  });
+
+  it("truncates voice_lock and style_prefix to 500 chars each", () => {
+    const longStyle = "S".repeat(600);
+    const longVoice = "V".repeat(600);
+    const p = composeMotionPrompt("scene", { style_prefix: longStyle, voice_lock: longVoice });
+    expect(p.startsWith("S".repeat(MOTION_LOCK_FIELD_MAX_CHARS))).toBe(true);
+    expect(p).toContain("V".repeat(MOTION_LOCK_FIELD_MAX_CHARS));
+    expect(p).not.toContain("S".repeat(501));
+    expect(p).not.toContain("V".repeat(501));
+    const built = buildVoiceLock([], "E".repeat(600));
+    expect(built).toBe("E".repeat(MOTION_LOCK_FIELD_MAX_CHARS));
   });
 });

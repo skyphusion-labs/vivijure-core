@@ -27,7 +27,7 @@
 // Returns the R2 key at bundles/<projectName>.tar.gz on success.
 
 import type { OrchestratorEnv } from "./platform/orchestrator-context.js";
-import { mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders } from "./media-finish-auth.js";
+import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders } from "./media-finish-auth.js";
 import {
   validateStoryboard,
   type SlotId,
@@ -254,7 +254,8 @@ export async function callImagePrep(
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       resp = await mediaDoorFetch(env, "IMAGE_PREP_URL", "/portrait/prep", init);
-    } catch {
+    } catch (e) {
+      if (isMediaFinishAuthError(e)) throw e;
       resp = null;
     }
     if (resp && resp.status !== 503) return resp;

@@ -8,7 +8,8 @@
 // No Worker ever holds a multi-minute GPU/cloud render.
 
 import type { Env } from "./platform/orchestrator-context.js";
-import { mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
+import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
+import { assertProjectKey } from "./key-safety.js";
 import { encodeAssemblePoll, tickVideoFinishAssemble } from "./video-finish-assemble.js";
 import {
   discoverModules,
@@ -182,6 +183,24 @@ export async function clipKeysFromFilmJob(
   return out;
 }
 
+/** Confine every module-returned keyframe / LoRA key to renders/<project>/. Throws on escape. */
+function confineKeyframeOutput(project: string, kfOut: KeyframeOutput): KeyframeOutput {
+  const keyframes = (kfOut.keyframes || []).map((k: KeyframeShot) => ({
+    ...k,
+    keyframe_key: assertProjectKey(project, k.keyframe_key),
+  }));
+  let trained_loras = kfOut.trained_loras;
+  if (trained_loras) {
+    const next: Record<string, string> = {};
+    for (const [slot, key] of Object.entries(trained_loras)) {
+      if (typeof key !== "string" || !key) continue;
+      next[slot] = assertProjectKey(project, key);
+    }
+    trained_loras = next;
+  }
+  return { ...kfOut, keyframes, trained_loras };
+}
+
 /** Internal: keyframes-only path -- record keys and mark done (no i2v / assemble). */
 function completeKeyframesOnly(job: FilmJob, kfOut: KeyframeOutput): void {
   const kfs = kfOut.keyframes || [];
@@ -247,6 +266,15 @@ async function stampKeyframeProvenance(env: Env, job: FilmJob, kfOut: KeyframeOu
 
 /** Internal: after keyframes, either stop (preview) or hand off to the clip orchestrator. */
 async function afterKeyframeOutput(env: Env, job: FilmJob, kfOut: KeyframeOutput, preModules?: RegisteredModule[]): Promise<void> {
+  let confined: KeyframeOutput;
+  try {
+    confined = confineKeyframeOutput(job.project, kfOut);
+  } catch (e) {
+    job.phase = "failed";
+    job.error = e instanceof Error ? e.message : String(e);
+    return;
+  }
+  kfOut = confined;
   // Bank trained adapters before anything else, so a character LoRA is recorded even for a
   // keyframes-only preview / regen (which is exactly where the perpetual retrain hurt most).
   await recordTrainedLorasToCast(env, job, kfOut);
@@ -880,7 +908,7 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
         out_fps: 24,
         frames: 0,
         applied: ["noop:no-dialogue"],
-      });
+      }, job.project);
       continue;
     }
     const fetcher = resolveFetcher(envRec, binding);
@@ -919,14 +947,14 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       const r = await invokeModule<FinishInput, FinishOutput>(fetcher, req);
       if (!r.ok) { failOrRetry(fs, r.error, false); }
       else if ((r as { pending?: boolean }).pending) { fs.poll = (r as { poll: string }).poll; }
-      else if ("output" in r) { const v = hookOutputViolation(fs.chain[fs.idx], "finish", r.output); if (v) { fs.status = "failed"; fs.error = v; } else { applyFinishOutputOrRefuse(fs, r.output as FinishOutput); } }
+      else if ("output" in r) { const v = hookOutputViolation(fs.chain[fs.idx], "finish", r.output); if (v) { fs.status = "failed"; fs.error = v; } else { applyFinishOutputOrRefuse(fs, r.output as FinishOutput, job.project); } }
       else { fs.status = "failed"; fs.error = "finish module returned neither output nor a poll token"; }
     } else {
       const p = await pollModule<FinishOutput>(fetcher, { poll: fs.poll });
       if (p.ok && !(p as { pending?: boolean }).pending) {
         const out = (p as { output: FinishOutput }).output;
         const v = hookOutputViolation(fs.chain[fs.idx], "finish", out);
-        if (v) { fs.status = "failed"; fs.error = v; } else { applyFinishOutputOrRefuse(fs, out); }
+        if (v) { fs.status = "failed"; fs.error = v; } else { applyFinishOutputOrRefuse(fs, out, job.project); }
       } else if (!p.ok && classifyFinishFailure(p.error) === "transient") {
         failOrRetry(fs, p.error, true); // a transport blip: re-poll the same job under the cap
       } else if (!(await adoptFinishStepFromR2(env, job, fs, preModules))) {
@@ -1038,7 +1066,8 @@ export async function callVideoFinish(
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       resp = await videoFinishFetch(env, "/finish", init);
-    } catch {
+    } catch (e) {
+      if (isMediaFinishAuthError(e)) throw e;
       resp = null;
     }
     if (resp && resp.status !== 503 && resp.status !== 504) return resp;
@@ -1085,7 +1114,8 @@ export async function callAudioMix(
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       resp = await mediaDoorFetch(env, "AUDIO_MIX_URL", "/mix", init);
-    } catch {
+    } catch (e) {
+      if (isMediaFinishAuthError(e)) throw e;
       resp = null;
     }
     if (resp && resp.status !== 503 && resp.status !== 504) return resp;

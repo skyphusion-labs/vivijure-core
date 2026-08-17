@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.21.6
+
 ## [1.21.5] -- 2026-08-17
 
 ### feat(motion): Cast-derived voice lock + pinned seed
