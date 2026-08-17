@@ -361,9 +361,10 @@ const CAST_ROW_COLUMNS =
 // write ONLY if the column still holds exactly what we read (a value-CAS in the WHERE clause; the
 // second-resolution updated_at is too coarse to guard on, so we compare the value itself). On a
 // concurrent write the CAS matches zero rows and we re-read + retry, so no update is silently lost.
-// Bounded; on pathological contention it warns and returns the current row WITHOUT applying -- rare,
-// and never a silent clobber. `column` is a fixed union (not caller input), so the interpolation is
-// injection-safe.
+// Bounded; on pathological contention it warns and returns a FALSY row so an abandoned write
+// cannot be read as success (core#234). `changed: false` on a still-present row is reserved
+// for the no-op path (mutator declined). `column` is a fixed union (not caller input), so the
+// interpolation is injection-safe.
 type ImageListMutator = (current: CastRefImage[]) => { next: CastRefImage[]; changed: boolean };
 
 async function casUpdateImageList(
@@ -404,7 +405,10 @@ async function casUpdateImageList(
   console.warn(
     `cast ${column} update for id ${id} gave up after ${maxAttempts} CAS attempts under contention`
   );
-  return { row: await getCastById(env, id), changed: false, notFound: false };
+  // Never return the stale current row: callers treat a truthy row as "the write landed"
+  // (addRefs -> if (!row) fail). Give-up must be indistinguishable from not-found at the
+  // public API, and distinct from a no-op that still returns the live row.
+  return { row: null, changed: false, notFound: false };
 }
 
 export async function addRef(

@@ -86,9 +86,13 @@ export function openTestD1(): TestD1 {
     // "no value"; normalise it to null so a bind mismatch is not silently a different query.
     const vals = binds.map((b) => (b === undefined ? null : b)) as never[];
     const isRead = /^\s*(select|with|pragma)/i.test(sql);
-    if (isRead) {
+    // INSERT/UPDATE ... RETURNING is a write that still produces rows. stmt.run()
+    // discards them, so first() would always be null and createCast / CAS updates
+    // would look like failures against this harness (core#234).
+    const hasReturning = /\breturning\b/i.test(sql);
+    if (isRead || hasReturning) {
       const rows = stmt.all(...vals) as Record<string, unknown>[];
-      return { rows, changes: 0 };
+      return { rows, changes: hasReturning ? rows.length : 0 };
     }
     const info = stmt.run(...vals);
     return { rows: [] as Record<string, unknown>[], changes: Number(info.changes ?? 0) };

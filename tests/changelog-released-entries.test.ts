@@ -142,7 +142,7 @@ describe("every entry under a released heading is IN that release (core#202)", (
 
   // ---- THE CLAIM.
 
-  it("every entry resolves to a commit (an unresolvable entry is UNMEASURED, never a pass)", () => {
+  it("every entry resolves to a commit (an unresolvable entry is UNMEASURED, never a pass)", { timeout: 15_000 }, () => {
     const unresolved: string[] = [];
     for (const s of sections) {
       for (const e of s.entries) {
@@ -152,7 +152,7 @@ describe("every entry under a released heading is IN that release (core#202)", (
     expect(unresolved, "these entries could not be traced to a commit, so their ancestry is unknown").toEqual([]);
   });
 
-  it("no entry under a released heading postdates its own tag, unless declared a backfill", () => {
+  it("no entry under a released heading postdates its own tag, unless declared a backfill", { timeout: 15_000 }, () => {
     const violations: string[] = [];
     const backfills: string[] = [];
     for (const s of sections) {

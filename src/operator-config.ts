@@ -14,6 +14,7 @@
 import type { Env } from "./platform/orchestrator-context.js";
 import type { ConfigSchema } from "./modules/types.js";
 import { validateConfig } from "./modules/registry.js";
+import { runPreparedWrites } from "./renders-db.js";
 
 /** Project a module's config_schema down to ONLY its install-scope fields. A field with no `scope`
  *  (or scope "render") is a per-render knob and is excluded -- so this store never owns render config. */
@@ -136,6 +137,9 @@ export async function setInstallConfig(
   const writes = Object.keys(sub).map((key) =>
     stmt.bind(moduleName, key, JSON.stringify(next[key]), now),
   );
-  if (writes.length) await env.DB.batch!(writes);
+  // Database.batch is optional (LOCAL SQLite omits it). The non-null assertion used
+  // to throw on any host without batch (core#221). Same guard the scatter submit
+  // already uses: one round trip when batch exists, one per statement when it does not.
+  await runPreparedWrites(env, writes, "operator-config.set");
   return next;
 }

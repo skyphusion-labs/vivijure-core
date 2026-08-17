@@ -42,6 +42,10 @@ export function tagOf(sql: string): string {
   if (/^SELECT id FROM renders/.test(s)) return "select-render-id";
   if (/^SELECT job_id, status FROM renders/.test(s)) return "select-scatter-children";
   if (/^SELECT 1 AS one FROM renders/.test(s)) return "select-film-row-exists";
+  if (/^INSERT INTO operator_module_config \(/.test(s)) return "install-config-upsert";
+  if (/^SELECT field_key, value_json FROM operator_module_config/.test(s)) {
+    return "install-config-read";
+  }
   return `other: ${s.slice(0, 48)}`;
 }
 
