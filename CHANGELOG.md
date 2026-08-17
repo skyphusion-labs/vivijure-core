@@ -3,8 +3,6 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased
-
 ## [1.21.6] -- 2026-08-17
 
 ### fix(security): fail-closed finish bearer, project keys, first-party R2
