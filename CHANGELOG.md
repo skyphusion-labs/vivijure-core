@@ -3,7 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.21.1
+## [1.21.1] -- 2026-08-17
+
+### fix(scatter): fail loud when the bundle has no storyboard scenes
+
+A scatter whose tar had no parseable `storyboard.yaml` started N
+empty-scene films. Keyframe then said `missing: ` (empty). Scatter
+now uses planner scenes when the bundle yaml is empty, and refuses
+a shard that matches no shots.
 
 ## [1.21.0] -- 2026-08-17
 
