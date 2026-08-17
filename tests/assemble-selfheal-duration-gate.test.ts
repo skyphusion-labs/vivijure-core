@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { installVfFetch } from "./install-vf-fetch.js";
+import { installVfFetch, vfAsyncFinish } from "./install-vf-fetch.js";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
@@ -18,8 +18,6 @@ function assembleEnv(job: object) {
   const filmId = (job as { film_id: string }).film_id;
   let stored = JSON.stringify(job);
   let finishCalls = 0;
-  const jsonResp = (b: unknown) =>
-    new Response(JSON.stringify(b), { status: 200, headers: { "content-type": "application/json" } });
   const env: Record<string, unknown> = {
     R2_RENDERS: {
       // the film-job doc AND the concat output both "exist": head(OUT) != null trips the self-heal path.
@@ -33,12 +31,11 @@ function assembleEnv(job: object) {
     },
     VIDEO_FINISH_URL: "https://video-finish.test",
   };
-  installVfFetch(async (url) => {
-    if (String(url).includes("/finish")) {
-      finishCalls++;
-      return jsonResp({ ok: true, key: OUT, durationSeconds: 4, shots: 1, clipDurations: [4.0] });
-    }
-    return jsonResp({ ok: true });
+  const asyncVf = vfAsyncFinish({ ok: true, key: OUT, durationSeconds: 4, shots: 1, clipDurations: [4.0] });
+  installVfFetch(async (url, init) => {
+    const u = String(url);
+    if (u.includes("/async/finish")) finishCalls++;
+    return asyncVf(url, init);
   });
   return { env: env as unknown as Env, read: () => JSON.parse(stored) as FilmJob, finishCalls: () => finishCalls };
 }

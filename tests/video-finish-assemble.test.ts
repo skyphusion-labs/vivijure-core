@@ -48,10 +48,16 @@ describe("videoFinishPollUrls", () => {
 });
 
 describe("tickVideoFinishAssemble", () => {
-  it("submits /async/finish and returns pending with a job id", async () => {
+  it("submits /async/finish then polls; still-running stays pending", async () => {
     const fetchMock = vi.fn(async (url: string) => {
-      expect(String(url)).toContain("/async/finish");
-      return new Response(JSON.stringify({ ok: true, jobId: "job-1", status: "pending" }), { status: 202 });
+      const u = String(url);
+      if (u.includes("/async/finish")) {
+        return new Response(JSON.stringify({ ok: true, jobId: "job-1", status: "pending" }), { status: 202 });
+      }
+      if (u.includes("/async/status/job-1")) {
+        return new Response(JSON.stringify({ ok: true, status: "pending" }), { status: 200 });
+      }
+      return new Response("no", { status: 404 });
     });
     vi.stubGlobal("fetch", fetchMock);
     const tick = await tickVideoFinishAssemble(
@@ -61,6 +67,8 @@ describe("tickVideoFinishAssemble", () => {
     );
     expect(tick.kind).toBe("pending");
     if (tick.kind === "pending") expect(tick.poll.jobId).toBe("job-1");
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/async/finish"))).toBe(true);
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/async/status/job-1"))).toBe(true);
   });
 
   it("polls every hosted replica and takes the completed one", async () => {
@@ -80,12 +88,9 @@ describe("tickVideoFinishAssemble", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const env = envWith({ VIDEO_FINISH_URL: "https://video-finish.skyphusion.org" });
-    const first = await tickVideoFinishAssemble(env, payload, undefined);
-    expect(first.kind).toBe("pending");
-    const token = first.kind === "pending" ? encodeAssemblePoll(first.poll) : "";
-    const second = await tickVideoFinishAssemble(env, payload, token);
-    expect(second.kind).toBe("done");
-    if (second.kind === "done") expect(second.result.durationSeconds).toBe(48);
+    const tick = await tickVideoFinishAssemble(env, payload, undefined);
+    expect(tick.kind).toBe("done");
+    if (tick.kind === "done") expect(tick.result.durationSeconds).toBe(48);
   });
 
   it("keeps pending through peer 404s until the streak cap", async () => {

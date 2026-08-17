@@ -173,14 +173,21 @@ export async function tickVideoFinishAssemble(
   pollRaw: string | undefined,
 ): Promise<AssembleTick> {
   const existing = decodeAssemblePoll(pollRaw);
-  if (!existing) {
-    const jobId = await submitAsync(env, payload);
-    if (!jobId) {
+  let jobId = existing?.jobId;
+  let submittedAt = existing?.submittedAt ?? Date.now();
+  let notFoundStreak = existing?.notFoundStreak ?? 0;
+  if (!jobId) {
+    const submitted = await submitAsync(env, payload);
+    if (!submitted) {
       return { kind: "failed", error: "video-finish async submit failed (no jobId)" };
     }
-    return { kind: "pending", poll: { jobId, submittedAt: Date.now(), notFoundStreak: 0 } };
+    jobId = submitted;
+    submittedAt = Date.now();
+    notFoundStreak = 0;
+    // Same tick: a remux that already finished completes now. A 20-shot
+    // concat is still pending and the next poll tick picks it up.
   }
-  const hit = await pollVideoFinishAsync(env, existing.jobId);
+  const hit = await pollVideoFinishAsync(env, jobId);
   if (hit.kind === "completed") {
     if (hit.result.ok === false) {
       return { kind: "failed", error: hit.result.error || "video-finish gather failed" };
@@ -189,11 +196,11 @@ export async function tickVideoFinishAssemble(
   }
   if (hit.kind === "failed") return { kind: "failed", error: hit.error };
   if (hit.kind === "pending") {
-    return { kind: "pending", poll: { ...existing, notFoundStreak: 0 } };
+    return { kind: "pending", poll: { jobId, submittedAt, notFoundStreak: 0 } };
   }
-  const streak = existing.notFoundStreak + 1;
+  const streak = notFoundStreak + 1;
   if (streak >= ASSEMBLE_NOTFOUND_STREAK) {
     return { kind: "failed", error: "video-finish assemble job not found on any replica; resubmit" };
   }
-  return { kind: "pending", poll: { ...existing, notFoundStreak: streak } };
+  return { kind: "pending", poll: { jobId, submittedAt, notFoundStreak: streak } };
 }
