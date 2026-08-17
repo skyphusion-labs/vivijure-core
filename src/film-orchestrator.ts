@@ -797,11 +797,16 @@ export async function attachFinishPresigns(
       input.audio_key ? presignR2Get(env, input.audio_key, FINISH_PRESIGN_TTL_SECONDS) : undefined,
       input.output_hash ? presignR2Put(env, hashKey, FINISH_PRESIGN_TTL_SECONDS) : undefined,
     ]);
+    // Dialogue shots need audio_url on the presigned branch (musetalk). Missing => stay key-only.
+    if (!videoUrl || !outputUrl || (input.audio_key && !audioUrl)) return;
     input.video_url = videoUrl;
     input.output_url = outputUrl;
     input.output_key = outKey;
     if (audioUrl) input.audio_url = audioUrl;
     if (hashUrl) input.hash_url = hashUrl;
+    // Satellites select R2 vs presigned on KEY PRESENCE. Omit so the presigned branch runs.
+    delete (input as { clip_key?: string }).clip_key;
+    delete (input as { audio_key?: string }).audio_key;
   } catch (e) {
     console.warn(JSON.stringify({
       ev: "finish.presign_skip",
@@ -812,16 +817,19 @@ export async function attachFinishPresigns(
 }
 
 /** cf#312: attach presigned URLs for a speech step. Same best-effort posture as attachFinishPresigns. */
-async function attachSpeechPresigns(env: Env, input: SpeechInput): Promise<void> {
+export async function attachSpeechPresigns(env: Env, input: SpeechInput): Promise<void> {
   try {
     const outKey = speechEnhancedAudioKey(input.audio_key);
     const [audioUrl, outputUrl] = await Promise.all([
       presignR2Get(env, input.audio_key, FINISH_PRESIGN_TTL_SECONDS),
       presignR2Put(env, outKey, FINISH_PRESIGN_TTL_SECONDS),
     ]);
+    if (!audioUrl || !outputUrl) return;
     input.audio_url = audioUrl;
     input.output_url = outputUrl;
     input.output_key = outKey;
+    // audio-upscale selects R2 vs presigned on audio_key presence. Omit after a complete presign.
+    delete (input as { audio_key?: string }).audio_key;
   } catch (e) {
     console.warn(JSON.stringify({
       ev: "speech.presign_skip",

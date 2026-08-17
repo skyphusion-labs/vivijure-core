@@ -13,9 +13,9 @@
 // observation that distinguishes a correct transport from a plausible one.
 
 import { describe, expect, it } from "vitest";
-import { attachFinishPresigns } from "../src/film-orchestrator.js";
+import { attachFinishPresigns, attachSpeechPresigns } from "../src/film-orchestrator.js";
 import type { FilmJob, FinishShot } from "../src/film-model.js";
-import type { FinishInput } from "../src/modules/types.js";
+import type { FinishInput, SpeechInput } from "../src/modules/types.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
 const PROJECT = "neon";
@@ -81,6 +81,22 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     expect(input.output_key).toBe(OUT);
     expect(puts).toEqual([OUT, `${input.output_key}.hash`]);
     expect(gets).toEqual([CLIP, AUDIO]);
+    // Satellites select on KEY PRESENCE. Surviving clip_key/audio_key next to the URLs is the
+    // core#191 bug: every satellite takes R2 and the credentialless path never runs.
+    expect("clip_key" in input).toBe(false);
+    expect("audio_key" in input).toBe(false);
+  });
+
+  it("omits clip_key and audio_key only after a complete presign (core#191)", async () => {
+    const { env } = stubEnv();
+    const input = lipsyncInput();
+    await attachFinishPresigns(env, JOB, shot(), input, []);
+
+    expect(input.video_url).toBe(`https://get.invalid/${CLIP}`);
+    expect(input.output_url).toBe(`https://put.invalid/${OUT}`);
+    expect(input.audio_url).toBe(`https://get.invalid/${AUDIO}`);
+    expect("clip_key" in input).toBe(false);
+    expect("audio_key" in input).toBe(false);
   });
 
   it("applies presigned transport ALL-OR-NOTHING: a refusal on any leg leaves the input key-only", async () => {
@@ -135,6 +151,8 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     expect(input.hash_url).toBeUndefined();
     expect(input.video_url).toBe(`https://get.invalid/${CLIP}`);
     expect(input.output_url).toBe(`https://put.invalid/${OUT}`);
+    expect("clip_key" in input).toBe(false);
+    expect("audio_key" in input).toBe(false);
   });
 
   it("presigns nothing when the step's output key is unmodelled", async () => {
@@ -149,5 +167,31 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
 
     expect({ gets: gets.length, puts: puts.length }).toEqual({ gets: 0, puts: 0 });
     expect(input.output_key).toBeUndefined();
+    expect(input.clip_key).toBe(CLIP);
+    expect(input.audio_key).toBe(AUDIO);
+  });
+});
+
+describe("attachSpeechPresigns emitted key set (cf#312 / core#191)", () => {
+  it("omits audio_key after a complete presign so audio-upscale takes the credentialless branch", async () => {
+    const { env, gets, puts } = stubEnv();
+    const input: SpeechInput = { shot_id: "shot_01", audio_key: AUDIO };
+    await attachSpeechPresigns(env, input);
+
+    expect(gets).toEqual([AUDIO]);
+    expect(puts).toEqual(["renders/neon/dialogue/shot_01_enh.wav"]);
+    expect(input.audio_url).toBe(`https://get.invalid/${AUDIO}`);
+    expect(input.output_url).toBe("https://put.invalid/renders/neon/dialogue/shot_01_enh.wav");
+    expect("audio_key" in input).toBe(false);
+  });
+
+  it("keeps audio_key when a speech presign leg refuses (R2 fallback)", async () => {
+    const { env } = stubEnv((k) => k === AUDIO);
+    const input: SpeechInput = { shot_id: "shot_01", audio_key: AUDIO };
+    await attachSpeechPresigns(env, input);
+
+    expect(input.audio_url).toBeUndefined();
+    expect(input.output_url).toBeUndefined();
+    expect(input.audio_key).toBe(AUDIO);
   });
 });
