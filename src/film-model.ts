@@ -10,6 +10,7 @@ import { summarizeJob, type ClipJob, type JobSummary } from "./clip-job-model.js
 import { classifyTransientFailure } from "./render-orchestrator.js";
 import { coerceShotId } from "./storyboard-ids.js";
 import { defaultFilmOutputKey } from "./film-output-key.js";
+import { voiceLockHint } from "./voices.js";
 
 export interface FilmScene { shot_id: string; prompt: string; seconds: number; }
 
@@ -25,13 +26,87 @@ export function composeMotionPrompt(
   if (style) parts.push(style);
   if (voice) {
     parts.push(
-      "The speaking voice is locked for the whole film: " + voice
-      + ". Same speaker, same timbre, same accent, every shot. Do not invent a new voice.",
+      "VOCAL IDENTITY LOCK (every shot of this film): " + voice
+      + " Same speaker, same timbre, same accent, same cadence. Do not invent a new voice. Do not change age or gender.",
     );
   }
   const scene = (scenePrompt || "").trim();
   if (scene) parts.push(scene);
   return parts.join(" ");
+}
+
+export interface VoiceLockSpeaker {
+  name: string;
+  voice_id?: string | null;
+}
+
+/** Build the film-level lock from Cast speakers + optional free-text.
+ *  Empty speakers and empty extra -> empty string (caller must refuse
+ *  native AV rather than invent a speaker). */
+export function buildVoiceLock(speakers: VoiceLockSpeaker[], extra?: string): string {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const s of speakers || []) {
+    const name = (s.name || "").trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const hint = voiceLockHint(s.voice_id);
+    lines.push(hint
+      ? name + ": " + hint + ". Same speaker every shot."
+      : name + ": same speaking voice every shot.");
+  }
+  const extraT = (extra || "").trim();
+  if (extraT && !lines.some((l) => l === extraT)) lines.push(extraT);
+  if (seen.size > 1) {
+    lines.push("When a named character speaks, use only that character's locked voice. Never invent a new speaker.");
+  }
+  return lines.join(" ");
+}
+
+/** Film-level lock from resolveCastLoras maps. Extra (planner textarea) wins
+ *  as an add-on, never a replacement of the named speakers. */
+export function voiceLockFromCast(
+  speakerNames: Record<string, string> | undefined,
+  voices: Record<string, string> | undefined,
+  extra?: string,
+): string {
+  const speakers: VoiceLockSpeaker[] = Object.entries(speakerNames || {}).map(([slot, name]) => ({
+    name,
+    voice_id: voices?.[slot],
+  }));
+  return buildVoiceLock(speakers, extra);
+}
+
+/** Deterministic seed from the lock so Seedance (and any door with a
+ *  seed knob) does not roll a new speaker per shot. -1 = no lock. */
+export function seedFromVoiceLock(lock: string | undefined): number {
+  const s = (lock || "").trim();
+  if (!s) return -1;
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const n = h >>> 0;
+  return n === 0 ? 1 : n;
+}
+
+/** Pin motion_config.seed from the voice lock when the caller left it
+ *  unset or at -1 (random). Unknown-schema doors drop the key later. */
+export function applyVoiceSeed(
+  config: Record<string, unknown> | undefined,
+  lock: string | undefined,
+): Record<string, unknown> | undefined {
+  const seed = seedFromVoiceLock(lock);
+  if (seed < 0) return config;
+  const cfg = { ...(config || {}) };
+  const existing = cfg.seed;
+  if (existing === undefined || existing === -1 || existing === "") {
+    cfg.seed = seed;
+  }
+  return cfg;
 }
 
 /** One clip moving through the `finish` chain (post-clips). `chain` is the finish module bindings in

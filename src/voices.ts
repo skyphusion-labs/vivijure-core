@@ -45,3 +45,27 @@ export function isValidVoiceId(value: unknown): value is VoiceId {
 export function coerceVoiceId(value: unknown): VoiceId | null {
   return isValidVoiceId(value) ? value : null;
 }
+
+/** Prompt-lock timbre for native AV (Flux / Seedance / Veo). These are
+ *  filmmaker-facing lock strings, not claims about Aura-1's TTS card.
+ *  Same string on every shot is what keeps the invented speaker from
+ *  changing cut to cut. */
+export const VOICE_LOCK_HINTS: Record<VoiceId, string> = {
+  angus: "warm mid male, slight Irish lilt",
+  asteria: "clear mid female, American",
+  arcas: "steady mid male, American",
+  orion: "deeper male, American",
+  orpheus: "smooth mid male, American",
+  athena: "clear mid female, American",
+  luna: "light female, American",
+  zeus: "deep resonant male, American",
+  perseus: "firm mid male, American",
+  helios: "bright mid male, American",
+  hera: "warm mid female, American",
+  stella: "bright female, American",
+};
+
+export function voiceLockHint(id: unknown): string {
+  const v = coerceVoiceId(id);
+  return v ? VOICE_LOCK_HINTS[v] : "";
+}

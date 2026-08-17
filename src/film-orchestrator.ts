@@ -46,6 +46,7 @@ import {
   orderFinalClips,
   joinKeyframesToScenes,
   composeMotionPrompt,
+  applyVoiceSeed,
   filmPhaseToShardStatus,
   applyFinishOutput,
   applyFinishOutputOrRefuse,
@@ -2259,9 +2260,9 @@ export async function startFilmFromKeyframes(
     bundle_key: args.bundle_key,
     scenes,
     motion_backend: args.motion_backend ?? null,
-    motion_config: args.motion_config ?? {},
+    motion_config: applyVoiceSeed(args.motion_config ?? {}, typeof args.voice_lock === "string" ? args.voice_lock : undefined) ?? args.motion_config ?? {},
     style_prefix: typeof args.style_prefix === "string" ? args.style_prefix : undefined,
-    voice_lock: typeof args.voice_lock === "string" ? args.voice_lock : undefined,
+    voice_lock: typeof args.voice_lock === "string" ? args.voice_lock.trim() || undefined : undefined,
     finish_config: args.finish_config ?? {},
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
@@ -2394,9 +2395,10 @@ export async function startFilmJob(
   const job: FilmJob = {
     film_id: filmId,
     project: args.project, bundle_key: args.bundle_key, scenes,
-    motion_backend: motionBackend ?? null, motion_config: args.motion_config ?? {},
+    motion_backend: motionBackend ?? null,
+    motion_config: applyVoiceSeed(args.motion_config ?? {}, typeof args.voice_lock === "string" ? args.voice_lock : undefined) ?? args.motion_config ?? {},
     style_prefix: typeof args.style_prefix === "string" ? args.style_prefix : undefined,
-    voice_lock: typeof args.voice_lock === "string" ? args.voice_lock : undefined,
+    voice_lock: typeof args.voice_lock === "string" ? args.voice_lock.trim() || undefined : undefined,
     // cf#393: module NAME (not binding) so the renders-row seed can audit which keyframe backend ran.
     keyframe_backend: kf ? kf.name : null,
     keyframe_config: args.keyframe_config ?? {},

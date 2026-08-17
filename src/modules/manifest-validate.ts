@@ -6,6 +6,7 @@ import {
   SUPPORTED_MODULE_APIS,
   type ModuleManifest,
 } from "./types.js";
+import { parseMotionUsage } from "../motion-usage.js";
 
 /** Validate a parsed manifest enough to trust it in the registry. Returns the typed manifest or a
  *  reason string. We check the contract version, a name, and that every declared hook is known. */
@@ -66,6 +67,9 @@ export function validateManifest(raw: unknown): ModuleManifest | string {
     const v = m.max_invocation_seconds;
     if (typeof v !== "number" || !Number.isFinite(v) || v <= 0)
       return `max_invocation_seconds ${JSON.stringify(v)} must be a positive finite number of seconds`;
+  }
+  if (m.usage !== undefined && !parseMotionUsage(m.usage)) {
+    return "usage is present but not a valid MotionUsageDecl (native_audio, voice, scatter_native_audio, min_seconds, max_seconds)";
   }
   return m as unknown as ModuleManifest;
 }

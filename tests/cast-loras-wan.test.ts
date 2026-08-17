@@ -43,6 +43,7 @@ describe("resolveCastLoras family disjointness (cross-wire control)", () => {
     expect(r.wanPretrained.A).toEqual({ high: "loras/cast-7/h.safetensors", low: "loras/cast-7/l.safetensors" });
     expect(r.pretrained.A).toBeUndefined();
     expect(r.skipped).toEqual([]);
+    expect(r.speakerNames.A).toBe("Vesper");
   });
 
   it("an SDXL-ready cast lands ONLY in pretrained, NEVER in wanPretrained", async () => {
@@ -51,6 +52,7 @@ describe("resolveCastLoras family disjointness (cross-wire control)", () => {
     expect(r.pretrained.A).toBe("loras/cast-7/one.safetensors");
     expect(r.wanPretrained.A).toBeUndefined();
     expect(r.skipped).toEqual([]);
+    expect(r.speakerNames.A).toBe("Vesper");
   });
 
   it("SDXL wins if a row somehow carries both (never double-projected)", async () => {
@@ -71,5 +73,15 @@ describe("resolveCastLoras family disjointness (cross-wire control)", () => {
     expect(r.wanPretrained.A).toBeUndefined();
     expect(r.skipped).toContain("A");
     expect(r.skippedDetail[0].reason).toBe("no trained LoRA");
+    // Voice lock still needs the display name even when the face LoRA is not ready.
+    expect(r.speakerNames.A).toBe("Vesper");
+  });
+
+  it("speakerNames omits a nameless row and is empty when no cast is bound", async () => {
+    getCastByIdMock.mockResolvedValue(readyCast({ name: "", lora_key: "loras/cast-7/one.safetensors" }));
+    const named = await resolveCastLoras({} as Env, { A: UUID });
+    expect(named.speakerNames.A).toBeUndefined();
+    const empty = await resolveCastLoras({} as Env, undefined);
+    expect(empty.speakerNames).toEqual({});
   });
 });

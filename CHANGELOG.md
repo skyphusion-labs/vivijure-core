@@ -3,6 +3,18 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.21.5] -- 2026-08-17
+
+### feat(motion): Cast-derived voice lock + pinned seed
+
+Native AV (Flux/Seedance/Veo) has no voice_id on the CF schemas we
+call. Consistency is the same lock string on every shot plus a
+deterministic seed when the door has one (Seedance `seed`).
+voiceLockFromCast builds the lock from bound Cast names + Aura
+timbre hints. applyVoiceSeed pins motion_config.seed unless the
+caller set one (startFilmJob and startFilmFromKeyframes). Talking clips never scatter. own-gpu and local-gpu never
+scatter (look doors). v2v continuation is the next Flux lock.
+
 ## [1.21.4] -- 2026-08-17
 
 ### feat(motion): voice lock + look lock on every shot

@@ -25,6 +25,9 @@ export interface ResolvedCastLoras {
   // readiness (a character can speak while its face LoRA is still training). DEFAULT_VOICE_ID when the
   // cast member has no voice assigned. The dialogue stage reads this; no second cast lookup.
   voices: Record<string, string>;
+  // slot -> display name for every resolvable cast row. Native-AV voice lock is built from
+  // these names + voices when the caller did not send a lock of their own.
+  speakerNames: Record<string, string>;
   // slot -> cast_member id for every well-formed entry (regardless of LoRA readiness). The film
   // orchestrator uses this at keyframe completion to write a freshly-trained adapter back onto the
   // right cast member (markLoraReady) so it is reused across projects instead of retrained.
@@ -56,11 +59,12 @@ export async function resolveCastLoras(
   const pretrained: Record<string, string> = {};
   const wanPretrained: Record<string, { high: string; low: string }> = {};
   const voices: Record<string, string> = {};
+  const speakerNames: Record<string, string> = {};
   const castIds: Record<string, number> = {};
   const skipped: string[] = [];
   const skippedDetail: SkippedCast[] = [];
   const skip = (d: SkippedCast) => { skipped.push(d.slot); skippedDetail.push(d); };
-  if (!castLoras || typeof castLoras !== "object") return { pretrained, wanPretrained, voices, castIds, skipped, skippedDetail };
+  if (!castLoras || typeof castLoras !== "object") return { pretrained, wanPretrained, voices, speakerNames, castIds, skipped, skippedDetail };
 
   for (const [slot, raw] of Object.entries(castLoras)) {
     if (typeof slot !== "string" || !slot.trim()) continue;
@@ -83,7 +87,10 @@ export async function resolveCastLoras(
       cast = await refreshTrainingLora(env, cast);
     }
     // Voice rides the row we already fetched, independent of LoRA readiness.
-    if (cast) voices[slot] = coerceVoiceId(cast.voice_id) ?? DEFAULT_VOICE_ID;
+    if (cast) {
+      voices[slot] = coerceVoiceId(cast.voice_id) ?? DEFAULT_VOICE_ID;
+      if (cast.name) speakerNames[slot] = cast.name;
+    }
     if (!cast) {
       skip({ slot, reason: "cast member not found" });
       continue;
@@ -115,7 +122,7 @@ export async function resolveCastLoras(
       skip({ slot, name: cast.name, reason: "no trained LoRA" });
     }
   }
-  return { pretrained, wanPretrained, voices, castIds, skipped, skippedDetail };
+  return { pretrained, wanPretrained, voices, speakerNames, castIds, skipped, skippedDetail };
 }
 
 /** Build an actionable, per-character rejection message from the skipped slots: name who needs
