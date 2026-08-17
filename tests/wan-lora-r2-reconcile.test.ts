@@ -31,7 +31,7 @@ function wrenCast(): CastMember {
     lora_job_id: "f64bbe7f-639b-420d-addb-83cb86ebdf40-u2",
     lora_error: null,
     lora_trained_at: null,
-    voice_id: null,
+    voice_id: null, voice_ref_key: null,
     wan_lora_key_high: null,
     wan_lora_key_low: null,
   };

@@ -6,6 +6,8 @@ export interface ClipShotInput {
   keyframe_key?: string;
   last_keyframe_url?: string;
   last_keyframe_key?: string;
+  voice_ref_url?: string;
+  voice_ref_key?: string;
   prompt: string;
   seconds: number;
   motion_backend?: string;

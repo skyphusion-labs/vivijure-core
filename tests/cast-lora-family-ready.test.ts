@@ -28,7 +28,7 @@ function baseCast(over: Partial<CastMember> = {}): CastMember {
     lora_job_id: null,
     lora_error: null,
     lora_trained_at: "2026-01-01 00:00:00",
-    voice_id: null,
+    voice_id: null, voice_ref_key: null,
     wan_lora_key_high: null,
     wan_lora_key_low: null,
     ...over,

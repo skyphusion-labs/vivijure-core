@@ -236,6 +236,8 @@ export interface FilmJob {
   scenes: FilmScene[];
   style_prefix?: string;
   voice_lock?: string;
+  /** shot_id -> R2 key of the Cast voice sample (preview clip). Presigned onto motion input. */
+  voice_ref_keys?: Record<string, string>;
   motion_backend: string | null;
   motion_config: Record<string, unknown>;
   // cf#393: RESOLVED keyframe module name at submit (e.g. "keyframe", "cloud-keyframe"). Distinct from

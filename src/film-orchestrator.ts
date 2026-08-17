@@ -265,6 +265,16 @@ async function stampKeyframeProvenance(env: Env, job: FilmJob, kfOut: KeyframeOu
   }
 }
 
+async function voiceRefOnShot(
+  env: Env,
+  keys: Record<string, string> | undefined,
+  shotId: string,
+): Promise<{ voice_ref_url?: string; voice_ref_key?: string }> {
+  const key = keys?.[shotId];
+  if (!key) return {};
+  return { voice_ref_key: key, voice_ref_url: await presignR2Get(env, key, 1800) };
+}
+
 /** Internal: after keyframes, either stop (preview) or hand off to the clip orchestrator. */
 async function afterKeyframeOutput(env: Env, job: FilmJob, kfOut: KeyframeOutput, preModules?: RegisteredModule[]): Promise<void> {
   let confined: KeyframeOutput;
@@ -337,6 +347,7 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
         ...spokenLineForShot(job.dialogue_lines, m.shot_id),
       }),
       seconds: m.seconds,
+      ...(await voiceRefOnShot(env, job.voice_ref_keys, m.shot_id)),
     });
   }
   const clip = await startClipJob(env, {
@@ -2274,6 +2285,7 @@ export async function startFilmFromKeyframes(
     dialogue_lines?: DialogueLine[];
     style_prefix?: string;
     voice_lock?: string;
+    voice_ref_keys?: Record<string, string>;
     /** cf#518 option C: the client's declared idempotency key. Present -> it REPLACES the
      *  natural key, so the same declared key is the same submit whatever the inputs. */
     idempotency_key?: string;
@@ -2303,6 +2315,7 @@ export async function startFilmFromKeyframes(
     motion_config: applyVoiceSeed(args.motion_config ?? {}, typeof args.voice_lock === "string" ? args.voice_lock : undefined) ?? args.motion_config ?? {},
     style_prefix: typeof args.style_prefix === "string" ? args.style_prefix : undefined,
     voice_lock: typeof args.voice_lock === "string" ? args.voice_lock.trim() || undefined : undefined,
+    voice_ref_keys: args.voice_ref_keys && Object.keys(args.voice_ref_keys).length ? args.voice_ref_keys : undefined,
     finish_config: args.finish_config ?? {},
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
@@ -2348,6 +2361,7 @@ export async function startFilmFromKeyframes(
       }),
       seconds: m.seconds,
       motion_backend: args.per_shot_motion?.[m.shot_id],
+      ...(await voiceRefOnShot(env, job.voice_ref_keys, m.shot_id)),
     });
   }
   const clip = await startClipJob(env, {
@@ -2382,6 +2396,7 @@ export async function startFilmJob(
     /** Same look / same speaker on every motion shot (native AV consistency). */
     style_prefix?: string;
     voice_lock?: string;
+    voice_ref_keys?: Record<string, string>;
     keyframes_only?: boolean;
     clips_only?: boolean;
     pretrained_loras?: Record<string, string>;
@@ -2440,6 +2455,7 @@ export async function startFilmJob(
     motion_config: applyVoiceSeed(args.motion_config ?? {}, typeof args.voice_lock === "string" ? args.voice_lock : undefined) ?? args.motion_config ?? {},
     style_prefix: typeof args.style_prefix === "string" ? args.style_prefix : undefined,
     voice_lock: typeof args.voice_lock === "string" ? args.voice_lock.trim() || undefined : undefined,
+    voice_ref_keys: args.voice_ref_keys && Object.keys(args.voice_ref_keys).length ? args.voice_ref_keys : undefined,
     // cf#393: module NAME (not binding) so the renders-row seed can audit which keyframe backend ran.
     keyframe_backend: kf ? kf.name : null,
     keyframe_config: args.keyframe_config ?? {},
