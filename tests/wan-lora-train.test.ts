@@ -15,7 +15,9 @@ import {
   buildTrainWanLoraPayload,
   buildTrainLoraPayload,
   submitTrainWanLoraJob,
+  clampTrainOverrides,
 } from "../src/runpod-submit.js";
+import { parseCastTrainBodyFields } from "../src/cast-lora-train.js";
 
 // A fake D1 that RECORDS the SQL each mark* helper runs, so we can assert WHICH terminal write the
 // shape-dispatch chose without a real database. first() returns a valid CastRow so rowToCast works.
@@ -101,6 +103,58 @@ describe("buildTrainWanLoraPayload", () => {
   it("the SDXL payload does not carry r2 even if args include it", () => {
     const { input } = buildTrainLoraPayload({ project: "p", bundleKey: "b", r2: TENANT_R2 });
     expect("r2" in input).toBe(false);
+  });
+
+  it("emits train_overrides with only the wan-train allow-list (wan-train#37)", () => {
+    const { input } = buildTrainWanLoraPayload({
+      project: "p",
+      bundleKey: "bundles/p.tar.gz",
+      trainOverrides: { batch_size: 2, resolution: 512, steps: 1800 },
+    });
+    expect(input.train_overrides).toEqual({ batch_size: 2, resolution: 512, steps: 1800 });
+  });
+
+  it("drops unknown train_overrides keys so a typo cannot fail a train", () => {
+    const { input } = buildTrainWanLoraPayload({
+      project: "p",
+      bundleKey: "bundles/p.tar.gz",
+      trainOverrides: { steps: 800, vivijure_probe_unknown_key: 1, batch_size: "nope" } as never,
+    });
+    expect(input.train_overrides).toEqual({ steps: 800 });
+    expect(input.train_overrides && "vivijure_probe_unknown_key" in input.train_overrides).toBe(false);
+  });
+
+  it("omits train_overrides when nothing allowed remains", () => {
+    const { input } = buildTrainWanLoraPayload({
+      project: "p",
+      bundleKey: "bundles/p.tar.gz",
+      trainOverrides: { vivijure_probe_unknown_key: 1 } as never,
+    });
+    expect("train_overrides" in input).toBe(false);
+  });
+
+  it("the SDXL payload does not carry train_overrides", () => {
+    const { input } = buildTrainLoraPayload({
+      project: "p",
+      bundleKey: "b",
+      trainOverrides: { steps: 800 },
+    });
+    expect("train_overrides" in input).toBe(false);
+  });
+});
+
+describe("clampTrainOverrides / parseCastTrainBodyFields (wan-train#37)", () => {
+  it("clamp drops non-finite and unknown keys", () => {
+    expect(clampTrainOverrides({ steps: 1200, batch_size: Number.NaN, extra: 1 })).toEqual({ steps: 1200 });
+    expect(clampTrainOverrides(null)).toBeUndefined();
+    expect(clampTrainOverrides({ extra: 1 })).toBeUndefined();
+  });
+
+  it("the train route accepts train_overrides and trainOverrides", () => {
+    expect(parseCastTrainBodyFields({ train_overrides: { steps: 900 } }, true).trainOverrides)
+      .toEqual({ steps: 900 });
+    expect(parseCastTrainBodyFields({ trainOverrides: { batch_size: 1 } }, true).trainOverrides)
+      .toEqual({ batch_size: 1 });
   });
 });
 
