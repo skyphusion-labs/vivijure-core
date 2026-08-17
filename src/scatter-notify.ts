@@ -3,16 +3,20 @@
 import type { Env } from "./platform/orchestrator-context.js";
 import { discoverModules, invokeModule, resolveFetcher, servingForHook, validateConfig } from "./modules/registry.js";
 import { loadInstallConfig } from "./operator-config.js";
-import type { NotifyInput, NotifyOutput } from "./modules/types.js";
+import type { NotifyInput, NotifyOutput, RegisteredModule } from "./modules/types.js";
 import { presignR2Get, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 
 
-export async function fireNotifyForScatter(env: Env, job: ScatterJob): Promise<void> {
+export async function fireNotifyForScatter(
+  env: Env,
+  job: ScatterJob,
+  preModules?: RegisteredModule[],
+): Promise<void> {
   if (!job.film_key) return;
   try {
     const envRec = env as unknown as Record<string, unknown>;
-    const notifiers = servingForHook(await discoverModules(envRec), "notify");
+    const notifiers = servingForHook(preModules ?? await discoverModules(envRec), "notify");
     if (!notifiers.length) return;
     const download_url = await presignR2Get(env, job.film_key, FILM_DOWNLOAD_TTL_SECONDS);
     const input: NotifyInput = {

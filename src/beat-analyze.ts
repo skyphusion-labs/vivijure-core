@@ -106,6 +106,7 @@ export async function analyzeAudioBeats(
   env: Env,
   req: AudioAnalyzeRequest,
   moduleName?: string,
+  preModules?: RegisteredModule[],
 ): Promise<BeatAnalyzeResult> {
   const audioKey = req.audioKey?.trim();
   if (!audioKey) return { ok: false, error: "audioKey required" };
@@ -118,7 +119,7 @@ export async function analyzeAudioBeats(
     return { ok: false, error: "could not presign audio: " + msg.slice(0, 200) };
   }
 
-  const modules = await discoverModules(env as unknown as Record<string, unknown>);
+  const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   const mod = resolveBeatSyncModule(modules, moduleName?.trim() || undefined);
 
   if (mod) {
