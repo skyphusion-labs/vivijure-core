@@ -7,6 +7,10 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ### fix(security): fail-closed finish bearer, project keys, first-party R2
 
+Backfilled: the work shipped in 81c57d6 (tag vivijure-core-v1.21.6). The
+heading was still Unreleased, so publish-npm refused; this entry is the
+late claim.
+
 Door URL without a token refuses assemble. Module-returned keys must
 stay under renders/<project>/. Tenant R2 never attaches to dispatch
 modules. Voice and style lock fields cap at 500 chars.
