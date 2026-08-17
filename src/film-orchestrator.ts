@@ -47,6 +47,7 @@ import {
   orderFinalClips,
   joinKeyframesToScenes,
   composeMotionPrompt,
+  spokenLineForShot,
   applyVoiceSeed,
   filmPhaseToShardStatus,
   applyFinishOutput,
@@ -333,6 +334,7 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
       prompt: composeMotionPrompt(m.prompt, {
         style_prefix: job.style_prefix,
         voice_lock: job.voice_lock,
+        ...spokenLineForShot(job.dialogue_lines, m.shot_id),
       }),
       seconds: m.seconds,
     });
@@ -2342,6 +2344,7 @@ export async function startFilmFromKeyframes(
       prompt: composeMotionPrompt(m.prompt, {
         style_prefix: job.style_prefix,
         voice_lock: job.voice_lock,
+        ...spokenLineForShot(job.dialogue_lines, m.shot_id),
       }),
       seconds: m.seconds,
       motion_backend: args.per_shot_motion?.[m.shot_id],

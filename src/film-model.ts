@@ -26,7 +26,7 @@ export interface FilmScene { shot_id: string; prompt: string; seconds: number; }
  *  invents a new voice per shot unless this is prepended. */
 export function composeMotionPrompt(
   scenePrompt: string,
-  lock: { style_prefix?: string; voice_lock?: string },
+  lock: { style_prefix?: string; voice_lock?: string; spoken_line?: string; speaker?: string },
 ): string {
   const parts: string[] = [];
   const style = clipLockField((lock.style_prefix || "").trim());
@@ -38,9 +38,28 @@ export function composeMotionPrompt(
       + " Same speaker, same timbre, same accent, same cadence. Do not invent a new voice. Do not change age or gender.",
     );
   }
+  const line = clipLockField((lock.spoken_line || "").trim());
+  if (line) {
+    const who = clipLockField((lock.speaker || "").trim());
+    parts.push(who
+      ? "SPOKEN LINE (" + who + "): \"" + line + "\" Say these words. Do not invent other dialogue."
+      : "SPOKEN LINE: \"" + line + "\" Say these words. Do not invent other dialogue.");
+  }
   const scene = (scenePrompt || "").trim();
   if (scene) parts.push(scene);
   return parts.join(" ");
+}
+
+/** Storyboard line for one shot, for composeMotionPrompt. Speaker is the
+ *  Cast voice lock hint when we have a voice_id. */
+export function spokenLineForShot(
+  lines: DialogueLine[] | undefined,
+  shotId: string,
+): { spoken_line?: string; speaker?: string } {
+  const line = (lines || []).find((l) => l.shot_id === shotId && (l.text || "").trim());
+  if (!line) return {};
+  const hint = voiceLockHint(line.voice_id);
+  return { spoken_line: line.text.trim(), speaker: hint || undefined };
 }
 
 export interface VoiceLockSpeaker {
