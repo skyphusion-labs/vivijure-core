@@ -18,6 +18,8 @@ const goodManifest = {
   // This fixture had to move with its subject -- a fixture that stops standing in for real data is
   // how a suite quietly stops testing the thing it names.
   participation: "default" as const,
+  // core#223: `finish` is ceiling-derived, so conformance now requires max_invocation_seconds.
+  max_invocation_seconds: 1200,
   provides: [{ id: "x", label: "X" }],
   config_schema: {
     n: { type: "int", default: 2, min: 1, max: 4 },
