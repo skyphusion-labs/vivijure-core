@@ -98,6 +98,13 @@ export * from "./scatter-notify.js";
 export * from "./lora-bundle.js";
 export * from "./cast-loras.js";
 export * from "./cast-lora-train.js";
+export {
+  classifyReadyResponse,
+  parseDoorBacking,
+  type ModuleReadyBody,
+  type DoorBacking,
+  type ModuleReadyVerdict,
+} from "./module-ready.js";
 export * from "./runpod-route.js";
 export * from "./runpod-submit.js";
 export * from "./beat-analyze.js";
