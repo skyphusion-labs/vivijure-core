@@ -345,6 +345,16 @@ export function joinKeyframesToScenes(
   return { matched, missing };
 }
 
+/** Next shot's start still is this shot's end frame (FLF continuity). Last shot has none. */
+export function pairLastKeyframeKeys<T extends { shot_id: string; keyframe_key: string }>(
+  shots: T[],
+): (T & { last_keyframe_key?: string })[] {
+  return shots.map((s, i) => {
+    const next = shots[i + 1];
+    return next ? { ...s, last_keyframe_key: next.keyframe_key } : { ...s };
+  });
+}
+
 export interface FinishSummary {
   total: number;
   done: number;

@@ -3,6 +3,15 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.21.3] -- 2026-08-17
+
+### feat(motion): first+last frame and native clip audio
+
+Each shot's motion input now carries the next shot's start still as
+`last_keyframe_url` so FLF backends (Flux 3 keyframes[], HH1 images[])
+can hold continuity. Assemble always keeps per-clip audio: talking
+models stay talking. MuseTalk is opt-in replace, not the soundtrack.
+
 ## [1.21.2] -- 2026-08-17
 
 ### fix(assemble): gather is async submit+poll, not a sync /finish

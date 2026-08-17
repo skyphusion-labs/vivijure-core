@@ -287,9 +287,22 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
     console.warn(`film ${job.film_id}: keyframe module completed with only ${matched.length}/${job.scenes.length} keyframes; delivering the rendered scenes, dropped ${missing.join(", ")} (#622)`);
   }
   const shots: ClipShotInput[] = [];
-  for (const m of matched) {
+  for (let i = 0; i < matched.length; i++) {
+    const m = matched[i];
+    const next = matched[i + 1];
     const keyframe_url = await presignR2Get(env, m.keyframe_key, 1800); // 30min: covers a long cloud i2v job
-    shots.push({ shot_id: m.shot_id, keyframe_url, prompt: m.prompt, seconds: m.seconds });
+    const last_keyframe_url = next
+      ? await presignR2Get(env, next.keyframe_key, 1800)
+      : undefined;
+    shots.push({
+      shot_id: m.shot_id,
+      keyframe_url,
+      keyframe_key: m.keyframe_key,
+      last_keyframe_url,
+      last_keyframe_key: next?.keyframe_key,
+      prompt: m.prompt,
+      seconds: m.seconds,
+    });
   }
   const clip = await startClipJob(env, {
     project: job.project, shots,
@@ -2107,7 +2120,9 @@ async function enterAssemblePhase(
     return;
   }
 
-  const keepClipAudio = !!job.dialogue_audio && Object.keys(job.dialogue_audio).length > 0;
+  // Native AV (Seedance/Flux/Veo) already talks. Keep per-clip audio. Silent i2v
+  // clips are padded. MuseTalk is opt-in replace, not the only soundtrack.
+  const keepClipAudio = true;
   const delivery = resolveDeliveryResolution(job);
   let payload = {
     clips: [] as { url: string }[],
@@ -2264,12 +2279,19 @@ export async function startFilmFromKeyframes(
     return job;
   }
   const shots: ClipShotInput[] = [];
-  for (const m of matched) {
+  for (let i = 0; i < matched.length; i++) {
+    const m = matched[i];
+    const next = matched[i + 1];
     const keyframe_url = await presignR2Get(env, m.keyframe_key, 1800);
+    const last_keyframe_url = next
+      ? await presignR2Get(env, next.keyframe_key, 1800)
+      : undefined;
     shots.push({
       shot_id: m.shot_id,
       keyframe_url,
       keyframe_key: m.keyframe_key,
+      last_keyframe_url,
+      last_keyframe_key: next?.keyframe_key,
       prompt: m.prompt,
       seconds: m.seconds,
       motion_backend: args.per_shot_motion?.[m.shot_id],

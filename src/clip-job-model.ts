@@ -4,6 +4,8 @@ export interface ClipShotInput {
   shot_id: string;
   keyframe_url: string;
   keyframe_key?: string;
+  last_keyframe_url?: string;
+  last_keyframe_key?: string;
   prompt: string;
   seconds: number;
   motion_backend?: string;
@@ -34,6 +36,8 @@ export interface ClipShot extends ClipShotInput {
   delivered_width?: number;
   delivered_height?: number;
   distilled?: boolean;
+  /** Motion backend said the mp4 already has a soundtrack (native AV). */
+  has_audio?: boolean;
   // #719: consecutive TRANSIENT poll-error count (see applyPoll). Reset on any successful poll;
   // the shot fails loud at CLIP_POLL_MAX_ATTEMPTS instead of on the first blip.
   poll_attempts?: number;
