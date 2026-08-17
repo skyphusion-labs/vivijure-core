@@ -282,6 +282,9 @@ export interface FilmJob {
   // film, enterAssemblePhase keeps phase="assemble" so the next poll re-attempts (the re-PUT to the same
   // film key is idempotent), capped by MAX_ASSEMBLE_ATTEMPTS. Absent on pre-#82 jobs (reads as 0).
   assemble_attempts?: number;
+  // Async /finish job token (jobId + streak). A 17-shot concat outlives the
+  // Worker fetch; the next poll tick reads this instead of re-POSTing /finish.
+  assemble_poll?: string;
   // Wall-clock the job entered its CURRENT phase (issue #129). advanceFilmJob stamps this on every
   // phase transition; the stall recovery measures how long a pollable phase has been stuck against it.
   // Absent on pre-#129 jobs -> recovery falls back to created_at (still bounded, just more generous).
@@ -836,7 +839,11 @@ export function classifyAssembleTransport(
   priorAttempts: number,
   maxAttempts: number,
 ): AssembleTransport {
-  const transient = status === null || status === 502 || status === 503 || status === 504;
+  // 524 is Cloudflare's proxy-read timeout. The Worker fetch is still a CF
+  // hop even when door DNS is grey. Sync /finish that outlives ~100s returns
+  // this; treat it like 504 so a leftover sync caller retries instead of
+  // failing a fully-rendered film. Async /finish is the real fix.
+  const transient = status === null || status === 502 || status === 503 || status === 504 || status === 524;
   if (!transient) return { state: "ok", attempts: 0 };
   const attempts = priorAttempts + 1;
   const reason = status === null ? "container unreachable" : `gateway ${status}`;
