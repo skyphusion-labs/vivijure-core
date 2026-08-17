@@ -34,7 +34,7 @@ import { readBundleScenes } from "./bundle-storyboard.js";
 import type { ParsedBundleScene } from "./planner-yaml.js";
 import { getProjectById } from "./storyboard-projects-db.js";
 import { buildDialogueLines, dialogueLinesFromBundleScenes } from "./dialogue-lines.js";
-import type { DialogueLine } from "./modules/types.js";
+import type { DialogueLine, RegisteredModule } from "./modules/types.js";
 import {
   gatherDecision,
   isScatterParentJobId,
@@ -257,7 +257,7 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
       dialogue_lines: shardDialogue,
       style_prefix: args.style_prefix,
       voice_lock: voiceLock || args.voice_lock,
-    });
+    }, modules);
     scatterJob.shard_film_ids.push(film.film_id);
     shardRows.push({ jobId: film.film_id, status: filmJobToPollView(film, null).status });
   }
@@ -394,13 +394,17 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
   job.phase = "done";
 }
 
-async function maybeFinalizeScatter(env: Env, job: ScatterJob): Promise<void> {
+async function maybeFinalizeScatter(
+  env: Env,
+  job: ScatterJob,
+  preModules?: RegisteredModule[],
+): Promise<void> {
   // Re-entrant from either the terminal "done" transition or the non-terminal "finishing" resume
   // phase (#23): an async film.finish step still encoding must NOT let the render finalize.
   if ((job.phase !== "done" && job.phase !== "finishing") || !job.film_key) return;
   const st = await getFinishState(env, job.scatter_id);
   if (st?.finish_state === "done") return;
-  const complete = await runScatterFilmFinish(env, job);
+  const complete = await runScatterFilmFinish(env, job, preModules);
   if (!complete) {
     // #23: film.finish is in flight (a card step returned a poll token). Park in the non-terminal
     // "finishing" phase and DO NOT finalize -- the next gather tick re-drives runScatterFilmFinish,
@@ -411,7 +415,7 @@ async function maybeFinalizeScatter(env: Env, job: ScatterJob): Promise<void> {
     return;
   }
   job.phase = "done";
-  await finalizeScatterDone(env, job);
+  await finalizeScatterDone(env, job, preModules);
 }
 
 /** Run the film.finish chain (subtitle / title / credit cards) on the assembled+muxed scatter film,
@@ -419,7 +423,11 @@ async function maybeFinalizeScatter(env: Env, job: ScatterJob): Promise<void> {
  *  expected_shot_ids order (orderFinalClips), so the FULL scenes + dialogue_lines give correctly aligned
  *  cumulative captions. FAIL-SAFE + idempotent: guarded by job.film_finish so a re-driven finalize never
  *  double-runs, and runFilmFinish soft-degrades (a card miss never drops the assembled film). */
-async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<boolean> {
+async function runScatterFilmFinish(
+  env: Env,
+  job: ScatterJob,
+  preModules?: RegisteredModule[],
+): Promise<boolean> {
   if (job.film_finish || !job.film_key) return true; // already run (or nothing to card) -> complete
   job.film_finish_dispatched ??= {};
   job.film_finish_polls ??= {};
@@ -446,7 +454,7 @@ async function runScatterFilmFinish(env: Env, job: ScatterJob): Promise<boolean>
     project: job.project,
     job_id: job.scatter_id,
     actual_durations: job.actual_clip_durations,
-  }, undefined, {
+  }, preModules, {
     // #600 in-flight guard: persist a dispatch BEFORE it fires so a killed tick cannot re-dispatch a
     // duplicate encode of the same step.
     dispatched: job.film_finish_dispatched,
@@ -588,7 +596,11 @@ async function assembleScatterClips(
   }
 }
 
-async function finalizeScatterDone(env: Env, job: ScatterJob): Promise<void> {
+async function finalizeScatterDone(
+  env: Env,
+  job: ScatterJob,
+  preModules?: RegisteredModule[],
+): Promise<void> {
   if (!job.film_key) return;
   // core#205: DERIVED, shared with scatterJobToPollView. This write runs FIRST in the scatter tick
   // and updateRenderFromView(scatterJobToPollView(job)) runs after it, so the VIEW is the last writer
@@ -601,10 +613,14 @@ async function finalizeScatterDone(env: Env, job: ScatterJob): Promise<void> {
     outputMsFromSeconds(job.film_output_seconds?.[job.film_key]),
     job.finish_elapsed_ms,
   );
-  await fireNotifyForScatter(env, job);
+  await fireNotifyForScatter(env, job, preModules);
 }
 
-async function advanceScatterGather(env: Env, job: ScatterJob): Promise<void> {
+async function advanceScatterGather(
+  env: Env,
+  job: ScatterJob,
+  preModules?: RegisteredModule[],
+): Promise<void> {
   const st = await getFinishState(env, job.scatter_id);
   const claimed = await claimFinish(env, job.scatter_id);
   if (!claimed && st?.finish_state !== "finishing") return;
@@ -640,7 +656,7 @@ async function advanceScatterGather(env: Env, job: ScatterJob): Promise<void> {
   if (job.phase === "failed") {
     await markFinishFailed(env, job.scatter_id, job.error || "scatter gather failed");
   } else {
-    await maybeFinalizeScatter(env, job);
+    await maybeFinalizeScatter(env, job, preModules);
   }
 }
 
@@ -740,7 +756,8 @@ export async function advanceScatterJob(
   // Re-drive ONLY the finish chain (resuming its persisted polls) and finalize once complete -- the
   // shards are already done, so skip the shard-advance loop entirely.
   if (job.phase === "finishing") {
-    await maybeFinalizeScatter(env, job);
+    const modules = await discoverModules(env as unknown as Record<string, unknown>);
+    await maybeFinalizeScatter(env, job, modules);
     await saveScatterJob(env, job);
     const fview = scatterJobToPollView(job);
     if (fview.status !== "IN_PROGRESS") await updateRenderFromView(env, fview, ctx);
@@ -861,13 +878,13 @@ export async function advanceScatterJob(
       await markRenderFailedByJobId(env, scatterId, decision.reason);
     } else if (decision.kind === "finish") {
       job.phase = "gather";
-      await advanceScatterGather(env, job);
+      await advanceScatterGather(env, job, modules);
     }
   } else if (job.phase === "gather") {
-    await advanceScatterGather(env, job);
+    await advanceScatterGather(env, job, modules);
   } else if (job.phase === "mux") {
     await muxScatterAudio(env, job);
-    await maybeFinalizeScatter(env, job);
+    await maybeFinalizeScatter(env, job, modules);
   }
 
   await saveScatterJob(env, job);
