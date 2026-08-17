@@ -718,6 +718,9 @@ export interface MotionBackendInput {
   shot_id: string;
   keyframe_url: string;  // presigned, fetchable URL of the start keyframe (the core presigns private R2)
   keyframe_key?: string; // the underlying R2 key, for reference
+  /** Presigned end still. When set, FLF backends animate first->last (next shot's start). */
+  last_keyframe_url?: string;
+  last_keyframe_key?: string;
   prompt: string;        // the motion prompt for the shot
   seconds: number;
 }
@@ -727,6 +730,8 @@ export interface MotionBackendOutput {
   clip_key: string;     // R2 key of the rendered clip (mp4)
   fps: number;
   frames: number;
+  /** True when the clip already carries the model's own audio (Seedance/Flux/Veo/...). */
+  has_audio?: boolean;
   /** OPTIONAL, additive (no MODULE_API bump): tier-honesty signal from the backend -- true when the
    *  clip was rendered with a DISTILLED variant of the model (e.g. the 12gb door's final-tier 13B
    *  distilled), false when the full model ran. The module relays what its backend reports and OMITS

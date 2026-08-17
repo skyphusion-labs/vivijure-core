@@ -110,6 +110,7 @@ export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>):
   }
   // #705: tier honesty rides the same channel, independent of the duration numbers.
   if (typeof output.distilled === "boolean") shot.distilled = output.distilled;
+  if (typeof output.has_audio === "boolean") shot.has_audio = output.has_audio;
 }
 
 /** Pure: does an R2 clips-object filename belong to this shot? The backend writes a finished motion clip
@@ -293,6 +294,8 @@ export async function startClipJob(
             shot_id: motionInput.shot_id,
             keyframe_url: motionInput.keyframe_url,
             keyframe_key: motionInput.keyframe_key,
+            last_keyframe_url: motionInput.last_keyframe_url,
+            last_keyframe_key: motionInput.last_keyframe_key,
             prompt: motionInput.prompt,
             seconds: motionInput.seconds,
           },
@@ -313,7 +316,12 @@ export async function startClipJob(
       const output = r.output as MotionBackendOutput;
       const violation = hookOutputViolation(mb.name, "motion.backend", output);
       if (violation) { shot.status = "failed"; shot.error = violation; }
-      else { shot.status = "done"; shot.clip_key = output.clip_key; await stampClipProvenance(env, args.project, shot); }
+      else {
+        shot.status = "done";
+        shot.clip_key = output.clip_key;
+        if (typeof output.has_audio === "boolean") shot.has_audio = output.has_audio;
+        await stampClipProvenance(env, args.project, shot);
+      }
     } else {
       shot.status = "failed";
       shot.error = "module returned neither output nor a poll token";

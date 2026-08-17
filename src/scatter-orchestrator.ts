@@ -480,7 +480,7 @@ async function assembleScatterClips(
     clips: [] as { url: string }[],
     outputUrl: "https://invalid.invalid/gather",
     outputKey,
-    keepClipAudio: !!job.has_dialogue,
+    keepClipAudio: true,
   };
   if (!job.assemble_poll) {
     const presigned: { url: string }[] = [];
