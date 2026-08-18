@@ -820,9 +820,10 @@ export async function attachFinishPresigns(
     input.output_key = outKey;
     if (audioUrl) input.audio_url = audioUrl;
     if (hashUrl) input.hash_url = hashUrl;
-    // Satellites select R2 vs presigned on KEY PRESENCE. Omit so the presigned branch runs.
-    delete (input as { clip_key?: string }).clip_key;
-    delete (input as { audio_key?: string }).audio_key;
+    // Keep clip_key / audio_key. Own-iron finish (RIFE on our RunPod) reads R2 by
+    // clip_key. Stripping the key after a successful presign made finish-rife
+    // fail-close a completed 10-shot. Satellites that prefer URLs still see
+    // video_url; they must not require the key to be absent.
   } catch (e) {
     console.warn(JSON.stringify({
       ev: "finish.presign_skip",

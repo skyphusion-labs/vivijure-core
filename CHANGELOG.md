@@ -3,6 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.22.1] -- 2026-08-18
+
+### fix(finish): keep clip_key after presign
+
+Own-iron RIFE and video upscale read R2 by clip_key. Hosted does not
+run lipsync. Stripping the key after a successful presign fail-closed
+a completed 10-shot. URLs stay additive.
+
 ## [1.22.0] -- 2026-08-18
 
 ### feat(film): parallel keyframe invokes
