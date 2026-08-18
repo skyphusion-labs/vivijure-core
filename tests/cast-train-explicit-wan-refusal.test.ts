@@ -49,7 +49,7 @@ function trainableCast() {
     ref_keys: ["a.jpg", "b.jpg", "c.jpg", "d.jpg"], source_keys: [],
     created_at: "2026-01-01 00:00:00", updated_at: "2026-01-01 00:00:00",
     lora_key: null, lora_status: "idle", lora_job_id: null, lora_error: null,
-    lora_trained_at: null, voice_id: null,
+    lora_trained_at: null, voice_id: null, voice_ref_key: null,
     wan_lora_key_high: null, wan_lora_key_low: null,
   };
 }

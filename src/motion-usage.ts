@@ -32,6 +32,7 @@ export function parseMotionUsage(raw: unknown): MotionUsageDecl | undefined {
     duration_steps: steps && steps.length ? steps : undefined,
     first_last: o.first_last === true,
     seed: o.seed === true,
+    voice_ref: o.voice_ref === true,
   };
 }
 
@@ -85,5 +86,10 @@ export function usageLimitLines(usage: MotionUsageDecl): string[] {
     lines.push("Silent motion; speaking voice is the Cast voice (TTS)");
   }
   if (usage.first_last) lines.push("Each shot animates toward the next still");
+  if (usage.voice_ref) {
+    lines.push("Uses the Cast voice sample as reference audio. Same voice as the clip you kept.");
+  } else if (usage.native_audio) {
+    lines.push("Cannot lock the sample you heard. Same description, not the same take.");
+  }
   return lines;
 }

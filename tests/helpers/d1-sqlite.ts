@@ -80,6 +80,15 @@ export function openTestD1(): TestD1 {
     }
   }
 
+  // Core 1.21.8 reads cast_members.voice_ref_key. CF migration 0021 adds it, but this
+  // harness applies the CI checkout of vivijure-cf (usually main). If 0021 is not
+  // there yet, add the column here so createCast is not a "no such column" against
+  // an otherwise real schema.
+  const cols = db.prepare("PRAGMA table_info(cast_members)").all() as Array<{ name: string }>;
+  if (cols.length > 0 && !cols.some((c) => c.name === "voice_ref_key")) {
+    db.exec("ALTER TABLE cast_members ADD COLUMN voice_ref_key TEXT");
+  }
+
   const exec = (sql: string, binds: unknown[]) => {
     const stmt = db.prepare(sql);
     // node:sqlite accepts null/number/string/bigint/Uint8Array. D1 callers pass undefined for

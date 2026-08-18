@@ -21,6 +21,8 @@ export interface ResolvedCastLoras {
   // so the render path forwards SDXL adapters as pretrained_loras and Wan adapters into the
   // alibaba-wan-lora high/low_noise_loras module config, and the two can never cross-wire.
   wanPretrained: Record<string, { high: string; low: string }>;
+  // slot -> preview clip R2 key the filmmaker kept (Seedance reference_video). Absent when none saved.
+  voiceRefs: Record<string, string>;
   // slot -> aura-1 voice_id for dialogue, captured for every slot with a cast row regardless of LoRA
   // readiness (a character can speak while its face LoRA is still training). DEFAULT_VOICE_ID when the
   // cast member has no voice assigned. The dialogue stage reads this; no second cast lookup.
@@ -59,12 +61,13 @@ export async function resolveCastLoras(
   const pretrained: Record<string, string> = {};
   const wanPretrained: Record<string, { high: string; low: string }> = {};
   const voices: Record<string, string> = {};
+  const voiceRefs: Record<string, string> = {};
   const speakerNames: Record<string, string> = {};
   const castIds: Record<string, number> = {};
   const skipped: string[] = [];
   const skippedDetail: SkippedCast[] = [];
   const skip = (d: SkippedCast) => { skipped.push(d.slot); skippedDetail.push(d); };
-  if (!castLoras || typeof castLoras !== "object") return { pretrained, wanPretrained, voices, speakerNames, castIds, skipped, skippedDetail };
+  if (!castLoras || typeof castLoras !== "object") return { pretrained, wanPretrained, voices, voiceRefs, speakerNames, castIds, skipped, skippedDetail };
 
   for (const [slot, raw] of Object.entries(castLoras)) {
     if (typeof slot !== "string" || !slot.trim()) continue;
@@ -89,6 +92,7 @@ export async function resolveCastLoras(
     // Voice rides the row we already fetched, independent of LoRA readiness.
     if (cast) {
       voices[slot] = coerceVoiceId(cast.voice_id) ?? DEFAULT_VOICE_ID;
+      if (cast.voice_ref_key) voiceRefs[slot] = cast.voice_ref_key;
       if (cast.name) speakerNames[slot] = cast.name;
     }
     if (!cast) {
@@ -122,7 +126,7 @@ export async function resolveCastLoras(
       skip({ slot, name: cast.name, reason: "no trained LoRA" });
     }
   }
-  return { pretrained, wanPretrained, voices, speakerNames, castIds, skipped, skippedDetail };
+  return { pretrained, wanPretrained, voices, voiceRefs, speakerNames, castIds, skipped, skippedDetail };
 }
 
 /** Build an actionable, per-character rejection message from the skipped slots: name who needs

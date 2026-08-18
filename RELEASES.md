@@ -161,6 +161,7 @@ consistent with the file.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.21.8` | 1.21.8 |  |  | **PATCH.** Cast voice sample rides motion as `voice_ref_url` / `voice_ref_keys`. Seedance is the exact lock; Veo has no such field. Hosts must apply the `voice_ref_key` D1 column before pinning. |
 | `vivijure-core-v1.20.0` | 1.20.0 |  |  | **MINOR.** Hosted Wan-train jobs carry the per-job tenant R2 block (`input.r2`) so a pooled endpoint does not write every tenant into the template bucket. Operator studio without `R2_S3_*` omits the block. |
 | `vivijure-core-v1.19.0` | 1.19.0 |  |  | **MINOR.** Every CPU media door is a host config URL (`VIDEO_FINISH_URL`, `AUDIO_MIX_URL`, `AUDIO_BEAT_SYNC_URL`, `IMAGE_PREP_URL`). No baked origin; unset URL turns that door off. The `*_VPC` bindings leave Env. |
 | `vivijure-core-v1.18.0` | 1.18.0 |  |  | **MINOR.** Assemble/mux/inspect fetch VIDEO_FINISH_URL (Traefik), not VIDEO_FINISH_VPC. |

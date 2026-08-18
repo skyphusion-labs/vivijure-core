@@ -62,7 +62,7 @@ function recordingEnv() {
     portrait_key: null, portrait_mime: null, ref_keys_json: "[]", source_keys_json: null,
     created_at: "2026-01-01 00:00:00", updated_at: "2026-01-01 00:00:00",
     lora_key: null, lora_status: "training", lora_job_id: "job-1", lora_error: null,
-    lora_trained_at: null, voice_id: null, wan_lora_key_high: null, wan_lora_key_low: null,
+    lora_trained_at: null, voice_id: null, voice_ref_key: null, wan_lora_key_high: null, wan_lora_key_low: null,
   };
   const env = {
     DB: {
@@ -82,7 +82,7 @@ function trainingCast(): CastMember {
     ref_keys: [], source_keys: [],
     created_at: "2026-01-01 00:00:00", updated_at: "2026-01-01 00:00:00",
     lora_key: null, lora_status: "training", lora_job_id: "job-1", lora_error: null,
-    lora_trained_at: null, voice_id: null, wan_lora_key_high: null, wan_lora_key_low: null,
+    lora_trained_at: null, voice_id: null, voice_ref_key: null, wan_lora_key_high: null, wan_lora_key_low: null,
   };
 }
 

@@ -74,7 +74,7 @@ const TRAINABLE_ROW = {
   lora_job_id: "job-wan-1",
   lora_error: null,
   lora_trained_at: null,
-  voice_id: null,
+  voice_id: null, voice_ref_key: null,
   wan_lora_key_high: null,
   wan_lora_key_low: null,
 };
@@ -126,7 +126,7 @@ function trainingCast(): CastMember {
     lora_job_id: "job-wan-1",
     lora_error: null,
     lora_trained_at: null,
-    voice_id: null,
+    voice_id: null, voice_ref_key: null,
     wan_lora_key_high: null,
     wan_lora_key_low: null,
   };

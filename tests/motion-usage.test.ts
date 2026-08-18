@@ -36,6 +36,7 @@ describe("parseMotionUsage", () => {
       duration_steps: undefined,
       first_last: false,
       seed: false,
+      voice_ref: false,
     });
   });
 
@@ -56,6 +57,7 @@ describe("parseMotionUsage", () => {
       duration_steps: [4, 6, 8],
       first_last: true,
       seed: true,
+      voice_ref: false,
     });
   });
 
@@ -66,11 +68,13 @@ describe("parseMotionUsage", () => {
     expect(parseMotionUsage({ ...VALID, duration_steps: "4/8" })?.duration_steps).toBeUndefined();
   });
 
-  it("treats first_last / seed as true only on the boolean true", () => {
-    expect(parseMotionUsage({ ...VALID, first_last: 1, seed: "yes" })).toMatchObject({
+  it("treats first_last / seed / voice_ref as true only on the boolean true", () => {
+    expect(parseMotionUsage({ ...VALID, first_last: 1, seed: "yes", voice_ref: 1 })).toMatchObject({
       first_last: false,
       seed: false,
+      voice_ref: false,
     });
+    expect(parseMotionUsage({ ...VALID, voice_ref: true })).toMatchObject({ voice_ref: true });
   });
 
   it.each([
@@ -180,6 +184,17 @@ describe("usageLimitLines", () => {
   it("describes prompt_lock as a lock with no speaker id", () => {
     const lines = usageLimitLines(VALID);
     expect(lines).toContain("Same voice lock on every shot (no speaker id on this door)");
+  });
+
+  it("says the Cast sample is the lock when voice_ref is on", () => {
+    const lines = usageLimitLines({ ...VALID, voice_ref: true });
+    expect(lines).toContain("Uses the Cast voice sample as reference audio. Same voice as the clip you kept.");
+    expect(lines.some((l) => /Cannot lock the sample/i.test(l))).toBe(false);
+  });
+
+  it("says Veo-class doors cannot lock the heard sample", () => {
+    const lines = usageLimitLines(VALID);
+    expect(lines).toContain("Cannot lock the sample you heard. Same description, not the same take.");
   });
 
   it("names Cast TTS on a silent door and first+last when declared", () => {

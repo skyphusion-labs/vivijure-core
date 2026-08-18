@@ -3,6 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.21.8] -- 2026-08-17
+
+### feat(motion): Cast voice sample rides Seedance as reference_video
+
+MotionBackendInput.voice_ref_url is the preview clip the filmmaker
+kept. resolveCastLoras.voiceRefs maps the slot. Veo has no such
+field; Seedance does.
+
 ## [1.21.7] -- 2026-08-17
 
 ### fix(finish): omit clip_key when presigns attach

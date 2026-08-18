@@ -220,6 +220,8 @@ export interface MotionUsageDecl {
   first_last?: boolean;
   /** Door has a seed knob we pin from the voice lock. */
   seed?: boolean;
+  /** Door accepts voice_ref_url (Seedance reference_video). Exact lock. */
+  voice_ref?: boolean;
 }
 
 /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`): a finish module's declared
@@ -751,6 +753,10 @@ export interface MotionBackendInput {
   /** Presigned end still. When set, FLF backends animate first->last (next shot's start). */
   last_keyframe_url?: string;
   last_keyframe_key?: string;
+  /** Presigned preview clip the filmmaker kept as the talking voice. Seedance
+   *  sends this as reference_video. Veo has no such field. */
+  voice_ref_url?: string;
+  voice_ref_key?: string;
   prompt: string;        // the motion prompt for the shot
   seconds: number;
 }
