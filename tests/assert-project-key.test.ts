@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertProjectKey, isProjectKey } from "../src/key-safety.js";
+import { assertBankedLoraKey, assertProjectKey, isBankedLoraKey, isProjectKey } from "../src/key-safety.js";
 
 describe("assertProjectKey", () => {
   it("accepts a safe key under renders/<project>/", () => {
@@ -21,5 +21,23 @@ describe("assertProjectKey", () => {
     );
     expect(isProjectKey("neon", "renders/neon")).toBe(false);
     expect(isProjectKey("neon", "/renders/neon/clips/x.mp4")).toBe(false);
+  });
+});
+
+describe("assertBankedLoraKey", () => {
+  it("accepts a character-stable loras/ key (cross-project reuse)", () => {
+    expect(assertBankedLoraKey("loras/wren.safetensors")).toBe("loras/wren.safetensors");
+    expect(isBankedLoraKey("loras/cast-18.safetensors")).toBe(true);
+  });
+
+  it("accepts a render-scoped adapter under renders/", () => {
+    expect(assertBankedLoraKey("renders/last_call/loras/A.safetensors")).toBe(
+      "renders/last_call/loras/A.safetensors",
+    );
+  });
+
+  it("refuses a path that is not a LoRA bank", () => {
+    expect(() => assertBankedLoraKey("bundles/x.tar.gz")).toThrow(/refused LoRA key/);
+    expect(isBankedLoraKey("../loras/x.safetensors")).toBe(false);
   });
 });

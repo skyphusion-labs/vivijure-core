@@ -10,7 +10,7 @@
 import type { Env } from "./platform/orchestrator-context.js";
 import type { FetcherLike } from "./platform/types.js";
 import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
-import { assertProjectKey } from "./key-safety.js";
+import { assertBankedLoraKey, assertProjectKey } from "./key-safety.js";
 import { encodeAssemblePoll, tickVideoFinishAssemble } from "./video-finish-assemble.js";
 import {
   discoverModules,
@@ -198,7 +198,7 @@ function confineKeyframeOutput(project: string, kfOut: KeyframeOutput): Keyframe
     const next: Record<string, string> = {};
     for (const [slot, key] of Object.entries(trained_loras)) {
       if (typeof key !== "string" || !key) continue;
-      next[slot] = assertProjectKey(project, key);
+      next[slot] = assertBankedLoraKey(key);
     }
     trained_loras = next;
   }

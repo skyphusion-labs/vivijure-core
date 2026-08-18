@@ -156,6 +156,22 @@ describe("keyframe parallel start/advance", () => {
     expect((job.keyframes ?? []).map((k) => k.shot_id)).toEqual(SCENES.map((s) => s.shot_id));
   });
 
+  it("does not fail-close when a chunk reports a banked Cast LoRA under loras/", async () => {
+    const h = harness({
+      keyframeParallel: "2",
+      invoke: (shotIds) => ({
+        ok: true,
+        output: {
+          ...kfOut(shotIds),
+          trained_loras: { A: "loras/wren.safetensors" },
+        },
+      }),
+    });
+    const job = await startFilmJob(h.env, START, [kfMod]);
+    expect(job.phase).toBe("done");
+    expect(job.error).toBeUndefined();
+  });
+
   it("5 shots / KEYFRAME_PARALLEL=2 parks both poll tokens, then merges on advance", async () => {
     const h = harness({
       keyframeParallel: "2",

@@ -28,10 +28,27 @@ export function isProjectKey(project: string, key: unknown): key is string {
 }
 
 /** Adopt a module-returned artifact key, or throw. Escaping renders/<project>/ is refused.
- *  Bundle keys are not accepted here: clip/keyframe/lora outputs live under renders/. */
+ *  Bundle keys are not accepted here: clip/keyframe outputs live under renders/. */
 export function assertProjectKey(project: string, key: string): string {
   if (!isProjectKey(project, key)) {
     throw new Error(`refused key outside ${projectKeyPrefix(project || "?")}`);
+  }
+  return key;
+}
+
+/**
+ * Cast LoRA keys are character-stable (`loras/<id>.safetensors`) so one train
+ * is reused across projects. Render-scoped adapters under renders/<project>/
+ * are also fine (the bank copies them). Anything else is refused.
+ */
+export function isBankedLoraKey(key: unknown): key is string {
+  if (!isSafeRelKey(key)) return false;
+  return key.startsWith("loras/") || key.startsWith("renders/");
+}
+
+export function assertBankedLoraKey(key: string): string {
+  if (!isBankedLoraKey(key)) {
+    throw new Error("refused LoRA key (want loras/ or renders/)");
   }
   return key;
 }
