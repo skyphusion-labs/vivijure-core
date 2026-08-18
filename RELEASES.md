@@ -161,6 +161,7 @@ consistent with the file.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.22.3` | 1.22.3 |  |  | **PATCH.** Incomplete films are FAILED. |
 | `vivijure-core-v1.22.2` | 1.22.2 |  |  | **PATCH.** Cast LoRA keys are loras/, not project-scoped. |
 | `vivijure-core-v1.22.1` | 1.22.1 |  |  | **PATCH.** Keep clip_key after finish presign so own-iron RIFE runs. |
 | `vivijure-core-v1.22.0` | 1.22.0 | 0386523 | 2026-08-18 | **MINOR.** Keyframe hook fans across `KEYFRAME_PARALLEL` shot chunks on one film. Not scatter-*. |

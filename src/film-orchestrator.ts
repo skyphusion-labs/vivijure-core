@@ -208,13 +208,33 @@ function confineKeyframeOutput(project: string, kfOut: KeyframeOutput): Keyframe
 /** Internal: keyframes-only path -- record keys and mark done (no i2v / assemble). */
 function completeKeyframesOnly(job: FilmJob, kfOut: KeyframeOutput): void {
   const kfs = kfOut.keyframes || [];
-  if (!kfs.length) {
+  const missing = missingSceneIds(job.scenes, kfs.map((k) => k.shot_id));
+  if (!kfs.length || missing.length) {
     job.phase = "failed";
-    job.error = "keyframe stage produced no keyframes";
+    job.error = missing.length
+      ? incompleteFilmError("keyframes", kfs.length, job.scenes.length, missing)
+      : "keyframe stage produced no keyframes";
     return;
   }
   job.keyframes = kfs.map((k: KeyframeShot) => ({ shot_id: k.shot_id, keyframe_key: k.keyframe_key }));
   job.phase = "done";
+}
+
+/** Storyboard shots with no artifact. Empty means the film is whole. */
+export function missingSceneIds(scenes: FilmScene[], haveIds: string[]): string[] {
+  const have = new Set(haveIds);
+  return scenes.map((s) => s.shot_id).filter((id) => !have.has(id));
+}
+
+export function incompleteFilmError(
+  stage: string,
+  have: number,
+  expected: number,
+  missing: string[],
+  extra?: string,
+): string {
+  const tail = extra ? ` -- ${extra}` : "";
+  return `incomplete film -- ${stage} ${have}/${expected} (missing: ${missing.join(", ")})${tail}`;
 }
 
 /** Bank any freshly-trained cast LoRA so a character is trained ONCE and reused across every project,
@@ -310,25 +330,12 @@ async function afterKeyframeOutput(env: Env, job: FilmJob, kfOut: KeyframeOutput
  *  #619 stall). */
 async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, preModules?: RegisteredModule[]): Promise<void> {
   const { matched, missing } = joinKeyframesToScenes(job.scenes, kfOut.keyframes || []);
-  if (!matched.length) {
+  if (!matched.length || missing.length) {
     job.phase = "failed";
     job.error = job.scenes.length
-      ? `keyframe stage produced none of the requested shots (missing: ${missing.join(", ")})`
+      ? incompleteFilmError("keyframes", matched.length, job.scenes.length, missing)
       : "keyframe stage produced none of the requested shots (this film has no scenes; the bundle storyboard is empty or shot ids did not match)";
     return;
-  }
-  if (missing.length && !job.keyframes_incomplete) {
-    // A keyframe module reported completion with a PARTIAL set (fewer keyframes than scenes): the #622
-    // sibling of the #619 stall, on the NORMAL (non-recovery) completion path. Silently building the clip
-    // job from `matched` alone rebases every downstream counter to the smaller total, so the film reports
-    // a clean complete over a half-set -- the exact silent-half-film shape (#245/#249). Deliver the scenes
-    // that DID render, but LOUDLY: record the drop on keyframes_incomplete + emit the structured event,
-    // the same clips-delivered degrade contract as the keyframe stall ceiling (#619). Guarded on
-    // !keyframes_incomplete so the ceiling-recovery path (which sets + emits BEFORE calling here) does not
-    // double-record the same drop.
-    job.keyframes_incomplete = { adopted: matched.length, expected: job.scenes.length, dropped: missing };
-    emitKeyframesIncomplete(job);
-    console.warn(`film ${job.film_id}: keyframe module completed with only ${matched.length}/${job.scenes.length} keyframes; delivering the rendered scenes, dropped ${missing.join(", ")} (#622)`);
   }
   const shots: ClipShotInput[] = [];
   for (let i = 0; i < matched.length; i++) {
@@ -528,11 +535,17 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   const servingAll = servingForHook(modules, "finish"); // ui.order; every BOUND finish module
   const doneClips = clipJob.shots.filter((s) => s.status === "done" && s.clip_key);
-  if (!doneClips.length) {
-    // #754: surface the per-shot failure reasons instead of only the bare generic.
+  const missingClips = missingSceneIds(job.scenes, doneClips.map((s) => s.shot_id));
+  if (missingClips.length) {
     job.phase = "failed";
     const reasons = describeClipFailures(clipJob);
-    job.error = reasons ? `no clips rendered to assemble -- ${reasons}` : "no clips rendered to assemble";
+    job.error = incompleteFilmError(
+      "clips",
+      doneClips.length,
+      job.scenes.length,
+      missingClips,
+      reasons || undefined,
+    );
     return;
   }
   // cf#537: THE participation gate. This is the ONLY site that mints the per-shot finish chain --
@@ -2895,9 +2908,8 @@ export async function cancelInFlightKeyframe(
  *  recovery (#143): it advances (cancel + afterKeyframeOutput) ONLY when the adopted set covers every
  *  scene, or once the phase ceiling has expired. Below the ceiling a partial set HOLDS -- no cancel, no
  *  advance, keyframe_recovered NOT set -- so the next stalled sweep picks up the keyframes that land
- *  after this pass. At the ceiling with a partial set it advances LOUDLY, delivering what rendered:
- *  records the dropped scenes on `keyframes_incomplete`, emits the structured event, and never lets the
- *  film report a clean complete over the rebased total (#245/#249). `atCeiling` is true once the phase
+ *  after this pass. At the ceiling with a partial set the film FAILS. Every storyboard shot must
+ *  return. `atCeiling` is true once the phase
  *  has passed PHASE_HARD_DEADLINE_SECONDS. Returns true iff it advanced the phase; a partial hold (or
  *  nothing in R2) returns false and leaves the phase in "keyframe". */
 async function recoverStalledKeyframePhase(env: Env, job: FilmJob, preModules: RegisteredModule[] | undefined, atCeiling: boolean): Promise<boolean> {
@@ -2921,12 +2933,11 @@ async function recoverStalledKeyframePhase(env: Env, job: FilmJob, preModules: R
     return false;
   }
   if (dropped.length) {
-    // At the ceiling with a partial set: the missing scenes did not render and will not. Advance with
-    // what landed, but LOUDLY -- record the drop + emit the event, so the film never reports a clean
-    // complete over the rebased (smaller) shot total (#619, clips-delivered degrade discipline #245/#249).
-    job.keyframes_incomplete = { adopted: adopted.length, expected: job.scenes.length, dropped };
-    emitKeyframesIncomplete(job);
-    console.warn(`film ${job.film_id}: keyframe phase hit the ceiling with only ${adopted.length}/${job.scenes.length} keyframes; delivering the rendered scenes, dropped ${dropped.join(", ")} (#619)`);
+    job.phase = "failed";
+    job.error = incompleteFilmError("keyframes", adopted.length, job.scenes.length, dropped);
+    await cancelInFlightKeyframe(env, job, preModules);
+    console.warn(`film ${job.film_id}: ${job.error}`);
+    return true;
   } else {
     console.warn(`film ${job.film_id}: keyframe poll stale, adopting the full set of ${adopted.length} keyframes from R2 (#129)`);
   }
