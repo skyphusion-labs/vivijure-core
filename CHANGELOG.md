@@ -3,6 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.22.3] -- 2026-08-18
+
+### fix(film): incomplete films are FAILED
+
+Every storyboard shot must return a keyframe and a clip. A missing
+shot no longer assembles a hole as COMPLETED. Google Veo 7/10 is
+FAILED.
+
 ## [1.22.2] -- 2026-08-18
 
 ### fix(film): do not treat Cast LoRA keys as project-scoped
