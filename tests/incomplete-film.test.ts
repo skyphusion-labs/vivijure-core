@@ -4,6 +4,7 @@ import {
   missingSceneIds,
   startFilmJob,
 } from "../src/film-orchestrator.js";
+import type { RegisteredModule } from "../src/modules/types.js";
 
 describe("missingSceneIds / incompleteFilmError", () => {
   const scenes = ["shot_01", "shot_02", "shot_03"].map((shot_id) => ({
