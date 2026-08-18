@@ -3,6 +3,15 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.22.2] -- 2026-08-18
+
+### fix(film): do not treat Cast LoRA keys as project-scoped
+
+trained_loras live at loras/<id>.safetensors so one train is reused
+across films. 1.22.0 merged those keys then assertProjectKey
+fail-closed the keyframe stage (refused key outside
+renders/<project>/). Keyframes stay project-scoped. LoRA keys do not.
+
 ## [1.22.1] -- 2026-08-18
 
 ### fix(finish): keep clip_key after presign
