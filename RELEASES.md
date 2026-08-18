@@ -161,6 +161,7 @@ consistent with the file.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.22.1` | 1.22.1 |  |  | **PATCH.** Keep clip_key after finish presign so own-iron RIFE runs. |
 | `vivijure-core-v1.22.0` | 1.22.0 | 0386523 | 2026-08-18 | **MINOR.** Keyframe hook fans across `KEYFRAME_PARALLEL` shot chunks on one film. Not scatter-*. |
 | `vivijure-core-v1.21.8` | 1.21.8 |  |  | **PATCH.** Cast voice sample rides motion as `voice_ref_url` / `voice_ref_keys`. Seedance is the exact lock; Veo has no such field. Hosts must apply the `voice_ref_key` D1 column before pinning. |
 | `vivijure-core-v1.20.0` | 1.20.0 |  |  | **MINOR.** Hosted Wan-train jobs carry the per-job tenant R2 block (`input.r2`) so a pooled endpoint does not write every tenant into the template bucket. Operator studio without `R2_S3_*` omits the block. |

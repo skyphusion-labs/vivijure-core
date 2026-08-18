@@ -81,13 +81,13 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     expect(input.output_key).toBe(OUT);
     expect(puts).toEqual([OUT, `${input.output_key}.hash`]);
     expect(gets).toEqual([CLIP, AUDIO]);
-    // Satellites select on KEY PRESENCE. Surviving clip_key/audio_key next to the URLs is the
-    // core#191 bug: every satellite takes R2 and the credentialless path never runs.
-    expect("clip_key" in input).toBe(false);
-    expect("audio_key" in input).toBe(false);
+    // Own-iron finish (RIFE, video upscale) reads R2 by clip_key. Hosted does not
+    // run lipsync. Keep the keys; URLs stay additive.
+    expect(input.clip_key).toBe(CLIP);
+    expect(input.audio_key).toBe(AUDIO);
   });
 
-  it("omits clip_key and audio_key only after a complete presign (core#191)", async () => {
+  it("keeps clip_key after a complete presign so own-iron RIFE can run", async () => {
     const { env } = stubEnv();
     const input = lipsyncInput();
     await attachFinishPresigns(env, JOB, shot(), input, []);
@@ -95,8 +95,8 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     expect(input.video_url).toBe(`https://get.invalid/${CLIP}`);
     expect(input.output_url).toBe(`https://put.invalid/${OUT}`);
     expect(input.audio_url).toBe(`https://get.invalid/${AUDIO}`);
-    expect("clip_key" in input).toBe(false);
-    expect("audio_key" in input).toBe(false);
+    expect(input.clip_key).toBe(CLIP);
+    expect(input.audio_key).toBe(AUDIO);
   });
 
   it("applies presigned transport ALL-OR-NOTHING: a refusal on any leg leaves the input key-only", async () => {
@@ -151,8 +151,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     expect(input.hash_url).toBeUndefined();
     expect(input.video_url).toBe(`https://get.invalid/${CLIP}`);
     expect(input.output_url).toBe(`https://put.invalid/${OUT}`);
-    expect("clip_key" in input).toBe(false);
-    expect("audio_key" in input).toBe(false);
+    expect(input.clip_key).toBe(CLIP);
   });
 
   it("presigns nothing when the step's output key is unmodelled", async () => {
