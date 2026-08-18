@@ -264,6 +264,14 @@ export interface FilmJob {
   // The keyframe module's backend RunPod job id (#318), surfaced on its async-accept envelope. Lets
   // the poll handler read that job's progress snapshot (counts.keyframe_done) for keyframe sub-progress.
   keyframe_job_id?: string;
+  // Parallel keyframe invokes: one film job, N contiguous shot_id chunks. The N=1 path still uses
+  // only keyframe_poll / keyframe_job_id so a leftover single token keeps the old poll path.
+  keyframe_polls?: string[];
+  keyframe_job_ids?: string[];
+  // Chunks that already returned output while sibling chunks are still polling. Merged once
+  // every poll finishes (last-write-wins on a duplicate shot_id).
+  keyframe_partials?: FilmKeyframeRef[];
+  keyframe_partial_loras?: Record<string, string>;
   // cf#307: last module `/poll` wait phase while keyframe is still pending. Backend-neutral
   // (`accepted` = not started / cold start; `running` = compute underway). Absent when the module
   // does not report wait (pre-cf#307 modules) -- host must not invent a queue state.
@@ -1412,6 +1420,40 @@ export function resolveDeliveryResolution(
   const h = positiveInt(job?.delivery_height);
   if (w && h) return { width: w, height: h, decided: true };
   return { width: DEFAULT_DELIVERY_WIDTH, height: DEFAULT_DELIVERY_HEIGHT, decided: false };
+}
+
+/** Default fan-out for keyframe invokes when KEYFRAME_PARALLEL is unset. */
+export const DEFAULT_KEYFRAME_PARALLEL = 4;
+
+/** Pure: how many keyframe invokes a film should start.
+ *  N = min(shotCount, max(1, parseInt(KEYFRAME_PARALLEL || "4", 10))).
+ *  Non-numeric / empty falls back to 4. shotCount 0 or 1 always returns 1 so the single-invoke
+ *  path stays on the old keyframe_poll token. */
+export function resolveKeyframeParallel(raw: unknown, shotCount: number): number {
+  const shots = Number.isFinite(shotCount) ? Math.max(0, Math.floor(shotCount)) : 0;
+  const text = raw === undefined || raw === null || raw === "" ? String(DEFAULT_KEYFRAME_PARALLEL) : String(raw);
+  const parsed = parseInt(text, 10);
+  const wanted = Number.isFinite(parsed) ? parsed : DEFAULT_KEYFRAME_PARALLEL;
+  const n = Math.min(shots, Math.max(1, wanted));
+  return n <= 1 ? 1 : n;
+}
+
+/** Pure: split `items` into `parts` contiguous chunks (earlier chunks get the remainder).
+ *  Empty input is one empty chunk so a caller can still send today's single invoke. */
+export function partitionContiguous<T>(items: readonly T[], parts: number): T[][] {
+  if (items.length === 0) return [[]];
+  const n = Math.min(Math.max(1, Math.floor(parts)), items.length);
+  if (n <= 1) return [items.slice()];
+  const base = Math.floor(items.length / n);
+  const rem = items.length % n;
+  const chunks: T[][] = [];
+  let i = 0;
+  for (let p = 0; p < n; p++) {
+    const size = base + (p < rem ? 1 : 0);
+    chunks.push(items.slice(i, i + size));
+    i += size;
+  }
+  return chunks;
 }
 
 export const DEFAULT_CLIP_DURATION_FLOOR = 0.5;
