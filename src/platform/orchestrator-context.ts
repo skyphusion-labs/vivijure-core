@@ -81,6 +81,12 @@ export interface OrchestratorEnv {
   AUDIO_BEAT_SYNC_URL?: unknown;
   /** Public origin of the image-prep door. Unset skips portrait rembg. */
   IMAGE_PREP_URL?: unknown;
+  /**
+   * How many keyframe module invokes to fan a film's shots across. Default 4.
+   * 1 (or a single-shot film) keeps the historical single-invoke + keyframe_poll path.
+   * Hosts bind a plaintext integer string (wrangler / platform.vars).
+   */
+  KEYFRAME_PARALLEL?: unknown;
   /** Plain config vars (FILM_CLIP_DURATION_FLOOR, etc.). */
   [key: string]: unknown;
 }

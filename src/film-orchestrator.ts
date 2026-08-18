@@ -8,6 +8,7 @@
 // No Worker ever holds a multi-minute GPU/cloud render.
 
 import type { Env } from "./platform/orchestrator-context.js";
+import type { FetcherLike } from "./platform/types.js";
 import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
 import { assertProjectKey } from "./key-safety.js";
 import { encodeAssemblePoll, tickVideoFinishAssemble } from "./video-finish-assemble.js";
@@ -73,6 +74,8 @@ import {
   masterChainDone,
   coerceSceneIds,
   coerceDialogueLineIds,
+  resolveKeyframeParallel,
+  partitionContiguous,
   KEYFRAME_STALL_SECONDS,
   PHASE_HARD_DEADLINE_SECONDS,
   phaseCeilingVerdict,
@@ -2486,24 +2489,39 @@ export async function startFilmJob(
         : (explicitKeyframeChoice ? `keyframe module ${explicitKeyframeChoice} not installed` : "no keyframe module installed");
   } else {
     const config = validateConfig(kf.config_schema, args.keyframe_config);
-    const keyframeInput: KeyframeInput = {
-      project: args.project,
-      bundle_key: args.bundle_key,
-      shot_ids: scenes.map((s) => s.shot_id),
-    };
-    if (args.pretrained_loras && Object.keys(args.pretrained_loras).length) {
-      keyframeInput.pretrained_loras = { ...args.pretrained_loras };
+    const shotIds = scenes.map((s) => s.shot_id);
+    const n = resolveKeyframeParallel(envRec.KEYFRAME_PARALLEL, shotIds.length);
+    if (n <= 1) {
+      const keyframeInput: KeyframeInput = {
+        project: args.project,
+        bundle_key: args.bundle_key,
+        shot_ids: shotIds,
+      };
+      if (args.pretrained_loras && Object.keys(args.pretrained_loras).length) {
+        keyframeInput.pretrained_loras = { ...args.pretrained_loras };
+      }
+      const r = await invokeModule<KeyframeInput, KeyframeOutput>(fetcher, {
+        hook: "keyframe",
+        input: keyframeInput,
+        config,
+        context: { project: args.project, job_id: job.film_id },
+      });
+      if (!r.ok) { job.phase = "failed"; job.error = r.error; }
+      else if ((r as { pending?: boolean }).pending) { job.keyframe_poll = (r as { poll: string }).poll; job.keyframe_job_id = (r as { jobId?: string }).jobId; }
+      else if ("output" in r) { const v = hookOutputViolation(kf.name, "keyframe", r.output); if (v) { job.phase = "failed"; job.error = v; } else { await afterKeyframeOutput(env, job, r.output as KeyframeOutput, modules); } }
+      else { job.phase = "failed"; job.error = "keyframe module returned neither output nor a poll token"; }
+    } else {
+      await startParallelKeyframes(env, job, {
+        fetcher,
+        moduleName: kf.name,
+        config,
+        project: args.project,
+        bundle_key: args.bundle_key,
+        chunks: partitionContiguous(shotIds, n),
+        pretrained_loras: args.pretrained_loras,
+        modules,
+      });
     }
-    const r = await invokeModule<KeyframeInput, KeyframeOutput>(fetcher, {
-      hook: "keyframe",
-      input: keyframeInput,
-      config,
-      context: { project: args.project, job_id: job.film_id },
-    });
-    if (!r.ok) { job.phase = "failed"; job.error = r.error; }
-    else if ((r as { pending?: boolean }).pending) { job.keyframe_poll = (r as { poll: string }).poll; job.keyframe_job_id = (r as { jobId?: string }).jobId; }
-    else if ("output" in r) { const v = hookOutputViolation(kf.name, "keyframe", r.output); if (v) { job.phase = "failed"; job.error = v; } else { await afterKeyframeOutput(env, job, r.output as KeyframeOutput, modules); } }
-    else { job.phase = "failed"; job.error = "keyframe module returned neither output nor a poll token"; }
   }
   // A submit that failed at start spent nothing, so re-running it is legitimate work: hand the
   // claim back rather than making the user wait out a window for a film that never lived. The
@@ -2611,40 +2629,261 @@ export async function keyframeSetCompleteInR2(env: Env, job: FilmJob): Promise<b
   return job.scenes.every((s) => have.has(s.shot_id));
 }
 
-/** Cancel the film's in-flight keyframe RunPod job THROUGH its module, honestly. No-op when no keyframe
+function isPendingInvoke<O>(r: { ok: boolean; pending?: unknown; poll?: unknown }): r is { ok: true; pending: true; poll: string; jobId?: string } {
+  return r.ok === true && r.pending === true && typeof r.poll === "string" && r.poll.length > 0;
+}
+
+/** Poll tokens currently in flight. Parallel jobs use keyframe_polls; N=1 leftover uses keyframe_poll. */
+function inFlightKeyframePolls(job: FilmJob): string[] {
+  if (Array.isArray(job.keyframe_polls) && job.keyframe_polls.length) {
+    return job.keyframe_polls.filter((p): p is string => typeof p === "string" && p.length > 0);
+  }
+  if (typeof job.keyframe_poll === "string" && job.keyframe_poll) return [job.keyframe_poll];
+  return [];
+}
+
+function jobIdForKeyframePoll(job: FilmJob, index: number): string {
+  const fromList = job.keyframe_job_ids?.[index];
+  if (typeof fromList === "string" && fromList) return fromList;
+  if (index === 0 && typeof job.keyframe_job_id === "string" && job.keyframe_job_id) return job.keyframe_job_id;
+  return "(job id unknown)";
+}
+
+function mergeKeyframeOutputs(project: string, outputs: KeyframeOutput[]): KeyframeOutput {
+  const byShot = new Map<string, KeyframeShot>();
+  const loras: Record<string, string> = {};
+  for (const o of outputs) {
+    for (const kf of o.keyframes || []) {
+      if (kf && typeof kf.shot_id === "string" && kf.shot_id) byShot.set(kf.shot_id, kf);
+    }
+    if (o.trained_loras) {
+      for (const [slot, key] of Object.entries(o.trained_loras)) {
+        if (typeof key === "string" && key) loras[slot] = key;
+      }
+    }
+  }
+  const merged: KeyframeOutput = { project, keyframes: [...byShot.values()] };
+  if (Object.keys(loras).length) merged.trained_loras = loras;
+  return merged;
+}
+
+function parkKeyframePartials(job: FilmJob, outputs: KeyframeOutput[]): void {
+  if (!outputs.length) return;
+  const parked: KeyframeOutput = {
+    project: job.project,
+    keyframes: job.keyframe_partials ?? [],
+    trained_loras: job.keyframe_partial_loras,
+  };
+  const merged = mergeKeyframeOutputs(job.project, [parked, ...outputs]);
+  job.keyframe_partials = merged.keyframes;
+  job.keyframe_partial_loras = merged.trained_loras;
+}
+
+function takeParkedKeyframeOutputs(job: FilmJob): KeyframeOutput[] {
+  if (!job.keyframe_partials?.length && !job.keyframe_partial_loras) return [];
+  const parked: KeyframeOutput = {
+    project: job.project,
+    keyframes: job.keyframe_partials ?? [],
+    trained_loras: job.keyframe_partial_loras,
+  };
+  job.keyframe_partials = undefined;
+  job.keyframe_partial_loras = undefined;
+  return [parked];
+}
+
+function clearKeyframeFlight(job: FilmJob): void {
+  job.keyframe_poll = undefined;
+  job.keyframe_polls = undefined;
+  job.keyframe_job_id = undefined;
+  job.keyframe_job_ids = undefined;
+  job.keyframe_wait = undefined;
+  job.keyframe_partials = undefined;
+  job.keyframe_partial_loras = undefined;
+}
+
+function buildKeyframeInput(
+  project: string,
+  bundle_key: string,
+  shot_ids: string[],
+  pretrained_loras?: Record<string, string>,
+): KeyframeInput {
+  const input: KeyframeInput = { project, bundle_key, shot_ids };
+  if (pretrained_loras && Object.keys(pretrained_loras).length) {
+    input.pretrained_loras = { ...pretrained_loras };
+  }
+  return input;
+}
+
+async function startParallelKeyframes(
+  env: Env,
+  job: FilmJob,
+  args: {
+    fetcher: FetcherLike;
+    moduleName: string;
+    config: Record<string, unknown>;
+    project: string;
+    bundle_key: string;
+    chunks: string[][];
+    pretrained_loras?: Record<string, string>;
+    modules?: RegisteredModule[];
+  },
+): Promise<void> {
+  const results = await Promise.all(args.chunks.map((shot_ids) =>
+    invokeModule<KeyframeInput, KeyframeOutput>(args.fetcher, {
+      hook: "keyframe",
+      input: buildKeyframeInput(args.project, args.bundle_key, shot_ids, args.pretrained_loras),
+      config: args.config,
+      context: { project: args.project, job_id: job.film_id },
+    }),
+  ));
+
+  const failed = results.find((r) => !r.ok);
+  if (failed && !failed.ok) {
+    const pending = results.filter(isPendingInvoke);
+    if (pending.length) {
+      job.keyframe_polls = pending.map((r) => r.poll);
+      job.keyframe_job_ids = pending.map((r) => r.jobId).filter((id): id is string => typeof id === "string" && id.length > 0);
+      await cancelInFlightKeyframe(env, job, args.modules);
+    }
+    job.phase = "failed";
+    job.error = failed.error;
+    return;
+  }
+
+  const pending: { poll: string; jobId?: string }[] = [];
+  const outputs: KeyframeOutput[] = [];
+  for (const r of results) {
+    if (isPendingInvoke(r)) {
+      pending.push({ poll: r.poll, jobId: r.jobId });
+      continue;
+    }
+    if ("output" in r) {
+      const v = hookOutputViolation(args.moduleName, "keyframe", r.output);
+      if (v) {
+        if (pending.length) {
+          job.keyframe_polls = pending.map((p) => p.poll);
+          await cancelInFlightKeyframe(env, job, args.modules);
+        }
+        job.phase = "failed";
+        job.error = v;
+        return;
+      }
+      outputs.push(r.output as KeyframeOutput);
+      continue;
+    }
+    job.phase = "failed";
+    job.error = "keyframe module returned neither output nor a poll token";
+    return;
+  }
+
+  if (!pending.length) {
+    const merged = mergeKeyframeOutputs(job.project, outputs);
+    const v = hookOutputViolation(args.moduleName, "keyframe", merged);
+    if (v) { job.phase = "failed"; job.error = v; return; }
+    await afterKeyframeOutput(env, job, merged, args.modules);
+    return;
+  }
+
+  job.keyframe_polls = pending.map((p) => p.poll);
+  const ids = pending.map((p) => p.jobId).filter((id): id is string => typeof id === "string" && id.length > 0);
+  job.keyframe_job_ids = ids.length ? ids : undefined;
+  parkKeyframePartials(job, outputs);
+}
+
+async function pollParallelKeyframes(
+  env: Env,
+  job: FilmJob,
+  fetcher: FetcherLike,
+  modules: RegisteredModule[],
+): Promise<void> {
+  const polls = inFlightKeyframePolls(job);
+  const still: string[] = [];
+  const stillIds: string[] = [];
+  const newOutputs: KeyframeOutput[] = [];
+  let wait: "accepted" | "running" | undefined;
+  let fail: string | undefined;
+
+  for (let i = 0; i < polls.length; i++) {
+    const p = await pollModule<KeyframeOutput>(fetcher, { poll: polls[i] });
+    if (!p.ok) { fail = p.error; break; }
+    if ((p as { pending?: boolean }).pending) {
+      still.push(polls[i]);
+      stillIds.push(job.keyframe_job_ids?.[i] ?? "");
+      const w = (p as { wait?: string }).wait;
+      if (w === "running") wait = "running";
+      else if (w === "accepted" && wait !== "running") wait = "accepted";
+      continue;
+    }
+    const out = (p as { output: KeyframeOutput }).output;
+    const v = hookOutputViolation(job.keyframe_binding ?? "keyframe", "keyframe", out);
+    if (v) { fail = v; break; }
+    newOutputs.push(out);
+  }
+
+  if (fail) {
+    await cancelInFlightKeyframe(env, job, modules);
+    job.phase = "failed";
+    job.error = fail;
+    return;
+  }
+
+  if (still.length) {
+    job.keyframe_polls = still;
+    job.keyframe_job_ids = stillIds.some((id) => id) ? stillIds : undefined;
+    parkKeyframePartials(job, newOutputs);
+    job.keyframe_wait = wait;
+    if (await keyframeSetCompleteInR2(env, job)) {
+      await recoverStalledKeyframePhase(env, job, modules, false);
+    }
+    return;
+  }
+
+  const merged = mergeKeyframeOutputs(job.project, [...takeParkedKeyframeOutputs(job), ...newOutputs]);
+  clearKeyframeFlight(job);
+  const v = hookOutputViolation(job.keyframe_binding ?? "keyframe", "keyframe", merged);
+  if (v) { job.phase = "failed"; job.error = v; return; }
+  await afterKeyframeOutput(env, job, merged, modules);
+}
+
+/** Cancel every in-flight keyframe poll token THROUGH its module, honestly. No-op when no keyframe
  *  job is in flight (wrong phase, no poll token, or no bound backend). When the bound module is missing
  *  or not `cancelable`, or the cancel call fails, we LOG the orphan rather than swallow it: an orphaned
  *  GPU job is a money leak that betrays scale-to-zero (#327 / #328), so it stays visible even when we
- *  cannot stop it. Read keyframe_poll BEFORE the caller clears it. Exported for the orchestrator
+ *  cannot stop it. Read poll tokens BEFORE the caller clears them. Exported for the orchestrator
  *  unit test (it asserts the adopt + DELETE-cancel paths actually issue a cancel). */
 export async function cancelInFlightKeyframe(
   env: Env,
   job: FilmJob,
   preModules?: RegisteredModule[],
 ): Promise<void> {
-  if (job.phase !== "keyframe" || !job.keyframe_poll || !job.keyframe_binding) return;
-  const poll = job.keyframe_poll;
-  // NAME the backend job in every orphan log so a left-running job is actionable (an operator can
-  // cancel it by hand -- exactly how this bug was caught). keyframe_job_id comes from the module's
-  // #318 jobId on the pending invoke; "(job id unknown)" only if a module omitted that optional field.
-  const jobId = job.keyframe_job_id ?? "(job id unknown)";
+  const polls = inFlightKeyframePolls(job);
+  if (job.phase !== "keyframe" || !polls.length || !job.keyframe_binding) return;
   const envRec = env as unknown as Record<string, unknown>;
   const modules = preModules ?? await discoverModules(envRec);
   const kf = modules.find((m) => m.binding === job.keyframe_binding) ?? null;
   const fetcher = kf ? resolveFetcher(envRec, kf.binding) : null;
   if (!kf || !fetcher) {
-    console.warn(`film ${job.film_id}: cannot cancel in-flight keyframe job -- module ${job.keyframe_binding} not bound; RunPod job ${jobId} left running (ORPHAN) (#327)`);
+    for (let i = 0; i < polls.length; i++) {
+      const jobId = jobIdForKeyframePoll(job, i);
+      console.warn(`film ${job.film_id}: cannot cancel in-flight keyframe job -- module ${job.keyframe_binding} not bound; RunPod job ${jobId} left running (ORPHAN) (#327)`);
+    }
     return;
   }
   if (!kf.cancelable) {
-    console.warn(`film ${job.film_id}: keyframe module ${kf.name} has no cancel primitive (cancelable=false) -- RunPod job ${jobId} left running (ORPHAN) (#327)`);
+    for (let i = 0; i < polls.length; i++) {
+      const jobId = jobIdForKeyframePoll(job, i);
+      console.warn(`film ${job.film_id}: keyframe module ${kf.name} has no cancel primitive (cancelable=false) -- RunPod job ${jobId} left running (ORPHAN) (#327)`);
+    }
     return;
   }
-  const r = await cancelModule(fetcher, { poll });
-  if (r.ok) {
-    console.warn(`film ${job.film_id}: cancelled in-flight keyframe RunPod job ${jobId} via ${kf.name} (#327)`);
-  } else {
-    console.warn(`film ${job.film_id}: keyframe cancel FAILED (${r.error}) -- RunPod job ${jobId} left running (ORPHAN) (#327)`);
+  for (let i = 0; i < polls.length; i++) {
+    const jobId = jobIdForKeyframePoll(job, i);
+    const r = await cancelModule(fetcher, { poll: polls[i] });
+    if (r.ok) {
+      console.warn(`film ${job.film_id}: cancelled in-flight keyframe RunPod job ${jobId} via ${kf.name} (#327)`);
+    } else {
+      console.warn(`film ${job.film_id}: keyframe cancel FAILED (${r.error}) -- RunPod job ${jobId} left running (ORPHAN) (#327)`);
+    }
   }
 }
 
@@ -2692,10 +2931,10 @@ async function recoverStalledKeyframePhase(env: Env, job: FilmJob, preModules: R
   }
   // #327: STOP the still-running RunPod job BEFORE discarding its poll token. Adopting the cached
   // keyframes satisfies the work, but the GPU job keeps training/rendering unless we cancel it; clearing
-  // keyframe_poll without cancelling is exactly what orphaned it. Best-effort, honest-degrade-logged.
+  // poll tokens without cancelling is exactly what orphaned it. Best-effort, honest-degrade-logged.
   await cancelInFlightKeyframe(env, job, preModules);
   job.keyframe_recovered = true;
-  job.keyframe_poll = undefined; // the RunPod job is cancelled (or logged as an orphan) above
+  clearKeyframeFlight(job);
   await afterKeyframeOutput(env, job, { project: job.project, keyframes: adopted }, preModules);
   return true;
 }
@@ -2943,7 +3182,12 @@ async function advanceFilmJobLocked(
   await recoverStalledPhase(env, job, modules);
 
   // Phase 1: poll the keyframe job; on completion, presign + hand off to the clip orchestrator.
-  if (job.phase === "keyframe" && job.keyframe_poll) {
+  if (job.phase === "keyframe" && job.keyframe_polls?.length) {
+    const fetcher = job.keyframe_binding ? resolveFetcher(envRec, job.keyframe_binding) : null;
+    if (!fetcher) { job.phase = "failed"; job.error = "keyframe module no longer bound"; }
+    else await pollParallelKeyframes(env, job, fetcher, modules);
+    await putFilm(env, job);
+  } else if (job.phase === "keyframe" && job.keyframe_poll) {
     const fetcher = job.keyframe_binding ? resolveFetcher(envRec, job.keyframe_binding) : null;
     if (!fetcher) { job.phase = "failed"; job.error = "keyframe module no longer bound"; }
     else {
