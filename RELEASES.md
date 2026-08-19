@@ -161,6 +161,7 @@ consistent with the file.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.22.4` | 1.22.4 |  |  | **PATCH.** `audio_url` is the shot LINE; `pre_clip_dialogue` / `pre_clip_speech` before driving-audio clips. |
 | `vivijure-core-v1.22.3` | 1.22.3 |  |  | **PATCH.** Incomplete films are FAILED. |
 | `vivijure-core-v1.22.2` | 1.22.2 |  |  | **PATCH.** Cast LoRA keys are loras/, not project-scoped. |
 | `vivijure-core-v1.22.1` | 1.22.1 |  |  | **PATCH.** Keep clip_key after finish presign so own-iron RIFE runs. |

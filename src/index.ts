@@ -52,6 +52,7 @@ export * from "./clip-job-model.js";
 export { coerceShotId } from "./storyboard-ids.js";
 export * from "./film-model.js";
 export * from "./motion-usage.js";
+export * from "./wav-duration.js";
 export * from "./render-orchestrator.js";
 export * from "./clip-validate.js";
 export * from "./film-orchestrator.js";

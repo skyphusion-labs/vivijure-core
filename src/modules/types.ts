@@ -222,6 +222,8 @@ export interface MotionUsageDecl {
   seed?: boolean;
   /** Door accepts voice_ref_url (Seedance reference_video). Exact lock. */
   voice_ref?: boolean;
+  /** Door consumes the shot LINE file as driving audio (InfiniteTalk, Wan 2.6). */
+  driving_audio?: boolean;
 }
 
 /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`): a finish module's declared
@@ -644,6 +646,8 @@ export interface DialogueShotAudio {
   shot_id: string;
   audio_key: string;
   voice_id: string;
+  /** OPTIONAL, additive (no MODULE_API bump): seconds of the written WAV after pad/trim. */
+  duration_s?: number;
 }
 
 export interface DialogueOutput {
@@ -754,9 +758,12 @@ export interface MotionBackendInput {
   last_keyframe_url?: string;
   last_keyframe_key?: string;
   /** Presigned preview clip the filmmaker kept as the talking voice. Seedance
-   *  sends this as reference_video. Veo has no such field. */
+   *  sends this as reference_video. Never Wan audio. */
   voice_ref_url?: string;
   voice_ref_key?: string;
+  /** Shot LINE file (Cast TTS of this storyboard line). InfiniteTalk / Wan 2.6 driving audio. */
+  audio_url?: string;
+  audio_key?: string;
   prompt: string;        // the motion prompt for the shot
   seconds: number;
 }

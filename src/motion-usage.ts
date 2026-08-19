@@ -33,6 +33,7 @@ export function parseMotionUsage(raw: unknown): MotionUsageDecl | undefined {
     first_last: o.first_last === true,
     seed: o.seed === true,
     voice_ref: o.voice_ref === true,
+    driving_audio: o.driving_audio === true,
   };
 }
 
@@ -71,7 +72,21 @@ export function usageLimitLines(usage: MotionUsageDecl): string[] {
     ? usage.duration_steps.join("/") + "s clips"
     : usage.min_seconds + "-" + usage.max_seconds + "s clips";
   const lines = [dur];
-  if (usage.native_audio) {
+  const scatterLine = usage.scatter_native_audio
+    ? "Shots render in parallel; this door cannot hear the previous clip"
+    : "Talking shots stay on one film (no scatter)";
+  if (usage.driving_audio) {
+    // driving_audio REPLACES the silent / no-speaker-id / neighborhood body. A door that
+    // consumes the LINE file is not "silent motion" and is not a speaker-id lock.
+    lines.push("Mouth follows the storyboard line in the Cast voice.");
+    if (usage.native_audio) {
+      lines.push("Without a line, invents speech from the prompt.");
+    }
+    lines.push(scatterLine);
+    if (!usage.voice_ref) {
+      lines.push("Cannot lock the sample you kept.");
+    }
+  } else if (usage.native_audio) {
     if (usage.voice === "seed_and_prompt") {
       lines.push("Same seed + same voice lock on every shot");
     } else if (usage.voice === "prev_clip") {
@@ -79,16 +94,14 @@ export function usageLimitLines(usage: MotionUsageDecl): string[] {
     } else {
       lines.push("Same voice lock on every shot (no speaker id on this door)");
     }
-    lines.push(usage.scatter_native_audio
-      ? "Shots render in parallel; this door cannot hear the previous clip"
-      : "Talking shots stay on one film (no scatter)");
+    lines.push(scatterLine);
   } else {
     lines.push("Silent motion; speaking voice is the Cast voice (TTS)");
   }
   if (usage.first_last) lines.push("Each shot animates toward the next still");
   if (usage.voice_ref) {
     lines.push("Uses the Cast voice sample as reference audio. Same voice as the clip you kept.");
-  } else if (usage.native_audio) {
+  } else if (usage.native_audio && !usage.driving_audio) {
     lines.push("Cannot lock the sample you heard. Same description, not the same take.");
   }
   return lines;

@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import {
   PER_SHOT_PHASES,
   PHASE_HARD_DEADLINE_SECONDS,
+  POLLABLE_PHASES,
   ceilingAgeSeconds,
   filmProgressMarker,
   stampFilmProgress,
@@ -81,6 +82,11 @@ describe("core#182 filmProgressMarker sees per-step progress", () => {
       created_at: T0,
     });
     expect(PER_SHOT_PHASES.has("finish")).toBe(true); // the ceiling really does use last_progress_at here
+    expect(PER_SHOT_PHASES.has("pre_clip_speech")).toBe(true);
+    expect(PER_SHOT_PHASES.has("pre_clip_dialogue")).toBe(false);
+    expect(POLLABLE_PHASES.has("pre_clip_dialogue")).toBe(true);
+    expect(POLLABLE_PHASES.has("pre_clip_speech")).toBe(true);
+    expect(POLLABLE_PHASES.has("dialogue")).toBe(false);
     stampFilmProgress(job, null, T0); // phase entry
 
     // 80 minutes in, still inside the ceiling, and the shot resolves its FIRST chain step.

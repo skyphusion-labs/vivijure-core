@@ -37,6 +37,7 @@ describe("parseMotionUsage", () => {
       first_last: false,
       seed: false,
       voice_ref: false,
+      driving_audio: false,
     });
   });
 
@@ -58,6 +59,7 @@ describe("parseMotionUsage", () => {
       first_last: true,
       seed: true,
       voice_ref: false,
+      driving_audio: false,
     });
   });
 
@@ -68,13 +70,17 @@ describe("parseMotionUsage", () => {
     expect(parseMotionUsage({ ...VALID, duration_steps: "4/8" })?.duration_steps).toBeUndefined();
   });
 
-  it("treats first_last / seed / voice_ref as true only on the boolean true", () => {
-    expect(parseMotionUsage({ ...VALID, first_last: 1, seed: "yes", voice_ref: 1 })).toMatchObject({
+  it("treats first_last / seed / voice_ref / driving_audio as true only on the boolean true", () => {
+    expect(parseMotionUsage({ ...VALID, first_last: 1, seed: "yes", voice_ref: 1, driving_audio: 1 })).toMatchObject({
       first_last: false,
       seed: false,
       voice_ref: false,
+      driving_audio: false,
     });
-    expect(parseMotionUsage({ ...VALID, voice_ref: true })).toMatchObject({ voice_ref: true });
+    expect(parseMotionUsage({ ...VALID, voice_ref: true, driving_audio: true })).toMatchObject({
+      voice_ref: true,
+      driving_audio: true,
+    });
   });
 
   it.each([
@@ -207,6 +213,38 @@ describe("usageLimitLines", () => {
     expect(lines).toContain("Silent motion; speaking voice is the Cast voice (TTS)");
     expect(lines).toContain("Each shot animates toward the next still");
     expect(lines.some((l) => /voice lock/i.test(l))).toBe(false);
+  });
+
+  it("driving_audio replaces silent / no-speaker-id lines (InfiniteTalk)", () => {
+    const lines = usageLimitLines({
+      ...VALID,
+      native_audio: false,
+      voice: "cast_tts",
+      scatter_native_audio: false,
+      driving_audio: true,
+    });
+    expect(lines).toContain("Mouth follows the storyboard line in the Cast voice.");
+    expect(lines).toContain("Talking shots stay on one film (no scatter)");
+    expect(lines).toContain("Cannot lock the sample you kept.");
+    expect(lines.some((l) => /Silent motion/i.test(l))).toBe(false);
+    expect(lines.some((l) => /no speaker id/i.test(l))).toBe(false);
+    expect(lines.some((l) => /invents speech/i.test(l))).toBe(false);
+  });
+
+  it("driving_audio + native_audio is the LINE plus a neighborhood footnote (Wan)", () => {
+    const lines = usageLimitLines({
+      ...VALID,
+      native_audio: true,
+      voice: "cast_tts",
+      scatter_native_audio: false,
+      driving_audio: true,
+    });
+    expect(lines).toContain("Mouth follows the storyboard line in the Cast voice.");
+    expect(lines).toContain("Without a line, invents speech from the prompt.");
+    expect(lines).toContain("Cannot lock the sample you kept.");
+    expect(lines.some((l) => /no speaker id/i.test(l))).toBe(false);
+    expect(lines.some((l) => /Silent motion/i.test(l))).toBe(false);
+    expect(lines.some((l) => /Cannot lock the sample you heard/i.test(l))).toBe(false);
   });
 });
 

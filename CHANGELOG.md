@@ -3,6 +3,20 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.22.4] -- 2026-08-19
+
+### feat(motion): audio_url is the shot line; pre_clip_dialogue before driving-audio clips
+
+Driving-audio doors (InfiniteTalk, Wan) need the Cast TTS LINE file at motion
+time, not after clips. Additive `audio_url` / `audio_key` on MotionBackendInput
+and `driving_audio` on MotionUsageDecl (no MODULE_API bump). New pollable
+phases `pre_clip_dialogue` and `pre_clip_speech` (post-clip `dialogue` stays
+out of POLLABLE_PHASES). Fail-closed only for shots that had a line and got
+no audio_key. InfiniteTalk lineless shots get a 3s silence WAV; Wan lineless
+omits audio_url. `usageLimitLines` replaces silent/neighborhood copy when
+`driving_audio` is set. LINE WAVs pad to 3s and cap at 15s; shot seconds are
+max(board, wav).
+
 ## [1.22.3] -- 2026-08-18
 
 ### fix(film): incomplete films are FAILED
