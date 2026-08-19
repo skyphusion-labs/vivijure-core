@@ -26,6 +26,13 @@ import {
 import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook, selectForChain } from "./modules/render-pipeline.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
+import { usageOf } from "./motion-usage.js";
+import {
+  LINE_WAV_MIN_SECONDS,
+  mintSilenceWav,
+  normalizeLineWav,
+  secondsForShot,
+} from "./wav-duration.js";
 import {
   claimFilmSubmit,
   naturalKeyForStartFilmJob,
@@ -298,7 +305,42 @@ async function voiceRefOnShot(
   return { voice_ref_key: key, voice_ref_url: await presignR2Get(env, key, 1800) };
 }
 
-/** Internal: after keyframes, either stop (preview) or hand off to the clip orchestrator. */
+function persistKeyframeRefs(job: FilmJob, kfOut: KeyframeOutput): void {
+  job.keyframes = (kfOut.keyframes || []).map((k) => ({ shot_id: k.shot_id, keyframe_key: k.keyframe_key }));
+}
+
+function keyframeOutputFromJob(job: FilmJob): KeyframeOutput {
+  return { project: job.project, keyframes: job.keyframes ?? [] };
+}
+
+/** Storyboard lines whose text is non-empty. Lineless establishing shots are not a TTS hole. */
+export function linedDialogueShots(lines: DialogueLine[] | undefined): DialogueLine[] {
+  return (lines ?? []).filter((l) => l.shot_id && (l.text ?? "").trim().length > 0);
+}
+
+function motionUsageForJob(job: FilmJob, modules: RegisteredModule[]) {
+  const mb = pickOneForHook(modules, "motion.backend", job.motion_backend ?? undefined);
+  return usageOf(mb ?? undefined);
+}
+
+function wantsPreClipDialogue(job: FilmJob, modules: RegisteredModule[]): boolean {
+  return motionUsageForJob(job, modules)?.driving_audio === true && linedDialogueShots(job.dialogue_lines).length > 0;
+}
+
+function dialogueAudioKey(project: string, shotId: string): string {
+  return `renders/${project}/dialogue/${shotId}.wav`;
+}
+
+function speechChainAlreadyDone(job: FilmJob): boolean {
+  if (job.speech_done) return true;
+  const shots = job.speech_shots;
+  if (!shots || !shots.length) return false;
+  return shots.every((ss) => ss.status !== "pending");
+}
+
+/** Internal: after keyframes, either stop (preview), submit pre-clip TTS, or hand off to clips.
+ *  Driving-audio doors SUBMIT TTS on this tick and return; they must not await TTS, must not
+ *  call advanceToClips, and must not reuse enterDialogueOrFinish (those helpers next to finish). */
 async function afterKeyframeOutput(env: Env, job: FilmJob, kfOut: KeyframeOutput, preModules?: RegisteredModule[]): Promise<void> {
   let confined: KeyframeOutput;
   try {
@@ -316,11 +358,17 @@ async function afterKeyframeOutput(env: Env, job: FilmJob, kfOut: KeyframeOutput
   // render with a different keyframe config can prove it must regenerate rather than adopt this keyframe.
   // Best-effort (writeProv swallows + logs); a missing sidecar simply falls back to the #661 freshness path.
   await stampKeyframeProvenance(env, job, kfOut);
+  persistKeyframeRefs(job, kfOut);
   if (job.keyframes_only) {
     completeKeyframesOnly(job, kfOut);
     return;
   }
-  await advanceToClips(env, job, kfOut, preModules);
+  const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
+  if (wantsPreClipDialogue(job, modules)) {
+    await submitPreClipDialogue(env, job, modules);
+    return;
+  }
+  await advanceToClips(env, job, kfOut, modules);
 }
 
 /** Internal: presign each matched keyframe -> start the clip job, advancing the film to phase=clips. A
@@ -345,6 +393,21 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
     const last_keyframe_url = next
       ? await presignR2Get(env, next.keyframe_key, 1800)
       : undefined;
+    const lineKey = job.dialogue_audio?.[m.shot_id];
+    const audio_url = lineKey ? await presignR2Get(env, lineKey, 1800) : undefined;
+    const wavSeconds = lineKey ? job.dialogue_audio_seconds?.[m.shot_id] : undefined;
+    const lined = linedDialogueShots(job.dialogue_lines).some((l) => l.shot_id === m.shot_id);
+    const audioKind = lineKey
+      ? (lined ? "line" : "silence")
+      : job.voice_ref_keys?.[m.shot_id]
+        ? "voice_ref"
+        : "none";
+    emitStructuredEvent({
+      ev: "motion.audio",
+      film_id: job.film_id,
+      shot_id: m.shot_id,
+      kind: audioKind,
+    });
     shots.push({
       shot_id: m.shot_id,
       keyframe_url,
@@ -356,7 +419,9 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
         voice_lock: job.voice_lock,
         ...spokenLineForShot(job.dialogue_lines, m.shot_id),
       }),
-      seconds: m.seconds,
+      seconds: lineKey ? secondsForShot(m.seconds, wavSeconds) : m.seconds,
+      audio_key: lineKey,
+      audio_url,
       ...(await voiceRefOnShot(env, job.voice_ref_keys, m.shot_id)),
     });
   }
@@ -595,18 +660,193 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
 
 /** Fold a dialogue module's batch result into the per-shot audio map the finish stage reads. */
 function applyDialogueOutput(job: FilmJob, out: DialogueOutput): void {
-  const map: Record<string, string> = {};
+  const map: Record<string, string> = { ...(job.dialogue_audio ?? {}) };
+  const seconds: Record<string, number> = { ...(job.dialogue_audio_seconds ?? {}) };
   for (const a of out?.audio || []) {
-    if (a && typeof a.shot_id === "string" && typeof a.audio_key === "string") map[a.shot_id] = a.audio_key;
+    if (a && typeof a.shot_id === "string" && typeof a.audio_key === "string") {
+      map[a.shot_id] = a.audio_key;
+      if (typeof a.duration_s === "number" && Number.isFinite(a.duration_s) && a.duration_s > 0) {
+        seconds[a.shot_id] = a.duration_s;
+      }
+    }
   }
   job.dialogue_audio = map;
+  if (Object.keys(seconds).length) job.dialogue_audio_seconds = seconds;
+}
+
+async function putDialogueWav(env: Env, key: string, bytes: Uint8Array): Promise<void> {
+  await env.R2_RENDERS.put(key, bytes, { httpMetadata: { contentType: "audio/wav" } });
+}
+
+async function readDialogueWav(env: Env, key: string): Promise<Uint8Array | null> {
+  try {
+    const obj = await env.R2_RENDERS.get(key);
+    if (!obj) return null;
+    if (typeof obj.arrayBuffer === "function") return new Uint8Array(await obj.arrayBuffer());
+    const text = await obj.text();
+    return new Uint8Array(new TextEncoder().encode(text));
+  } catch {
+    return null;
+  }
+}
+
+async function normalizeStoredLineWav(env: Env, job: FilmJob, shotId: string, key: string): Promise<number | null> {
+  const raw = await readDialogueWav(env, key);
+  if (!raw) return job.dialogue_audio_seconds?.[shotId] ?? null;
+  const normalized = normalizeLineWav(raw);
+  if (!normalized) return job.dialogue_audio_seconds?.[shotId] ?? null;
+  if (normalized.padded || normalized.trimmed) {
+    await putDialogueWav(env, key, normalized.bytes);
+    emitStructuredEvent({
+      ev: normalized.trimmed ? "dialogue.trimmed" : "dialogue.padded",
+      film_id: job.film_id,
+      project: job.project,
+      shot_id: shotId,
+      seconds: normalized.seconds,
+    });
+  }
+  (job.dialogue_audio_seconds ??= {})[shotId] = normalized.seconds;
+  return normalized.seconds;
+}
+
+async function mintSilenceForShot(env: Env, job: FilmJob, shotId: string): Promise<void> {
+  const key = assertProjectKey(job.project, dialogueAudioKey(job.project, shotId));
+  await putDialogueWav(env, key, mintSilenceWav(LINE_WAV_MIN_SECONDS));
+  (job.dialogue_audio ??= {})[shotId] = key;
+  (job.dialogue_audio_seconds ??= {})[shotId] = LINE_WAV_MIN_SECONDS;
+  emitStructuredEvent({
+    ev: "dialogue.silence",
+    film_id: job.film_id,
+    project: job.project,
+    shot_id: shotId,
+    seconds: LINE_WAV_MIN_SECONDS,
+  });
+}
+
+async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
+  const lines = linedDialogueShots(job.dialogue_lines);
+  const envRec = env as unknown as Record<string, unknown>;
+  const dialogueModule = servingForHook(preModules, "dialogue")[0];
+  const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
+  if (!fetcher) {
+    job.phase = "failed";
+    job.error = incompleteFilmError("dialogue", 0, lines.length, lines.map((l) => l.shot_id), "no dialogue module bound");
+    return;
+  }
+  const req = {
+    hook: "dialogue" as const,
+    input: { project: job.project, lines } as DialogueInput,
+    config: {},
+    context: { project: job.project, job_id: job.film_id },
+  };
+  emitStructuredEvent({ ev: "dialogue.pre_clip", film_id: job.film_id, project: job.project, shots: lines.length });
+  const r = await invokeModule<DialogueInput, DialogueOutput>(fetcher, req);
+  if (!r.ok) {
+    job.phase = "failed";
+    job.error = incompleteFilmError("dialogue", 0, lines.length, lines.map((l) => l.shot_id), r.error);
+    return;
+  }
+  job.phase = "pre_clip_dialogue";
+  if ((r as { pending?: boolean }).pending) {
+    job.dialogue_poll = (r as { poll: string }).poll;
+    return;
+  }
+  if ("output" in r) {
+    const v = hookOutputViolation(dialogueModule.name, "dialogue", r.output);
+    if (v) {
+      job.phase = "failed";
+      job.error = incompleteFilmError("dialogue", 0, lines.length, lines.map((l) => l.shot_id), v);
+      return;
+    }
+    applyDialogueOutput(job, r.output as DialogueOutput);
+  }
+}
+
+async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
+  const lined = linedDialogueShots(job.dialogue_lines);
+  const holes = lined.filter((l) => !job.dialogue_audio?.[l.shot_id]).map((l) => l.shot_id);
+  if (holes.length) {
+    job.phase = "failed";
+    job.error = incompleteFilmError("dialogue", lined.length - holes.length, lined.length, holes);
+    return;
+  }
+  for (const l of lined) {
+    const key = job.dialogue_audio![l.shot_id];
+    await normalizeStoredLineWav(env, job, l.shot_id, key);
+  }
+  const usage = motionUsageForJob(job, preModules);
+  const linedIds = new Set(lined.map((l) => l.shot_id));
+  for (const scene of job.scenes) {
+    if (linedIds.has(scene.shot_id)) continue;
+    if (job.dialogue_audio?.[scene.shot_id]) continue;
+    if (usage?.native_audio) {
+      emitStructuredEvent({
+        ev: "dialogue.neighborhood",
+        film_id: job.film_id,
+        project: job.project,
+        shot_id: scene.shot_id,
+      });
+    } else {
+      await mintSilenceForShot(env, job, scene.shot_id);
+    }
+  }
+  const serving = servingForHook(preModules, "speech");
+  if (serving.length && Object.keys(job.dialogue_audio ?? {}).length) {
+    const chain = serving.map((m) => m.binding);
+    const configs = resolveFinishConfigs(serving, job.speech_config ?? {});
+    job.speech_shots = Object.keys(job.dialogue_audio!).map((shot_id) => ({
+      shot_id, audio_key: job.dialogue_audio![shot_id], chain, configs, idx: 0, status: "pending" as const, applied: [],
+    }));
+    job.phase = "pre_clip_speech";
+    return;
+  }
+  await advanceToClips(env, job, keyframeOutputFromJob(job), preModules);
+}
+
+async function advancePreClipDialoguePhase(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
+  if (job.dialogue_poll) {
+    const envRec = env as unknown as Record<string, unknown>;
+    const dialogueModule = servingForHook(preModules, "dialogue")[0];
+    const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
+    const lined = linedDialogueShots(job.dialogue_lines);
+    if (!fetcher) {
+      job.dialogue_poll = undefined;
+      job.phase = "failed";
+      job.error = incompleteFilmError("dialogue", 0, lined.length, lined.map((l) => l.shot_id), "dialogue module no longer bound");
+      return;
+    }
+    const p = await pollModule<DialogueOutput>(fetcher, { poll: job.dialogue_poll });
+    if (!p.ok) {
+      job.dialogue_poll = undefined;
+      job.phase = "failed";
+      job.error = incompleteFilmError("dialogue", 0, lined.length, lined.map((l) => l.shot_id), p.error);
+      return;
+    }
+    if ((p as { pending?: boolean }).pending) return;
+    const out = (p as { output: DialogueOutput }).output;
+    const v = hookOutputViolation(dialogueModule.name, "dialogue", out);
+    if (v) {
+      job.dialogue_poll = undefined;
+      job.phase = "failed";
+      job.error = incompleteFilmError("dialogue", 0, lined.length, lined.map((l) => l.shot_id), v);
+      return;
+    }
+    applyDialogueOutput(job, out);
+    job.dialogue_poll = undefined;
+  }
+  await finalizePreClipDialogue(env, job, preModules);
 }
 
 /** After finish_shots are built: if the film has dialogue lines AND a `dialogue` module is installed,
  *  submit the per-shot speech batch and enter the dialogue phase; otherwise go straight to finish. A
  *  submit failure (or no module) soft-degrades to a SILENT finish -- a dialogue glitch must never fail
- *  a fully-rendered film (lip-sync no-ops without an audio_key). */
+ *  a fully-rendered film (lip-sync no-ops without an audio_key). Driving-audio films already have
+ *  dialogue_audio from pre-clip TTS; skip the second submit. */
 async function enterDialogueOrFinish(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
+  if (job.dialogue_audio && Object.keys(job.dialogue_audio).length) {
+    await enterSpeechOrFinish(env, job, preModules);
+    return;
+  }
   const lines = job.dialogue_lines;
   if (!lines || !lines.length) { await enterSpeechOrFinish(env, job, preModules); return; }
   const envRec = env as unknown as Record<string, unknown>;
@@ -653,6 +893,12 @@ async function advanceDialoguePhase(env: Env, job: FilmJob, preModules?: Registe
  *  build the per-shot speech chain and enter the speech phase; otherwise go straight to finish. No speech
  *  module, or no shot with dialogue audio -> straight to finish (an unvoiced film needs no speech pass). */
 async function enterSpeechOrFinish(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
+  if (speechChainAlreadyDone(job)) {
+    emitStructuredEvent({ ev: "speech.skipped_already_done", film_id: job.film_id, project: job.project });
+    job.speech_done = true;
+    job.phase = "finish";
+    return;
+  }
   const audio = job.dialogue_audio ?? {};
   const shotIds = Object.keys(audio);
   if (!shotIds.length) { job.phase = "finish"; return; }  // unvoiced film: nothing to enhance
@@ -673,7 +919,7 @@ async function enterSpeechOrFinish(env: Env, job: FilmJob, preModules?: Register
  *  record the reason, mark the chain done) rather than failing a fully-rendered film (#249/#77). When
  *  every shot is terminal, fold the cleaned (or, on a degrade, original) audio back into job.dialogue_audio
  *  -- so a lip-sync finish module drives the mouth from it -- and advance to finish. */
-async function advanceSpeechPhase(env: Env, job: FilmJob): Promise<void> {
+async function advanceSpeechPhase(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
   const envRec = env as unknown as Record<string, unknown>;
   const degrade = (ss: SpeechShot, reason: string): void => {
     // A hard failure on a POLISH step: keep the current audio (original survives), record the reason
@@ -729,7 +975,12 @@ async function advanceSpeechPhase(env: Env, job: FilmJob): Promise<void> {
     // Fold the cleaned (or, on a degrade, original) audio back into dialogue_audio so a lip-sync finish
     // module drives the mouth from it. This is the single point folding speech results into film state.
     for (const ss of speechShots) (job.dialogue_audio ??= {})[ss.shot_id] = ss.audio_key;
-    job.phase = "finish";
+    job.speech_done = true;
+    if (job.phase === "pre_clip_speech") {
+      await advanceToClips(env, job, keyframeOutputFromJob(job), preModules);
+    } else {
+      job.phase = "finish";
+    }
   }
 }
 
@@ -2357,6 +2608,14 @@ export async function startFilmFromKeyframes(
     await putFilm(env, job);
     return job;
   }
+  job.keyframes = matched.map((m) => ({ shot_id: m.shot_id, keyframe_key: m.keyframe_key }));
+  const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
+  if (wantsPreClipDialogue(job, modules)) {
+    await submitPreClipDialogue(env, job, modules);
+    if (job.phase === "failed") await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
+    await putFilm(env, job);
+    return job;
+  }
   const shots: ClipShotInput[] = [];
   for (let i = 0; i < matched.length; i++) {
     const m = matched[i];
@@ -2387,7 +2646,7 @@ export async function startFilmFromKeyframes(
     motion_backend: args.motion_backend,
     config: args.motion_config,
     module_configs: args.motion_configs,
-  }, preModules);
+  }, modules);
   job.clip_job_id = clip.job_id;
   job.phase = summarizeJob(clip).failed === clip.shots.length ? "failed" : "clips";
   if (job.phase === "failed") {
@@ -3233,6 +3492,17 @@ async function advanceFilmJobLocked(
     await putFilm(env, job);
   }
 
+  // Pre-clip LINE file: poll TTS (and optional speech) then start clips. Not driven on the
+  // keyframe-complete tick (entryPhase still "keyframe") so that tick cannot advanceToClips.
+  if (job.phase === "pre_clip_dialogue" && entryPhase === "pre_clip_dialogue") {
+    await advancePreClipDialoguePhase(env, job, modules);
+    await putFilm(env, job);
+  }
+  if (job.phase === "pre_clip_speech" && entryPhase === "pre_clip_speech") {
+    await advanceSpeechPhase(env, job, modules);
+    await putFilm(env, job);
+  }
+
   // Phase 2: drive the clip orchestrator; when every shot is terminal, hand off to the finish chain.
   let clipJob: ClipJob | null = null;
   if (job.phase === "clips" && job.clip_job_id) {
@@ -3264,7 +3534,7 @@ async function advanceFilmJobLocked(
   // A POLISH phase: a hard step failure degrades the shot (keeps the original audio) and the render
   // proceeds to finish -- a speech glitch must never fail a fully-rendered film (see advanceSpeechPhase).
   if (job.phase === "speech") {
-    await advanceSpeechPhase(env, job);
+    await advanceSpeechPhase(env, job, modules);
     await putFilm(env, job);
   }
 

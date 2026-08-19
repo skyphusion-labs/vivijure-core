@@ -326,6 +326,8 @@ export async function startClipJob(
             last_keyframe_key: motionInput.last_keyframe_key,
             voice_ref_url: motionInput.voice_ref_url,
             voice_ref_key: motionInput.voice_ref_key,
+            audio_url: motionInput.audio_url,
+            audio_key: motionInput.audio_key,
             prompt: motionInput.prompt,
             seconds: motionInput.seconds,
           },

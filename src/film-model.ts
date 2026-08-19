@@ -259,7 +259,7 @@ export interface FilmJob {
   film_finish_config?: Record<string, Record<string, unknown>>; // per film.finish module (by name), validated in applyFilmFinish
   master_config?: Record<string, Record<string, unknown>>; // per master module (by name), validated at enterMasterOrMux
   keyframe_binding: string | null;
-  phase: "keyframe" | "clips" | "dialogue" | "speech" | "finish" | "assemble" | "master" | "mux" | "done" | "failed";
+  phase: "keyframe" | "pre_clip_dialogue" | "pre_clip_speech" | "clips" | "dialogue" | "speech" | "finish" | "assemble" | "master" | "mux" | "done" | "failed";
   keyframe_poll?: string;
   // The keyframe module's backend RunPod job id (#318), surfaced on its async-accept envelope. Lets
   // the poll handler read that job's progress snapshot (counts.keyframe_done) for keyframe sub-progress.
@@ -279,13 +279,17 @@ export interface FilmJob {
   clip_job_id?: string;
   finish_shots?: FinishShot[];
   speech_shots?: SpeechShot[]; // per-shot speech (dialogue-audio enhance) chain, run between dialogue and finish
-  // Talking characters: per-shot dialogue lines (resolved at submission: authored text + cast voice),
-  // synthesized to per-shot audio by the `dialogue` module in a phase between clips and finish. The
-  // resulting audio_key per shot is injected into that shot's FinishInput for lip-sync. Absent/empty
-  // => a silent film (no dialogue phase). dialogue_poll holds the in-flight batch job's poll token.
+  /** Set when a speech chain (pre-clip or post-clip) reaches terminal. enterSpeechOrFinish no-ops. */
+  speech_done?: boolean;
+  // Talking characters: per-shot dialogue lines (resolved at submission: authored text + cast voice).
+  // Driving-audio doors synthesize BEFORE clips (`pre_clip_dialogue`); other doors still synthesize
+  // between clips and finish. The resulting audio_key per shot is the LINE file (motion) and/or
+  // FinishInput for lip-sync. Absent/empty => a silent film. dialogue_poll holds the in-flight batch.
   dialogue_lines?: DialogueLine[];
   dialogue_poll?: string;
   dialogue_audio?: Record<string, string>; // shot_id -> dialogue audio R2 key
+  /** Seconds of each LINE WAV after pad/trim. Used to raise ClipShotInput.seconds. */
+  dialogue_audio_seconds?: Record<string, number>;
   // slot -> cast_member id (from the render's castLoras). At keyframe completion the orchestrator
   // banks any freshly-trained adapter back onto the cast member (markLoraReady) so a character's LoRA
   // is trained ONCE and reused across every project -- instead of retrained every render. (#xxx)
@@ -1126,7 +1130,14 @@ export function coerceDialogueLineIds(originalScenes: FilmScene[], lines: Dialog
 export const KEYFRAME_STALL_SECONDS = 20 * 60; // 20min: a project-wide SDXL keyframe pass is well done by now
 export const PHASE_HARD_DEADLINE_SECONDS = 90 * 60; // 90min: absolute ceiling for any one pollable phase
 
-export const POLLABLE_PHASES: ReadonlySet<FilmJob["phase"]> = new Set(["keyframe", "clips", "speech", "finish"]);
+export const POLLABLE_PHASES: ReadonlySet<FilmJob["phase"]> = new Set([
+  "keyframe",
+  "pre_clip_dialogue",
+  "pre_clip_speech",
+  "clips",
+  "speech",
+  "finish",
+]);
 
 /** Seconds the job has sat in its current phase. Falls back to created_at on pre-#129 jobs (no
  *  phase_started_at stamp); `now` is injectable so tests do not depend on the wall clock. */
@@ -1138,7 +1149,7 @@ export function phaseAgeSeconds(job: FilmJob, now: number = Date.now()): number 
 /** The phases that advance one shot at a time inside a single phase (the fan-out phases). These are
  *  the phases where a long wall-clock is healthy as long as shots keep landing -- which is why the
  *  hard ceiling measures them from last_progress_at, not phase_started_at (#704). */
-export const PER_SHOT_PHASES: ReadonlySet<FilmJob["phase"]> = new Set(["clips", "speech", "finish"]);
+export const PER_SHOT_PHASES: ReadonlySet<FilmJob["phase"]> = new Set(["clips", "pre_clip_speech", "speech", "finish"]);
 
 /** Seconds since the last REAL progress, for the hard-ceiling check (#704). A per-shot phase
  *  (clips/speech/finish) on a slow local-gpu card lands one clip every few minutes for hours; that is
@@ -1182,7 +1193,11 @@ export interface PhaseCeiling {
  *  window rather than extending this one. */
 function pendingChainSteps(job: FilmJob): string[] {
   const shots: Array<{ chain: string[]; idx: number; status: string }> =
-    job.phase === "finish" ? (job.finish_shots || []) : job.phase === "speech" ? (job.speech_shots || []) : [];
+    job.phase === "finish"
+      ? (job.finish_shots || [])
+      : job.phase === "speech" || job.phase === "pre_clip_speech"
+        ? (job.speech_shots || [])
+        : [];
   const out: string[] = [];
   for (const sh of shots) {
     if (sh.status === "done") continue;
@@ -1231,7 +1246,7 @@ export function phaseCeiling(job: FilmJob, modules?: RegisteredModule[]): PhaseC
     undeclared: [],
     unresolved: [],
   };
-  if (job.phase !== "finish" && job.phase !== "speech") return floor;
+  if (job.phase !== "finish" && job.phase !== "speech" && job.phase !== "pre_clip_speech") return floor;
 
   const steps = pendingChainSteps(job);
   if (!steps.length) return floor;
@@ -1313,7 +1328,7 @@ export function phaseCeilingVerdict(
  *  are done, and how many CHAIN STEPS have resolved inside those units. Monotonic within a phase (shots
  *  only go pending->done, `idx` only advances) and it changes on every phase transition, so ANY change is
  *  genuine forward progress -- which is what re-stamps last_progress_at. Phases with no per-shot fan-out
- *  (keyframe/dialogue/assemble/master/mux) report :0:0, so their stall window runs from when the phase
+ *  (keyframe/pre_clip_dialogue/dialogue/assemble/master/mux) report :0:0, so their stall window runs from when the phase
  *  began, exactly as before.
  *
  *  WHY STEPS AND NOT ONLY SHOTS (#182). Counting finished SHOTS made the marker blind to a shot that is
@@ -1340,7 +1355,7 @@ export function filmProgressMarker(job: FilmJob, clipJob: ClipJob | null): strin
     const shots = job.finish_shots || [];
     done = shots.filter((fs) => fs.status === "done").length;
     steps = shots.reduce((n, fs) => n + Math.max(0, Math.trunc(fs.idx) || 0), 0);
-  } else if (job.phase === "speech") {
+  } else if (job.phase === "speech" || job.phase === "pre_clip_speech") {
     const shots = job.speech_shots || [];
     done = shots.filter((ss) => ss.status === "done").length;
     steps = shots.reduce((n, ss) => n + Math.max(0, Math.trunc(ss.idx) || 0), 0);
