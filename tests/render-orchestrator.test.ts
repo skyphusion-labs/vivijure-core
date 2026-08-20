@@ -128,6 +128,24 @@ describe("applyPoll", () => {
     expect(classifyTransientFailure("module /poll -> 404")).toBe("deterministic");
     expect(classifyTransientFailure("CUDA out of memory")).toBe("deterministic");
     expect(classifyTransientFailure(undefined)).toBe("deterministic");
+    expect(classifyTransientFailure("AiGatewayError: 7003: Model execution failed")).toBe("transient");
+    expect(classifyTransientFailure('google-veo job failed: "The service is currently experiencing high load and cannot process your request. Please try again later."')).toBe("transient");
+    expect(classifyTransientFailure("fetch proxied image -> 429")).toBe("transient");
+    expect(classifyTransientFailure('Invalid request body: field "resolution" must be one of ["720p"]')).toBe("deterministic");
+  });
+
+  it("clears the poll token so the next tick can resubmit a provider load fail", () => {
+    const s = shot();
+    s.poll = "tok";
+    applyPoll(s, { ok: false, error: "google-veo job failed: high load, try again later" }, "p");
+    expect(s.status).toBe("pending");
+    expect(s.poll).toBeUndefined();
+    expect(s.submit_attempts).toBe(1);
+    applyPoll(s, { ok: false, error: "google-veo job failed: high load, try again later" }, "p");
+    expect(s.status).toBe("pending");
+    applyPoll(s, { ok: false, error: "google-veo job failed: high load, try again later" }, "p");
+    expect(s.status).toBe("failed");
+    expect(s.error).toContain("exhausted");
   });
 
   it("fails a shot whose output is envelope-ok but off-contract (#345), never advancing garbage", () => {
