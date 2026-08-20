@@ -161,6 +161,7 @@ consistent with the file.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.22.5` | 1.22.5 |  |  | **PATCH.** Resubmit a clip shot that died on provider load / 429 / 7003. Cap 3. A real 400 still fails immediately. |
 | `vivijure-core-v1.22.4` | 1.22.4 |  |  | **PATCH.** `audio_url` is the shot LINE; `pre_clip_dialogue` / `pre_clip_speech` before driving-audio clips. |
 | `vivijure-core-v1.22.3` | 1.22.3 |  |  | **PATCH.** Incomplete films are FAILED. |
 | `vivijure-core-v1.22.2` | 1.22.2 |  |  | **PATCH.** Cast LoRA keys are loras/, not project-scoped. |

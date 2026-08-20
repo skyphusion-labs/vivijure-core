@@ -3,6 +3,16 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.22.5] -- 2026-08-20
+
+### fix(motion): retry a shot that died on provider load, 429, or 7003
+
+Clip poll already retried transport blips (#719). Submit failures and a
+provider job that returned "high load" / AiGateway 7003 failed the shot
+on the first try. Those are now classified transient: drop the dead
+token, resubmit next tick, cap 3. A real 400 (wrong resolution) still
+fails immediately. Incomplete-film fail-close is unchanged.
+
 ## [1.22.4] -- 2026-08-19
 
 ### feat(motion): audio_url is the shot line; pre_clip_dialogue before driving-audio clips

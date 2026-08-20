@@ -82,11 +82,25 @@ export function classifyTransientFailure(error: string | undefined): "transient"
   if (/unreachable|timed? ?out|timeout|network|econnreset|connection (reset|lost)|fetch failed/i.test(e)) {
     return "transient";
   }
+  // Matrix 2026-08-20: cf-veo AiGatewayError 7003; google-veo "high load".
+  // These are provider blips, not a bad prompt. A 400 (wrong resolution) stays deterministic.
+  if (/\b7003\b/.test(e)) return "transient";
+  if (/high load|cannot process your request|please try again later/i.test(e)) return "transient";
   return "deterministic";
 }
 
 /** Consecutive transient poll errors a clip shot tolerates before failing loud (#719). */
 export const CLIP_POLL_MAX_ATTEMPTS = 3;
+/** Resubmits of a dead-but-retryable provider job (load / 7003 / 429 at invoke). */
+export const CLIP_SUBMIT_MAX_ATTEMPTS = 3;
+
+/** Transport error on OUR /poll hop: keep the token and re-poll. A provider job that already
+ *  FAILED with a retryable reason needs a new submit, not another poll of a dead token. */
+export function isClipPollTransportError(error: string | undefined): boolean {
+  const e = error ?? "";
+  return /module \/(poll|invoke) ->/.test(e)
+    || /unreachable|timed? ?out|timeout|network|econnreset|connection (reset|lost)|fetch failed/i.test(e);
+}
 
 /** Apply a /poll outcome to a shot (pure): failure -> failed; still pending -> unchanged; output ->
  *  done with the clip key. `project` confines a module-returned clip_key to renders/<project>/. */
@@ -98,13 +112,27 @@ export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, 
     // the count), then fail loud with the real error. A DETERMINISTIC module-reported failure still
     // fails immediately.
     if (classifyTransientFailure(r.error) === "transient") {
-      const attempts = (shot.poll_attempts ?? 0) + 1;
-      if (attempts < CLIP_POLL_MAX_ATTEMPTS) {
-        shot.poll_attempts = attempts;
-        return; // stays pending; re-polled next sweep
+      if (isClipPollTransportError(r.error)) {
+        const attempts = (shot.poll_attempts ?? 0) + 1;
+        if (attempts < CLIP_POLL_MAX_ATTEMPTS) {
+          shot.poll_attempts = attempts;
+          return; // stays pending; re-polled next sweep
+        }
+        shot.status = "failed";
+        shot.error = `${r.error} (persisted through ${attempts} consecutive polls, #719)`;
+        return;
+      }
+      // Provider job died (high load, 7003). Drop the dead token; next tick submits again.
+      const attempts = (shot.submit_attempts ?? 0) + 1;
+      if (attempts < CLIP_SUBMIT_MAX_ATTEMPTS) {
+        shot.submit_attempts = attempts;
+        shot.poll = undefined;
+        shot.poll_attempts = 0;
+        shot.error = `transient submit retry ${attempts}/${CLIP_SUBMIT_MAX_ATTEMPTS}: ${r.error}`;
+        return;
       }
       shot.status = "failed";
-      shot.error = `${r.error} (persisted through ${attempts} consecutive polls, #719)`;
+      shot.error = `${r.error} (submit retries exhausted, ${attempts})`;
       return;
     }
     shot.status = "failed";
@@ -126,6 +154,8 @@ export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, 
     return;
   }
   shot.status = "done";
+  shot.submit_attempts = 0;
+  shot.poll_attempts = 0;
   // #707: retain what the backend delivered so the film summary can show delivered-vs-planned. The
   // contract has always carried fps+frames; modules with nothing to report send frames=0 (sentinel) --
   // treat that as absent rather than recording a fabricated 0-frame delivery.
@@ -339,8 +369,14 @@ export async function startClipJob(
       ),
     );
     if (!r.ok) {
-      shot.status = "failed";
-      shot.error = r.error;
+      if (classifyTransientFailure(r.error) === "transient") {
+        shot.submit_attempts = 1;
+        shot.error = `transient submit retry 1/${CLIP_SUBMIT_MAX_ATTEMPTS}: ${r.error}`;
+        // stays pending with no poll token; advanceClipJob re-invokes next tick
+      } else {
+        shot.status = "failed";
+        shot.error = r.error;
+      }
     } else if ((r as { pending?: boolean }).pending) {
       shot.poll = (r as { poll: string }).poll;
       shot.runpod_job_id = (r as { jobId?: string }).jobId; // #536: retain the backend job id for cancel/accounting
@@ -386,8 +422,10 @@ export async function advanceClipJob(env: Env, jobId: string, preModules?: Regis
   const job = JSON.parse(await obj.text()) as ClipJob;
   const envRec = env as unknown as Record<string, unknown>;
   const polled: ClipShot[] = [];
+  const modules = preModules ?? await discoverModules(envRec);
+  const serving = servingForHook(modules, "motion.backend");
   for (const shot of job.shots) {
-    if (shot.status !== "pending" || !shot.poll) continue;
+    if (shot.status !== "pending") continue;
     const binding = shot.binding ?? job.binding;
     const fetcher = binding ? resolveFetcher(envRec, binding) : null;
     if (!fetcher) {
@@ -395,8 +433,95 @@ export async function advanceClipJob(env: Env, jobId: string, preModules?: Regis
       shot.error = "module binding no longer bound";
       continue;
     }
-    const p = await pollModule<MotionBackendOutput>(fetcher, { poll: shot.poll });
-    applyPoll(shot, p, job.project);
+    if (shot.poll) {
+      const p = await pollModule<MotionBackendOutput>(fetcher, { poll: shot.poll });
+      applyPoll(shot, p, job.project);
+      polled.push(shot);
+      continue;
+    }
+    // Pending with no poll token: last invoke was a retryable fail. Submit again.
+    const mbName = shot.motion_backend ?? job.motion_backend;
+    const mb = mbName ? serving.find((m) => m.name === mbName) ?? null : null;
+    if (!mb) {
+      shot.status = "failed";
+      shot.error = "no motion.backend module installed";
+      continue;
+    }
+    const config = shot.config ?? {};
+    let motionInput: ClipShotInput = shot;
+    if (mb.name && BUCKET_KEYFRAME_MOTION_BACKENDS.has(mb.name)) {
+      try {
+        motionInput = await ensureClipKeyframeInR2(env, job.project, shot);
+        shot.keyframe_key = motionInput.keyframe_key;
+        shot.keyframe_url = motionInput.keyframe_url;
+      } catch (e) {
+        shot.status = "failed";
+        shot.error = e instanceof Error ? e.message : String(e);
+        continue;
+      }
+    }
+    const r = await invokeModule<MotionBackendInput, MotionBackendOutput>(
+      fetcher,
+      withTenantR2(
+        {
+          hook: "motion.backend",
+          input: {
+            shot_id: motionInput.shot_id,
+            keyframe_url: motionInput.keyframe_url,
+            keyframe_key: motionInput.keyframe_key,
+            last_keyframe_url: motionInput.last_keyframe_url,
+            last_keyframe_key: motionInput.last_keyframe_key,
+            voice_ref_url: motionInput.voice_ref_url,
+            voice_ref_key: motionInput.voice_ref_key,
+            audio_url: motionInput.audio_url,
+            audio_key: motionInput.audio_key,
+            prompt: motionInput.prompt,
+            seconds: motionInput.seconds,
+          },
+          config,
+          context: { project: job.project, job_id: job.job_id },
+        },
+        mb,
+        await tenantR2FromEnv(envRec),
+      ),
+    );
+    if (!r.ok) {
+      if (classifyTransientFailure(r.error) === "transient") {
+        const attempts = (shot.submit_attempts ?? 0) + 1;
+        if (attempts < CLIP_SUBMIT_MAX_ATTEMPTS) {
+          shot.submit_attempts = attempts;
+          shot.error = `transient submit retry ${attempts}/${CLIP_SUBMIT_MAX_ATTEMPTS}: ${r.error}`;
+        } else {
+          shot.status = "failed";
+          shot.error = `${r.error} (submit retries exhausted, ${attempts})`;
+        }
+      } else {
+        shot.status = "failed";
+        shot.error = r.error;
+      }
+    } else if ((r as { pending?: boolean }).pending) {
+      shot.poll = (r as { poll: string }).poll;
+      shot.runpod_job_id = (r as { jobId?: string }).jobId;
+      shot.error = undefined;
+    } else if ("output" in r) {
+      const output = r.output as MotionBackendOutput;
+      const violation = hookOutputViolation(mb.name, "motion.backend", output);
+      if (violation) { shot.status = "failed"; shot.error = violation; }
+      else {
+        try {
+          shot.clip_key = assertProjectKey(job.project, output.clip_key);
+          shot.status = "done";
+          if (typeof output.has_audio === "boolean") shot.has_audio = output.has_audio;
+          await stampClipProvenance(env, job.project, shot);
+        } catch (e) {
+          shot.status = "failed";
+          shot.error = e instanceof Error ? e.message : String(e);
+        }
+      }
+    } else {
+      shot.status = "failed";
+      shot.error = "module returned neither output nor a poll token";
+    }
     polled.push(shot);
   }
   // #767: stamp this render config-provenance for any shot accepted via this pass's poll, so a later
