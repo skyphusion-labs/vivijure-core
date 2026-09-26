@@ -565,7 +565,7 @@ export function finishOrderReorderDialogue(finishConfig?: Record<string, Record<
 
 /** Resolve the finish chain for one shot. Default is legacy ui.order on dialogue shots; opt in to #584
  *  reorder via `finish_config["finish-order"].dialogue_reorder`. A shot with NO dialogue line omits every
- *  `finish_consumes_audio` module (lip-sync) so the planner never routes to RunPod musetalk; module-level
+ *  `finish_consumes_audio` module (lip-sync) so the planner never routes to a RunPod lip-sync satellite; module-level
  *  noop alone is not enough (a stale sidecar can still submit and spin workers). */
 export function resolveFinishChainForShot(
   serving: RegisteredModule[],
@@ -1059,7 +1059,7 @@ export async function attachFinishPresigns(
   try {
     // `<output_key>.hash`, NOT `<output_key minus .mp4>.hash`. ONE key, three call sites that must
     // agree: the #583 adoption gate reads `${artifactKey}.hash` (finishArtifactHashMatches), the
-    // satellites write f"{output_key}.hash" (vivijure-upscale / vivijure-musetalk handler.py), and
+    // satellites write f"{output_key}.hash" (vivijure-upscale handler.py), and
     // finish-hash.ts calls itself the SINGLE source of the `<output_key>.hash` sidecar. Stripping the
     // extension is the .srt / .meta.json sidecar convention (filmFinishSeed, metaKeyFor) and does not
     // apply here. Getting it wrong is silent and expensive: the gate takes its no-sidecar refusal on
@@ -1068,8 +1068,9 @@ export async function attachFinishPresigns(
     const hashKey = `${outKey}.hash`;
     // ALL-OR-NOTHING, matching the sibling attachSpeechPresigns: resolve EVERY leg before assigning
     // ANY. Assigning as we go leaves presigned transport set with audio_url absent when a later leg
-    // throws, and musetalk's presigned branch REQUIRES audio_url -- it returns a top-level `error`,
-    // which is a hard job failure, not the key-only R2 fallback this function's contract promises.
+    // throws, and an audio-consuming satellite's presigned branch can REQUIRE audio_url: the retired
+    // musetalk satellite returned a top-level `error` without one, which is a hard job failure, not
+    // the key-only R2 fallback this function's contract promises.
     // The catch below would then log finish.presign_skip for what was really a partial application.
     const [videoUrl, outputUrl, audioUrl, hashUrl] = await Promise.all([
       presignR2Get(env, fs.clip_key, FINISH_PRESIGN_TTL_SECONDS),
@@ -1077,7 +1078,7 @@ export async function attachFinishPresigns(
       input.audio_key ? presignR2Get(env, input.audio_key, FINISH_PRESIGN_TTL_SECONDS) : undefined,
       input.output_hash ? presignR2Put(env, hashKey, FINISH_PRESIGN_TTL_SECONDS) : undefined,
     ]);
-    // Dialogue shots need audio_url on the presigned branch (musetalk). Missing => stay key-only.
+    // Dialogue shots need audio_url on an audio-consuming presigned branch. Missing => stay key-only.
     if (!videoUrl || !outputUrl || (input.audio_key && !audioUrl)) return;
     input.video_url = videoUrl;
     input.output_url = outputUrl;
@@ -1189,7 +1190,7 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     const stepMod = finishModByBinding.get(binding);
     const dialogueAudioKey = job.dialogue_audio?.[fs.shot_id];
     // Defense-in-depth: never invoke an audio-consuming finish module without dialogue audio (legacy
-    // jobs may still list lip-sync in chain). Fold a local noop so RunPod musetalk is never touched.
+    // jobs may still list lip-sync in chain). Fold a local noop so no RunPod lip-sync worker is touched.
     if (stepMod?.finish_consumes_audio && !dialogueAudioKey && !fs.poll) {
       applyFinishOutput(fs, {
         shot_id: fs.shot_id,
@@ -2445,7 +2446,7 @@ async function enterAssemblePhase(
   }
 
   // Native AV (Seedance/Flux/Veo) already talks. Keep per-clip audio. Silent i2v
-  // clips are padded. MuseTalk is opt-in replace, not the only soundtrack.
+  // clips are padded. Lip-sync is opt-in replace, not the only soundtrack.
   const keepClipAudio = true;
   const delivery = resolveDeliveryResolution(job);
   let payload = {

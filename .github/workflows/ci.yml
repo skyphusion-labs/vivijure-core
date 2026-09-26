@@ -72,10 +72,6 @@ jobs:
           path: consumers/vivijure-backend
       - uses: actions/checkout@v7
         with:
-          repository: skyphusion-labs/vivijure-musetalk
-          path: consumers/vivijure-musetalk
-      - uses: actions/checkout@v7
-        with:
           repository: skyphusion-labs/vivijure-upscale
           path: consumers/vivijure-upscale
       - uses: actions/checkout@v7
@@ -97,5 +93,5 @@ jobs:
           path: consumers/vivijure-cf
       - name: Stale consumer references (core#183)
         env:
-          VIVIJURE_CONSUMER_ROOTS: consumers/vivijure-backend:consumers/vivijure-musetalk:consumers/vivijure-upscale:consumers/vivijure-audio-upscale:consumers/vivijure-wan-train:consumers/vivijure-cf
+          VIVIJURE_CONSUMER_ROOTS: consumers/vivijure-backend:consumers/vivijure-upscale:consumers/vivijure-audio-upscale:consumers/vivijure-wan-train:consumers/vivijure-cf
         run: node scripts/comment-symbol-refs.mjs
