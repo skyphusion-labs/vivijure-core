@@ -1,5 +1,16 @@
-// cf#312: speechEnhancedAudioKey must stay locked to modules/speech-upscale's enhancedAudioKey
-// convention so the core can presign the speech step's PUT without importing a module.
+// cf#312: speechEnhancedAudioKey pins the `_enh.wav` output-key convention the core presigns a speech
+// step's PUT against, so the core never imports a module to compute it.
+//
+// This suite STARTED as one half of a cross-repo transcription lock against modules/speech-upscale's
+// enhancedAudioKey. That module is retired (cf#786) and no shipped module declares the `speech` hook,
+// so the other half of the lock is gone: the convention now lives HERE, and `SpeechInput.output_key`
+// is the side a future speech module must match. The assertions are unchanged and still go red on a
+// real defect, because the helper has a live caller (attachSpeechPresigns).
+//
+// WHAT THIS FILE CANNOT SEE, so nobody reads it as transport coverage: it asserts a pure string
+// helper and drives NOTHING in the presign path. finish-presign-keyset-312.test.ts is the gate for
+// that -- it drives attachFinishPresigns / attachSpeechPresigns at the one injected seam
+// (env.PRESIGNER) and asserts the key set actually handed to the presigner.
 
 import { describe, it, expect } from "vitest";
 import { speechEnhancedAudioKey } from "../src/film-orchestrator.js";

@@ -101,7 +101,7 @@ describe("summarizeFinish degraded accounting", () => {
 
   it("counts a shot that set FinishOutput.degraded without a passthrough: tag (#226)", () => {
     // The field is the degrade channel. A module that records the reason and tags applied
-    // differently (speech-upscale shape) was previously invisible.
+    // differently (the shape measured on speech-upscale, since retired) was previously invisible.
     const s = summarizeFinish([
       shot({ shot_id: "a", applied: [], degraded: ["no detectable face in clip"] }),
     ]);

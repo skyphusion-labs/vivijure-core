@@ -1036,8 +1036,12 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: FinishShot, pre
 // keyframe_url / film.finish / master (cast REF_TTL is also 1800).
 const FINISH_PRESIGN_TTL_SECONDS = 1800;
 
-/** Mirror of modules/speech-upscale enhancedAudioKey so the core can presign the speech step's PUT
- *  without importing a module. Keep in lockstep with that helper (tests pin both sides). */
+/** The core's own `_enh.wav` output-key derivation for a `speech` step's presigned PUT, so the core
+ *  never imports a module to compute it. It STARTED as a mirror of modules/speech-upscale's
+ *  enhancedAudioKey; that module is retired (cf#786) and no shipped module declares the `speech` hook,
+ *  so this is the only live statement of the convention and `SpeechInput.output_key` is the side a
+ *  future speech module must match. The TRANSPORT that uses it is gated at the one injected seam
+ *  (env.PRESIGNER) by tests/finish-presign-keyset-312.test.ts, not by the pure-helper suite. */
 export function speechEnhancedAudioKey(audioKey: string): string {
   const slash = audioKey.lastIndexOf("/");
   const dot = audioKey.lastIndexOf(".");

@@ -671,8 +671,9 @@ export interface SpeechInput {
   // CREDENTIALED R2 BRANCH; the presigned fields are ignored, the render succeeds, and nothing
   // reports that the credentialless path was never exercised. A module building the presigned body
   // MUST OMIT audio_key, not merely add the URLs. See FinishInput above for the full statement.
-  // output_key uses the module's `_enh.wav` convention (mirrored by the core's speechEnhancedAudioKey
-  // when presigning; the two are pinned against each other by tests).
+  // output_key is the `_enh.wav` convention the core derives with speechEnhancedAudioKey when
+  // presigning. It was modules/speech-upscale's convention first; that module is retired (cf#786) and
+  // no shipped module declares this hook, so the core's helper is now the side a future module matches.
   audio_url?: string;
   output_url?: string;
   output_key?: string;
@@ -685,7 +686,7 @@ export interface SpeechInput {
 export interface SpeechOutput {
   shot_id: string;
   audio_key: string;  // R2 key of the enhanced audio, or the input key passed through on a soft-degrade
-  applied: string[];  // e.g. ["speech-upscale:resemble-enhance"]; or [] on passthrough
+  applied: string[];  // "<module>:<backend>" tags naming what ran; [] on an honest passthrough
   degraded?: string;  // set ONLY when the audio was passed through because the work could not run
                       // (disabled / backend down / no audio), carrying the reason; absent on success
 }
