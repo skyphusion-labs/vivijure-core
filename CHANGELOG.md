@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.22.6
+
 ## [1.22.5] -- 2026-08-20
 
 ### fix(motion): retry a shot that died on provider load, 429, or 7003

@@ -74,7 +74,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     expect({ gets: gets.length, puts: puts.length }).toEqual({ gets: 2, puts: 2 });
 
     // THE CLAIM. Derived from the emitted output_key, never transcribed, so the two cannot drift:
-    // finishArtifactHashMatches reads `${artifactKey}.hash` and upscale/musetalk write
+    // finishArtifactHashMatches reads `${artifactKey}.hash` and the upscale satellite writes
     // f"{output_key}.hash". A `<output_key minus .mp4>.hash` is the .srt/.meta.json convention and is
     // the wrong one here -- it makes every presigned step permanently unadoptable (#166 recovery and
     // the final-artifact adoption both refuse), silently re-running paid GPU work.
@@ -100,7 +100,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
   });
 
   it("applies presigned transport ALL-OR-NOTHING: a refusal on any leg leaves the input key-only", async () => {
-    // musetalk's presigned branch REQUIRES audio_url and returns a top-level `error` without it, which
+    // an audio-consuming presigned branch can REQUIRE audio_url and return a top-level `error` without it, which
     // is a hard job failure -- so a partial application (video_url + output_url set, audio_url absent)
     // is strictly worse than not presigning at all, and the finish.presign_skip log line calls it a
     // skip when it was a partial application. Its sibling attachSpeechPresigns already does this
@@ -114,7 +114,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     expect(gets).toContain(AUDIO);
 
     // CLAIM 1, the harm itself: nothing is assigned. A sequential shape leaves video_url + output_url
-    // + output_key set with audio_url absent, which is the body musetalk hard-fails on.
+    // + output_key set with audio_url absent, which is the body such a satellite hard-fails on.
     expect({
       video_url: input.video_url,
       output_url: input.output_url,

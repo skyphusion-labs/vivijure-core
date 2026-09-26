@@ -877,8 +877,8 @@ export function finishShotLedgerReconciles(fs: FinishShot): boolean {
  *  check R2 PRESENCE for a step whose RunPod job was GC'd / froze MID-chain (the #141/#166 R2-authoritative
  *  pattern, extended from the final step to any step). The modules: finish-rife writes
  *  `<project>/clips/<shot>_finished.mp4` (named off the shot id by its container); the append-convention
- *  modules derive `<input-base>_<suffix>.<ext>` from the input clip key (musetalk lip-sync -> `_ls`,
- *  upscale -> `_up`; see vivijure-musetalk / vivijure-upscale handler.py). Returns null for a module whose
+ *  modules derive `<input-base>_<suffix>.<ext>` from the input clip key (lip-sync -> `_ls`,
+ *  upscale -> `_up`; see vivijure-upscale handler.py). Returns null for a module whose
  *  convention we do not model (e.g. text-overlay), so an unmodeled step gets NO R2 shortcut and can never
  *  be advanced off a sibling step's artifact -- the mid-chain phantom-adopt the silent-render bug warned of. */
 export function finishStepOutputKey(project: string, fs: FinishShot, modules?: RegisteredModule[]): string | null {
@@ -894,7 +894,7 @@ export function finishStepOutputKey(project: string, fs: FinishShot, modules?: R
   // derived from the binding name. Returns null for a module whose convention we do not model, so an
   // unmodeled step gets NO R2 shortcut and can never adopt a sibling step's artifact.
   if (/RIFE/i.test(binding)) return `renders/${project}/clips/${fs.shot_id}_finished.mp4`;
-  const suffix = /LIPSYNC|MUSETALK/i.test(binding) ? "_ls" : /UPSCALE/i.test(binding) ? "_up" : null;
+  const suffix = /LIPSYNC/i.test(binding) ? "_ls" : /UPSCALE/i.test(binding) ? "_up" : null;
   if (!suffix) return null;
   return insertKeySuffix(fs.clip_key, suffix);
 }
@@ -965,7 +965,7 @@ export function finishStepAppliedTag(fs: FinishShot, modules?: RegisteredModule[
     return `${binding}:r2-adopted`; // declared rules, none matched: never silent
   }
   // Legacy fallback (module deploys predating finish_artifacts), binding-name derived.
-  if (/LIPSYNC|MUSETALK/i.test(binding)) return `lipsync:${String(cfg.version ?? "v15")}`;
+  if (/LIPSYNC/i.test(binding)) return `lipsync:${String(cfg.version ?? "v15")}`;
   if (/UPSCALE/i.test(binding)) return `upscale:${Number(cfg.scale ?? 2)}x`;
   if (/RIFE/i.test(binding)) return cfg.interpolate === false ? "noop:interpolate-off" : `interpolate:${Number(cfg.interpolation_factor ?? 2)}x`;
   return `${binding}:r2-adopted`;
@@ -1342,8 +1342,8 @@ export function phaseCeilingVerdict(
  *  WHAT THIS DOES NOT FIX, stated here because a green suite would otherwise imply it did: a chain with
  *  exactly ONE step has no intra-shot progress to observe, so a single-shot film whose finish chain is
  *  just `finish-upscale` still gets its one marker change at the very end -- which is precisely the
- *  configuration #182 describes. Four modules declare the `finish` hook (finish-upscale, finish-lipsync,
- *  finish-rife, finish-blender), so chains of 2..4 steps are ordinary and this covers them; the
+ *  configuration #182 describes. Several modules declare the `finish` hook (finish-upscale, finish-rife,
+ *  finish-blender), so multi-step chains (2 or more) are ordinary and this covers them; the
  *  single-step case needs a ceiling sized to the work, not a finer marker. `tests/film-progress-marker-182`
  *  asserts that limit explicitly rather than leaving it to be discovered. */
 export function filmProgressMarker(job: FilmJob, clipJob: ClipJob | null): string {

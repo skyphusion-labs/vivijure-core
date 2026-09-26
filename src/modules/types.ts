@@ -551,7 +551,7 @@ export interface FinishInput {
   shot_id: string;
   clip_key: string;  // R2 key of the input clip (mp4)
   audio_key?: string; // R2 key of the shot's dialogue audio (TTS); set only for a shot with a line.
-                      // A finish module that lip-syncs (finish-lipsync) consumes it; others ignore it.
+                      // A finish module that lip-syncs consumes it; others ignore it.
                       // Absent => a silent shot, so lip-sync no-ops (passthrough).
   src_fps?: number;  // optional hints; the finish backend probes the clip if absent
   frames?: number;
@@ -578,14 +578,14 @@ export interface FinishInput {
   output_hash?: string;
   // cf#312 credentialless satellite transport (additive, no MODULE_API bump). When the core can
   // derive this step's output key (finish_artifacts / legacy suffix) it presigns GET/PUT and hands
-  // them here so finish-upscale / finish-lipsync can call the satellite's presigned branch instead
+  // them here so finish-upscale (and any lip-sync satellite) can call the presigned branch instead
   // of the shared-bucket credentialed one (pooling without endpoint R2 env). Absent on a legacy core
   // or when presign is unbound, in which case the module sends keys and the satellite takes R2 mode.
   //
-  // CONTRACT, AND IT IS A CONTRACT ABOUT WHAT THE MODULE OMITS, NOT ABOUT WHAT IT ADDS. All three
+  // CONTRACT, AND IT IS A CONTRACT ABOUT WHAT THE MODULE OMITS, NOT ABOUT WHAT IT ADDS. Both live
   // satellites select their mode on the PRESENCE OF THE KEY, never on the presence of a URL:
-  // vivijure-upscale handler.py `if inp.get("clip_key"): return _upscale_r2(inp)`, and the same line
-  // in vivijure-musetalk; vivijure-audio-upscale does it with audio_key. So a job body that carries
+  // vivijure-upscale handler.py `if inp.get("clip_key"): return _upscale_r2(inp)`, and
+  // vivijure-audio-upscale does it with audio_key. So a job body that carries
   // clip_key AND video_url/output_url takes the CREDENTIALED R2 BRANCH and the presigned fields are
   // dead weight. A MODULE BUILDING THE PRESIGNED BODY MUST OMIT clip_key (and audio_key), not merely
   // add the URLs.
@@ -602,9 +602,9 @@ export interface FinishInput {
   video_url?: string;   // presigned GET of clip_key
   output_url?: string;  // presigned PUT for the step's expected output key
   output_key?: string;  // R2 key behind output_url (echoed by the satellite)
-  audio_url?: string;   // presigned GET of audio_key. REQUIRED by musetalk's presigned branch when
-                        // that branch is taken: it returns a top-level `error` without one, which is
-                        // a hard job failure. The core therefore presigns all-or-nothing.
+  audio_url?: string;   // presigned GET of audio_key. An audio-consuming satellite's presigned branch
+                        // can REQUIRE it: the retired musetalk satellite returned a top-level `error`
+                        // without one, a hard job failure. The core presigns all-or-nothing for it.
   hash_url?: string;    // optional presigned PUT for `<output_key>.hash` (#583 sidecar in presigned
                         // mode). NOT `<output_key minus .mp4>.hash` -- the adoption gate reads
                         // `<output_key>.hash` and a mismatch makes the step permanently unadoptable.

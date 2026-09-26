@@ -334,18 +334,18 @@ function describe(e: unknown): string {
 // chars, and it survives only because `error_type` happens to be the first key emitted -- 87
 // characters of headroom against a vendor reordering its own JSON, with a silent failure mode.
 //
-// THE THREE SATELLITE ENDPOINTS EMIT NO error_type AT ALL. musetalk, video-upscale and
-// audio-upscale return a bare string in `error` for BOTH a validation refusal and a genuine crash:
+// THE SATELLITE ENDPOINTS EMIT NO error_type AT ALL. video-upscale and audio-upscale return a
+// bare string in `error` for BOTH a validation refusal and a genuine crash:
 //
-//     return {"ok": False, "error": "lipsync needs both clip_key and audio_key"}   # refusal
-//     except Exception as e: return {"ok": False, "error": str(e)[:500]}           # crash
+//     return {"ok": False, "error": "input needs presigned video_url + output_url"}  # refusal
+//     except Exception as e: return {"ok": False, "error": str(e)[:500]}             # crash
 //
-// So this parser returns undefined for three of the four endpoints we submit to, and their rows
+// So this parser returns undefined for two of the three endpoints we submit to, and their rows
 // carry NULL. That is the honest answer and it is deliberately NOT papered over: an extractor that
 // fell back to matching the English message would classify those endpoints by prose, which is a
 // parser only as fresh as the sample it was built from, and would make the classification LOOK
 // solved on a surface where it is not. Fixing the satellites means the containers emitting a
-// structured marker, which is a vivijure-musetalk / -upscale / -audio-upscale change, filed
+// structured marker, which is a vivijure-upscale / -audio-upscale change, filed
 // separately.
 // ---------------------------------------------------------------------------------------------
 
