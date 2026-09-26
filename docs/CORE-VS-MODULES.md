@@ -77,6 +77,14 @@ branch on module names; it branches on **hook names** only.
 | `master` | chain | Film-level audio mastering |
 | `film.finish` | chain | Title / credit cards |
 
+**`speech` has no shipped implementation today.** The hook, the `speech` / `pre_clip_speech` phases, the
+chain logic and the presigned transport are live core contract, and a film with no `speech` module
+installed passes its dialogue audio straight to finish. The one module that served the hook
+(`vivijure-cf`'s `speech-upscale`) was retired with its RunPod endpoint and its planner trigger
+(cf#786); lip-sync is now produced at motion time from Cast audio by an audio-driven motion door
+(`infinitetalk`), so there is no post-hoc mouth-replacement step left to clean dialogue for. Nothing in
+core needs to change for a new `speech` module to be installed.
+
 ### `plan.enhance` owns planning AI
 
 One module family serves every LLM-facing planner surface:
@@ -99,7 +107,7 @@ Example host bindings (local sidecars; CF uses service bindings with the same na
 | `MODULE_PLANENHANCE` | `plan.enhance` |
 | `MODULE_CAST_IMAGE` | `cast.image` |
 | `MODULE_DIALOGUE` | `dialogue` |
-| `MODULE_SPEECH_UPSCALE` | `speech` |
+| `MODULE_SPEECH` | `speech` (no shipped module; see above) |
 | `MODULE_NOTIFY_EMAIL` | `notify` |
 
 ## What must not live in the planner
