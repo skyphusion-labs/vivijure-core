@@ -2747,6 +2747,22 @@ async function enterAssemblePhase(
   // A cleanup miss must never fail a film that rendered, so it warns and carries on.
   await reapAssemblePartials(env, outputKey, finalClips.length);
   if (tick.kind === "failed") {
+    // core#327: the #519 degrade was only reachable when VIDEO_FINISH_URL was UNSET, because
+    // videoFinishReachable above answers "configured or bound", never "serving". So with the door
+    // bound and dead -- cf#851, a container that crash-looped on a missing import and died before
+    // binding 8000 -- the guard was false, the degrade was skipped, and the film hard-failed AFTER
+    // the keyframe and i2v spend. That is the exact outcome #519 was written to prevent: "you can
+    // at least get your clips if you close your laptop".
+    //
+    // The SUBMIT is the honest observation. A probe answers "was it up a moment ago"; the submit
+    // answers "is it up now, for this request", and it costs nothing extra because the call already
+    // happened. UNAVAILABILITY ONLY, which is what degradeAssembleUnavailable has always said it is
+    // for: a container that RAN and refused still fails loud (#245/#249), and so do an expired job
+    // and an auth error.
+    if (tick.unreachable) {
+      degradeAssembleUnavailable(job, finalClips, `video-finish tier unreachable (${tick.error}); delivered per-shot clips`);
+      return;
+    }
     job.phase = "failed";
     job.error = tick.error;
     return;

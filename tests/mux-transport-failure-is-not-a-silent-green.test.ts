@@ -127,7 +127,32 @@ describe("cf#746(a) inverse controls: the degrades that SHOULD survive", () => {
   });
 });
 
-describe("cf#746(a) parity: assemble and mux now answer the identical condition the same way", () => {
+// core#327 NARROWS the parity case that used to live here. It is not a reversal of cf#746(a): the
+// three mux cases above are untouched and stay green. What is retired is the assertion that the two
+// legs must produce the same PHASE on a dead origin.
+//
+// WHY THE OLD ASSERTION WAS WRONG, stated here so the next reader finds the argument instead of
+// re-deriving it or re-flipping it. cf#746(a)'s rationale is written in this file, four lines above:
+// "the silent film is still in R2, so failing loses nothing a degrade would have kept". That is TRUE
+// AT MUX and FALSE AT ASSEMBLE.
+//
+//   mux      the silent film survives in R2, so failing costs the user nothing they would have had.
+//   assemble failing loses the clips. Measured, not assumed: FILM_SUBMIT_IDEMPOTENCY_WINDOW_SECONDS
+//            is 60, a double-click guard and not a resume, so a resubmit minutes later is a new
+//            film_id, new clip keys, and re-paid keyframes and i2v on RunPod.
+//
+// Both outcomes are terminal and both need a re-spend to get a film; the degrade additionally hands
+// over clips that were already paid for. The parity assertion generalised a mux-specific reason to a
+// leg where the reason is false.
+//
+// AND THE OFFENCE WAS NEVER PARTIAL DELIVERY, IT WAS MISLABELLING. Conrad's words on the original
+// defect: the studio was "partially assembling the movies and CALLING THEM 'complete'". A silent
+// film presented as complete is a lie about content. Per-shot clips declared through
+// finish_unavailable delivered:"clips" are a real partial deliverable, labelled partial -- and that
+// declaration is visible to a user as of cf#836 (the payload keys) and cf#833 (filmDeliverableExpected
+// exempts the clips shape from the deliverable gate). A degrade nobody can see is the defect; a
+// degrade the panel renders is a product decision.
+describe("core#327: both legs answer an unreachable tier by the same RULE, and deliver what exists", () => {
   const assembleJob = () => ({
     film_id: FILM,
     project: "p",
@@ -137,14 +162,63 @@ describe("cf#746(a) parity: assemble and mux now answer the identical condition 
     created_at: 0,
   });
 
-  it("the same dead origin fails at BOTH legs, not one each way", async () => {
+  it("THE RULE: a dead origin DECLARES and delivers what exists -- clips at assemble, nothing at mux", async () => {
     const a = envFor(assembleJob(), submitThrows);
     const ra = await advanceFilmJob(a.env, FILM);
     const m = envFor(muxJob(), submitThrows);
     const rm = await advanceFilmJob(m.env, FILM);
 
-    expect(ra?.job.phase).toBe("failed"); // already true before the fix
-    expect(rm?.job.phase).toBe("failed"); // the fix
-    expect(rm?.job.phase).toBe(ra?.job.phase);
+    // ASSEMBLE: the clips exist, so they are delivered, and the render says so rather than reading
+    // green. This is #519's sentence: "you can at least get your clips if you close your laptop".
+    expect(ra?.job.phase).toBe("done");
+    expect(ra?.job.finish_unavailable?.at).toBe("assemble");
+    expect(ra?.job.finish_unavailable?.delivered).toBe("clips");
+    expect(ra?.job.finish_unavailable?.reason).toMatch(/unreachable/i);
+    expect(ra?.job.finish_unavailable?.clips?.map((c) => c.clip_key)).toEqual([CLIP]);
+    // NOT a silent green: the film key is absent, so nothing claims a film was produced.
+    expect(ra?.job.film_key).toBeUndefined();
+
+    // MUX: the only thing that "exists" is a film with the audio missing, which is a lie about
+    // content rather than a partial deliverable. cf#746(a) stands, unchanged.
+    expect(rm?.job.phase).toBe("failed");
+    expect(rm?.job.finish_unavailable?.delivered).not.toBe("silent_film");
+  });
+
+  it("a container that ANSWERS and refuses still fails loud at assemble (#245/#249)", async () => {
+    // The distinction the whole change rests on: the app answered. That is not unavailability, and
+    // it must not be laundered into an availability degrade.
+    const refused = async (u: string) =>
+      u.includes("/async/finish") ? json({ ok: false, error: "payload too large" }, 400) : json({ ok: false }, 404);
+    const a = envFor(assembleJob(), refused);
+    const r = await advanceFilmJob(a.env, FILM);
+    expect(r?.job.phase).toBe("failed");
+    expect(r?.job.error).toMatch(/400/);
+    expect(r?.job.finish_unavailable).toBeUndefined();
+  });
+
+  it("a 202 with no jobId is a refusal, not unavailability", async () => {
+    const noJobId = async (u: string) =>
+      u.includes("/async/finish") ? json({ ok: true }, 202) : json({ ok: false }, 404);
+    const a = envFor(assembleJob(), noJobId);
+    const r = await advanceFilmJob(a.env, FILM);
+    expect(r?.job.phase).toBe("failed");
+    expect(r?.job.error).toMatch(/no jobId/i);
+  });
+
+  it("a 502 from the EDGE is unavailability: the app never answered", async () => {
+    const gateway = async (u: string) =>
+      u.includes("/async/finish") ? new Response("bad gateway", { status: 502 }) : json({ ok: false }, 404);
+    const a = envFor(assembleJob(), gateway);
+    const r = await advanceFilmJob(a.env, FILM);
+    expect(r?.job.phase).toBe("done");
+    expect(r?.job.finish_unavailable?.delivered).toBe("clips");
+  });
+
+  it("a container that RAN and reported a failed job still fails loud", async () => {
+    const a = envFor(assembleJob(), statusFailed);
+    const r = await advanceFilmJob(a.env, FILM);
+    expect(r?.job.phase).toBe("failed");
+    expect(r?.job.error).toMatch(/ffmpeg exploded/);
+    expect(r?.job.finish_unavailable).toBeUndefined();
   });
 });
