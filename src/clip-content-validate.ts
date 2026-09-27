@@ -37,13 +37,27 @@ export interface InspectResult {
 }
 
 /** Call the video-finish container's POST /inspect, retrying the transient gateway statuses (503/504) the
- *  way callVideoFinish does for /finish. backoffMs is injectable so tests do not wait. Returns the parsed
- *  result, or null on an unreachable container / non-JSON / non-2xx (the caller treats null as skip). */
+ *  way callVideoFinish does for /finish. backoffMs is injectable so tests do not wait.
+ *
+ *  Returns the parsed result, or an UNREACHABLE marker the caller can act on (core#321). The
+ *  distinction is not cosmetic: contentValidateDoneClips walks shots SEQUENTIALLY, so a container
+ *  that is down costs its whole retry budget once per shot.
+ *
+ *  A THROWN fetch (NXDOMAIN, connection refused, a container that died before binding 8000, which is
+ *  cf#851's exact signature) is NOT the gateway-busy condition the backoff was written for, and one
+ *  attempt establishes it. It used to retry anyway, because the loop's break tested
+ *  `resp && resp.status !== 503 ...` and a throw leaves resp null, which is falsy, which is not a
+ *  break. Three attempts at 1500ms, per shot, sequentially: about 3s a shot, roughly 51s of a finish
+ *  pass on a 17-shot film, re-paid on later ticks because core#30 says not to persist the skip.
+ *
+ *  The 503/504 retry is UNCHANGED and deliberately so: that one is the container saying "busy, come
+ *  back", and cutting it would trade this latency problem for a coverage problem, i.e. more false
+ *  `unmeasured` records, which is the state cf#856 exists to make visible. */
 export async function callVideoFinishInspect(
   env: Env,
   payload: { clipUrl: string; keyframeUrl?: string },
   opts: { retries?: number; backoffMs?: number } = {},
-): Promise<InspectResult | null> {
+): Promise<InspectResult | { unreachable: true } | null> {
   if (!videoFinishReachable(env)) return null;
   const retries = opts.retries ?? 3;
   const backoffMs = opts.backoffMs ?? 1500;
@@ -52,27 +66,49 @@ export async function callVideoFinishInspect(
     headers: await mediaFinishHeaders(env),
     body: JSON.stringify(payload),
   };
-  let resp: Response | null = null;
+  let last: Response | undefined;
   for (let attempt = 0; attempt < retries; attempt++) {
+    let resp: Response | null;
     try {
       resp = await videoFinishFetch(env, "/inspect", init);
     } catch (e) {
       if (isMediaFinishAuthError(e)) throw e;
-      resp = null;
+      // The transport itself failed. No amount of waiting makes a name resolve or a dead process
+      // bind, so stop here instead of sleeping twice to ask the same question.
+      return { unreachable: true };
     }
-    if (resp && resp.status !== 503 && resp.status !== 504) break;
+    // videoFinishFetch RESOLVES to null when the door is unset or could not be reached at all.
+    // Same class as a throw, equally unhelped by waiting, and it used to sit in the retry loop too
+    // because the old break condition (`resp && ...`) read null as "keep trying".
+    if (!resp) return { unreachable: true };
+    last = resp;
+    if (resp.status !== 503 && resp.status !== 504) break;
     if (attempt < retries - 1) await new Promise((r) => setTimeout(r, backoffMs));
   }
-  if (!resp || !resp.ok) return null;
+  // Exhausted the 503/504 budget, or a non-2xx answer: the tier is up but not serving this call.
+  if (!last || !last.ok) return { unreachable: true };
   try {
-    return (await resp.json()) as InspectResult;
+    return (await last.json()) as InspectResult;
   } catch {
+    // It answered 2xx with a body that will not parse. That is the container misbehaving on THIS
+    // clip, not the tier being down, so it is not an unreachable marker and must not trip the
+    // per-pass breaker.
     return null;
   }
 }
 
+/** True when the inspect call could not reach a serving container at all (core#321). */
+function isUnreachable(r: InspectResult | { unreachable: true } | null): r is { unreachable: true } {
+  return r !== null && (r as { unreachable?: true }).unreachable === true;
+}
+
 export interface ContentVerdict {
   verdict: "ok" | "suspect" | "corrupt" | "skip";
+  /** core#321: this skip means "the container is not serving", not "this one clip could not be
+   *  inspected". The per-pass breaker trips on THIS FIELD, never on a reason string: a string match
+   *  is not a relationship, and a reason is prose that someone will reword without thinking about a
+   *  breaker. */
+  unreachable?: true;
   reason?: string;
   metrics?: InspectResult["metrics"];
   keyframe_similarity?: number | null;
@@ -91,6 +127,9 @@ export async function contentValidateClip(env: Env, clipKey: string, keyframeKey
     return { verdict: "skip", reason: `presign failed: ${e instanceof Error ? e.message : String(e)}` };
   }
   const r = await callVideoFinishInspect(env, { clipUrl, keyframeUrl });
+  if (isUnreachable(r)) {
+    return { verdict: "skip", reason: "video-finish /inspect unreachable or errored", unreachable: true };
+  }
   if (!r || !r.ok || !r.verdict) return { verdict: "skip", reason: "video-finish /inspect unreachable or errored" };
   return { verdict: r.verdict, reason: r.reason, metrics: r.metrics, keyframe_similarity: r.keyframe_similarity };
 }
@@ -108,13 +147,22 @@ export async function contentValidateDoneClips(
 ): Promise<boolean> {
   if (!videoFinishReachable(env)) return false;
   let changed = false;
+  // core#321: once ONE shot has established that the container is not serving, the remaining shots
+  // in this pass do not re-probe it. They still get the cf#856 unmeasured record, because the film
+  // is equally unvouched-for either way and a record that depended on probe ORDER would be a worse
+  // lie than no record at all. O(shots) transport failures become O(1) per pass, and nothing is
+  // latched beyond this pass: the next tick starts clean and tries again.
+  let tierDown: string | undefined;
   for (const shot of job.shots) {
     // #30: "skip" (a transient /inspect outage or the tier being unavailable) is NOT a validation result, so
     // it must not short-circuit re-inspection -- only a terminal verdict (ok / suspect / corrupt) counts as
     // done. Otherwise a single-moment inspector blip at the one tick the finish phase runs disables Layer 2
     // (the pixel/noise gate) for the whole pass and the clip ships ungated.
     if (shot.status !== "done" || !shot.clip_key || (shot.content_validated && shot.content_validated !== "skip")) continue;
-    const v = await inspect(env, shot.clip_key, shot.keyframe_key);
+    const v: ContentVerdict = tierDown
+      ? { verdict: "skip", reason: tierDown, unreachable: true }
+      : await inspect(env, shot.clip_key, shot.keyframe_key);
+    if (v.unreachable && !tierDown) tierDown = v.reason ?? "video-finish /inspect unreachable";
     // Don't persist "skip" as a verdict: leave it unset so a later tick re-inspects.
     if (v.verdict !== "skip") shot.content_validated = v.verdict;
     // cf#856: but DO say that it could not run. Measured on a live film while the container was
