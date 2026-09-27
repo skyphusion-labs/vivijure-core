@@ -2,6 +2,7 @@
 // Hosts may inject module fetchers and other bindings after this builder runs.
 
 import type { Database, ObjectPresigner, Platform } from "./types.js";
+import type { MediaDoorFetchers } from "../media-finish-auth.js";
 import { platformAsEnv } from "./types.js";
 import type { R2Bucket } from "./r2-types.js";
 import { wrapR2Bucket } from "./object-store-r2.js";
@@ -22,6 +23,13 @@ export interface OrchestratorEnv {
   R2_RENDERS: R2Bucket;
   R2: R2Bucket;
   PRESIGNER: ObjectPresigner;
+  /**
+   * cf#810: optional in-process fetchers for the CPU media doors, keyed by the door's URL var.
+   * Present for a door => that door is reached through the binding (a Durable Object stub fronting
+   * a Cloudflare Container) and its public origin is never used. Absent => unchanged public-origin
+   * behaviour. Keyed by the URL var name so there is ONE door vocabulary rather than two.
+   */
+  MEDIA_DOOR_FETCHERS?: MediaDoorFetchers;
   /**
    * The TENANT's own bucket-scoped R2 credential (cp#270). Present on a provisioned hosted studio
    * (provisioner.ts binds all four) and on any self-host that configured presigning; absent

@@ -27,7 +27,7 @@
 // Returns the R2 key at bundles/<projectName>.tar.gz on success.
 
 import type { OrchestratorEnv } from "./platform/orchestrator-context.js";
-import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders } from "./media-finish-auth.js";
+import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorReachable, mediaFinishHeaders } from "./media-finish-auth.js";
 import {
   validateStoryboard,
   type SlotId,
@@ -249,7 +249,7 @@ export async function callImagePrep(
   // image-prep runs always-on on the fleet. The host sets IMAGE_PREP_URL; unset
   // skips rembg (the caller falls back to the original portrait). The 503 retry
   // stays as cheap transport insurance (issue #83).
-  if (!mediaDoorUrl(env, "IMAGE_PREP_URL")) return null;
+  if (!mediaDoorReachable(env, "IMAGE_PREP_URL")) return null;
   let resp: Response | null = null;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {

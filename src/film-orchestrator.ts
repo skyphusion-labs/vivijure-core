@@ -9,7 +9,7 @@
 
 import type { Env } from "./platform/orchestrator-context.js";
 import type { FetcherLike } from "./platform/types.js";
-import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
+import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorReachable, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
 import { assertBankedLoraKey, assertProjectKey } from "./key-safety.js";
 import {
   ASSEMBLE_PRESIGN_TTL_SECONDS,
@@ -1412,7 +1412,7 @@ export async function callAudioMix(
   },
   opts: { retries?: number; backoffMs?: number } = {},
 ): Promise<Response | null> {
-  if (!mediaDoorUrl(env, "AUDIO_MIX_URL")) return null; // unset -> caller degrades to single-track mux
+  if (!mediaDoorReachable(env, "AUDIO_MIX_URL")) return null; // unset -> caller degrades to single-track mux
   const retries = opts.retries ?? 3;
   const backoffMs = opts.backoffMs ?? 1500;
   const init = {
@@ -1439,7 +1439,7 @@ export async function callAudioMix(
  *  Otherwise the single-track remux is correct (and unchanged). */
 export function shouldMultiTrackMix(job: FilmJob, env: Env): boolean {
   const hasDialogue = !!job.dialogue_audio && Object.keys(job.dialogue_audio).length > 0;
-  return hasDialogue && !!job.audio_key && !!job.silent_film_key && Boolean(mediaDoorUrl(env, "AUDIO_MIX_URL"));
+  return hasDialogue && !!job.audio_key && !!job.silent_film_key && Boolean(mediaDoorReachable(env, "AUDIO_MIX_URL"));
 }
 
 /** #231: mix the film's dialogue (in the assembled video) under-ducked with the music bed + loudnorm via
