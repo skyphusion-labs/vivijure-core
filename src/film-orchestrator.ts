@@ -648,6 +648,13 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
   }
   const serving = picked.modules;
   if (!serving.length) {
+    // NOTE (cf#834, observed and deliberately not changed here): this returns BEFORE the dialogue
+    // leg, so a film with dialogue_lines and no finish module installed never attempts dialogue at
+    // all. On this path that is defensible -- post-clips dialogue audio is consumed by a lip-sync
+    // FINISH module (captions.ts: "baked into that shot's clip"), so with no finish chain there is
+    // no consumer and synthesizing it would be spend with no destination. It is still a silence the
+    // payload does not carry; the record for it belongs in the same projection cf#836 is adding,
+    // not in a second ad-hoc channel here.
     job.phase = job.clips_only ? "done" : "assemble";
     return;
   }
@@ -853,11 +860,42 @@ async function advancePreClipDialoguePhase(env: Env, job: FilmJob, preModules: R
   await finalizePreClipDialogue(env, job, preModules);
 }
 
+/** The post-clips dialogue leg's two terminal outcomes, in one place so its two entry points cannot
+ *  drift from each other the way the whole leg drifted from the pre-clip one (cf#834). */
+function failDialogue(job: FilmJob, lined: DialogueLine[], extra: string): void {
+  job.dialogue_poll = undefined;
+  job.phase = "failed";
+  const holes = lined.filter((l) => !job.dialogue_audio?.[l.shot_id]).map((l) => l.shot_id);
+  job.error = incompleteFilmError("dialogue", lined.length - holes.length, lined.length, holes, extra);
+}
+
+/** No dialogue module is INSTALLED. A retry cannot help and the clips still play, so this is the one
+ *  branch of this leg that is a degrade rather than a failure, the same shape as the #519
+ *  video-finish-tier-not-installed case. It is DECLARED: silence that nothing records is what
+ *  cf#834 is about. */
+function degradeDialogueUnavailable(job: FilmJob, lined: DialogueLine[], reason: string): void {
+  job.dialogue_degraded = reason;
+  emitStructuredEvent({
+    ev: "dialogue.unavailable",
+    film_id: job.film_id,
+    project: job.project,
+    lines: lined.length,
+    reason,
+  });
+}
+
 /** After finish_shots are built: if the film has dialogue lines AND a `dialogue` module is installed,
- *  submit the per-shot speech batch and enter the dialogue phase; otherwise go straight to finish. A
- *  submit failure (or no module) soft-degrades to a SILENT finish -- a dialogue glitch must never fail
- *  a fully-rendered film (lip-sync no-ops without an audio_key). Driving-audio films already have
- *  dialogue_audio from pre-clip TTS; skip the second submit. */
+ *  submit the per-shot speech batch and enter the dialogue phase; otherwise go straight to finish.
+ *  Driving-audio films already have dialogue_audio from pre-clip TTS; skip the second submit.
+ *
+ *  cf#834: this leg used to answer ALL SIX of its failure branches with a console.warn and a silent
+ *  finish, while the pre-clip leg answers the same six with incompleteFilmError. Same conditions,
+ *  opposite outcomes, and which one a film got turned on whether its motion door declared
+ *  driving_audio: 13 of the 15 installed doors take this one. A film that asked for voices and
+ *  shipped mute is a partial render reported as complete, so the two legs now agree. The single
+ *  genuine degrade (no module installed) is declared on the job doc instead of vanishing into a log
+ *  line. The rule is the one the mux leg adopted in 1.23.0: DEGRADE WHEN A RETRY CANNOT HELP, FAIL
+ *  WHEN IT CAN. */
 async function enterDialogueOrFinish(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
   if (job.dialogue_audio && Object.keys(job.dialogue_audio).length) {
     await enterSpeechOrFinish(env, job, preModules);
@@ -865,10 +903,18 @@ async function enterDialogueOrFinish(env: Env, job: FilmJob, preModules?: Regist
   }
   const lines = job.dialogue_lines;
   if (!lines || !lines.length) { await enterSpeechOrFinish(env, job, preModules); return; }
+  // SUBMIT the lines as given (unchanged), but judge completeness against the LINED ones only: an
+  // establishing shot with no text cannot produce audio and is not a hole. Same predicate the
+  // pre-clip leg finalizes on.
+  const lined = linedDialogueShots(lines);
   const envRec = env as unknown as Record<string, unknown>;
   const dialogueModule = servingForHook(preModules ?? await discoverModules(envRec), "dialogue")[0];
   const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
-  if (!fetcher) { await enterSpeechOrFinish(env, job, preModules); return; }  // no dialogue module bound: silent film
+  if (!fetcher) {
+    degradeDialogueUnavailable(job, lined, "no dialogue module installed; shipped a silent film");
+    await enterSpeechOrFinish(env, job, preModules);
+    return;
+  }
   const req = {
     hook: "dialogue" as const,
     input: { project: job.project, lines } as DialogueInput,
@@ -876,32 +922,53 @@ async function enterDialogueOrFinish(env: Env, job: FilmJob, preModules?: Regist
     context: { project: job.project, job_id: job.film_id },
   };
   const r = await invokeModule<DialogueInput, DialogueOutput>(fetcher, req);
-  if (!r.ok) { console.warn(`film ${job.film_id}: dialogue submit failed (${r.error}); silent finish`); await enterSpeechOrFinish(env, job, preModules); return; }
+  if (!r.ok) { failDialogue(job, lined, `submit failed: ${r.error}`); return; }
   if ((r as { pending?: boolean }).pending) { job.dialogue_poll = (r as { poll: string }).poll; job.phase = "dialogue"; return; }
   if ("output" in r) {
     const v = hookOutputViolation(dialogueModule.name, "dialogue", r.output);
-    if (v) { console.warn(`film ${job.film_id}: dialogue ${v}; silent finish`); await enterSpeechOrFinish(env, job, preModules); return; }
+    if (v) { failDialogue(job, lined, v); return; }
     applyDialogueOutput(job, r.output as DialogueOutput);
   }
+  // The gap `audio: []` used to walk through: conformance accepts an EMPTY audio array, so a module
+  // returning nothing took the SUCCESS path and applyDialogueOutput folded nothing, with no branch
+  // anywhere reporting a problem. A set difference against the lines is the only thing that sees it.
+  if (!dialogueSetComplete(job, lined)) return;
   await enterSpeechOrFinish(env, job, preModules);
 }
 
-/** Poll the in-flight dialogue batch. On done, record the per-shot audio map and advance to finish; a
- *  failure soft-degrades to a silent finish (the rendered clips are fine, just unvoiced). */
+/** True when every LINED shot has audio. Fails the film loud when it does not, mirroring
+ *  finalizePreClipDialogue, which has held this position for the driving-audio doors all along. */
+function dialogueSetComplete(job: FilmJob, lined: DialogueLine[]): boolean {
+  const holes = lined.filter((l) => !job.dialogue_audio?.[l.shot_id]);
+  if (!holes.length) return true;
+  failDialogue(job, lined, "dialogue module returned an incomplete set");
+  return false;
+}
+
+/** Poll the in-flight dialogue batch. On done, record the per-shot audio map and advance to finish.
+ *  cf#834: a poll-side failure no longer soft-degrades to a silent finish. The batch was accepted by
+ *  a module that was installed one tick ago, so every way this can end badly is one a resubmit can
+ *  recover, which is the FAIL side of the 1.23.0 rule; and the pre-clip poll has answered the
+ *  identical three conditions with incompleteFilmError all along. */
 async function advanceDialoguePhase(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
-  if (!job.dialogue_poll) { await enterSpeechOrFinish(env, job, preModules); return; }
-  const envRec = env as unknown as Record<string, unknown>;
-  const dialogueModule = servingForHook(preModules ?? await discoverModules(envRec), "dialogue")[0];
-  const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
-  if (!fetcher) { job.dialogue_poll = undefined; await enterSpeechOrFinish(env, job, preModules); return; }
-  const p = await pollModule<DialogueOutput>(fetcher, { poll: job.dialogue_poll });
-  if (!p.ok) { console.warn(`film ${job.film_id}: dialogue failed (${p.error}); silent finish`); job.dialogue_poll = undefined; await enterSpeechOrFinish(env, job, preModules); return; }
-  if ((p as { pending?: boolean }).pending) return;  // still synthesizing
-  const out = (p as { output: DialogueOutput }).output;
-  const v = hookOutputViolation(dialogueModule.name, "dialogue", out);
-  if (v) { console.warn(`film ${job.film_id}: dialogue ${v}; silent finish`); job.dialogue_poll = undefined; await enterSpeechOrFinish(env, job, preModules); return; }
-  applyDialogueOutput(job, out);
-  job.dialogue_poll = undefined;
+  const lined = linedDialogueShots(job.dialogue_lines);
+  // No poll token on a doc in phase "dialogue" means the token was LOST, not that the batch is done.
+  // Fall through to the completeness check (which fails on the holes) rather than to a silent finish.
+  if (job.dialogue_poll) {
+    const envRec = env as unknown as Record<string, unknown>;
+    const dialogueModule = servingForHook(preModules ?? await discoverModules(envRec), "dialogue")[0];
+    const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
+    if (!fetcher) { failDialogue(job, lined, "dialogue module no longer bound"); return; }
+    const p = await pollModule<DialogueOutput>(fetcher, { poll: job.dialogue_poll });
+    if (!p.ok) { failDialogue(job, lined, `poll failed: ${p.error}`); return; }
+    if ((p as { pending?: boolean }).pending) return;  // still synthesizing
+    const out = (p as { output: DialogueOutput }).output;
+    const v = hookOutputViolation(dialogueModule.name, "dialogue", out);
+    if (v) { failDialogue(job, lined, v); return; }
+    applyDialogueOutput(job, out);
+    job.dialogue_poll = undefined;
+  }
+  if (!dialogueSetComplete(job, lined)) return;
   await enterSpeechOrFinish(env, job, preModules);
 }
 
@@ -3688,7 +3755,9 @@ async function advanceFilmJobLocked(
   }
 
   // Phase 2.5: synthesize per-shot dialogue audio (one batch via the dialogue module), then -> finish.
-  // Soft-degrades to a silent finish on any failure (see advanceDialoguePhase).
+  // cf#834: this used to say "soft-degrades to a silent finish on any failure", which was true and
+  // was the defect. A film that asked for voices and could not get them now FAILS, like the pre-clip
+  // leg; the one degrade left (no dialogue module installed) is declared on job.dialogue_degraded.
   if (job.phase === "dialogue") {
     await advanceDialoguePhase(env, job, modules);
     await putFilm(env, job);

@@ -396,6 +396,16 @@ export interface FilmJob {
   // finish / container ERROR (the container ran and reported a real failure) still fails the render loud
   // (#245/#249). Surfaced on FilmSummary + a `film.finish_unavailable` structured event so the UI and
   // smoke tests can assert on it, never a silent green.
+  // cf#834: the POST-CLIPS dialogue leg shipped a silent film and recorded nothing, on 13 of the 15
+  // live motion doors (every door that does not declare driving_audio, including seedance, the
+  // hosted speed default). Its six failure branches now FAIL the film, matching the pre-clip leg
+  // that has always used incompleteFilmError, with ONE exception that is a real degrade rather than
+  // a failure: no dialogue module is INSTALLED, where a retry cannot help and the film still plays.
+  // That case ships silent and says so HERE, the honest reason, so the render is not a plain green.
+  // Separate from finish_unavailable on purpose: that field's contract is the video-finish tier
+  // being unavailable at assemble/mux, and widening its two closed unions to carry a different
+  // stage would make the field mean "something, somewhere, was missing". Projected by cf#836.
+  dialogue_degraded?: string;
   finish_unavailable?: {
     at: "assemble" | "mux";      // which delegated step could not run
     reason: string;              // the honest cause (VIDEO_FINISH_URL unset, or unreachable-after-retry)
@@ -911,6 +921,49 @@ export function filmFinishView(
     // Empty string is not a reason. Only a non-empty string counts as degraded.
     degraded: typeof ff.degraded === "string" && ff.degraded.length > 0 ? ff.degraded : null,
   };
+}
+
+/** cf#836: the per-stage degrade view the render payload carries, in the vocabulary the panel ALREADY
+ *  parses for the clip-finish chain (`{ degraded: <count>, reasons: <string[]> }`). One shape for every
+ *  stage means the frontend adds a parse per stage and not a parser per stage.
+ *
+ *  THE LADDER (fc#1662's, and it is the reason this returns undefined rather than a zeroed object):
+ *    key ABSENT        -> the stage was never reached. NOT MEASURED.
+ *    degraded: 0       -> the stage ran and ran clean.
+ *    degraded: n > 0   -> it ran and degraded, and `reasons` says how, in the studio's own words.
+ *  A stage that collapses "never ran" into "ran clean" rebuilds cf#549 one field over. */
+export interface StageDegradeView {
+  degraded: number;
+  reasons: string[];
+}
+
+function stageDegrades(reasons: (string | undefined)[]): StageDegradeView {
+  const real = reasons.filter((r): r is string => typeof r === "string" && r.length > 0);
+  return { degraded: real.length, reasons: uniqueFirstSeen(real) };
+}
+
+/** SPEECH: per-shot, last reason per shot (`SpeechShot.degraded`, written by advanceSpeechPhase's
+ *  `degrade` closure and by applySpeechOutput). Absent until the speech chain is built. */
+export function speechDegradeView(job: FilmJob): StageDegradeView | undefined {
+  if (!job.speech_shots) return undefined;
+  return stageDegrades(job.speech_shots.map((ss) => ss.degraded));
+}
+
+/** MASTER: per-chain-step, accumulated ("<binding>: <reason>", degradeMasterStep / applyMasterOutput).
+ *  Absent until the master chain is built, which is itself the honest answer for a film with no audio
+ *  bed or no master module installed: that stage was never reached. */
+export function masterDegradeView(job: FilmJob): StageDegradeView | undefined {
+  if (!job.master) return undefined;
+  return stageDegrades(job.master.degraded ?? []);
+}
+
+/** DIALOGUE: one reason, from the single declared degrade on the post-clips leg (cf#834). Present
+ *  once dialogue produced audio (ran clean) or declared itself unavailable (ran and degraded);
+ *  absent when the film never had a dialogue stage at all. */
+export function dialogueDegradeView(job: FilmJob): StageDegradeView | undefined {
+  const voiced = Object.keys(job.dialogue_audio ?? {}).length > 0;
+  if (!voiced && !job.dialogue_degraded) return undefined;
+  return stageDegrades([job.dialogue_degraded]);
 }
 
 /** #662 honesty invariant: does this finish shot's per-step ledger reconcile 1:1 to its chain? True unless

@@ -28,7 +28,14 @@
 
 import type { ClipJob } from "./render-orchestrator.js";
 import type { FilmJob } from "./film-model.js";
-import { clipDeliveries, filmFinishView, summarizeFinish } from "./film-model.js";
+import {
+  clipDeliveries,
+  dialogueDegradeView,
+  filmFinishView,
+  masterDegradeView,
+  speechDegradeView,
+  summarizeFinish,
+} from "./film-model.js";
 import { resolveFilmOutputKey } from "./film-output-key.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 
@@ -66,6 +73,18 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
     const fin = summarizeFinish(job.finish_shots);
     out.finish = { degraded: fin.degraded, reasons: fin.reasons };
   }
+  // cf#836: the SAME shape, for the three stages whose degrades reached nothing. master and speech
+  // were recorded on the job doc all along (job.master.degraded, job.speech_shots[].degraded) and
+  // simply never projected, so the panel's `limited` flag could not light for them and a film that
+  // was never mastered was indistinguishable from one that was. dialogue is the record cf#834 added.
+  // Each key is ABSENT when its stage was never reached, which is the state a zeroed object would
+  // destroy. The panel reads these with the parse it already has for `finish`.
+  const speech = speechDegradeView(job);
+  if (speech) out.speech = speech;
+  const master = masterDegradeView(job);
+  if (master) out.master = master;
+  const dialogue = dialogueDegradeView(job);
+  if (dialogue) out.dialogue = dialogue;
   if (job.keyframes_only && job.keyframes?.length) {
     out.keyframes = job.keyframes.map((k) => ({ shot_id: k.shot_id, key: k.keyframe_key }));
     out.scenes = job.scenes;

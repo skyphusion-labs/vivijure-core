@@ -3,14 +3,18 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.24.1
+## Unreleased / v1.25.0
 
 Cycle opened by the first PR after the v1.24.0 cut, which is the documented steady state and
 not a deviation: `main` sits on a tagged version between releases, so a bare `## Unreleased`
 is refused and the next PR opens the next version. Entries live as `changelog.d/` fragments
-and are folded in here by `changelog-assemble.mjs` at cut time. PATCH: the work opening this
-cycle is `fix(film)` with no new surface. A later PR in this cycle that adds surface has to
-raise this heading and `package.json` to the next MINOR before it lands.
+and are folded in here by `changelog-assemble.mjs` at cut time.
+
+RAISED FROM 1.24.1 TO 1.25.0 by the PR that added the surface, which is what the PATCH opening
+said had to happen: cf#836 puts three new top-level per-stage degrade keys (`speech`, `master`,
+`dialogue`) on the render payload, and the panel reads them. New consumer surface makes the
+cycle a MINOR. The cycle was opened at PATCH correctly, because the work opening it was
+`fix(film)` with none; raising it here is the documented move and not a correction.
 
 ## [1.24.0] -- 2026-09-27
 
