@@ -105,7 +105,9 @@ import {
   findClipDurationShortfalls,
   captionDurations,
   resolveDeliveryResolution,
+  selectDeliveryFromMeasured,
   DEFAULT_DELIVERY_FPS,
+  type DeliveryResolution,
 } from "./film-model.js";
 import {
   admitAssemble,
@@ -1254,6 +1256,31 @@ export async function measuredClipDimensions(
     return out;
   }
   return out;
+}
+
+/**
+ * The delivery target for ASSEMBLE: what the doors actually produced, not a constant.
+ *
+ * cf#813. The assemble seam used to call `resolveDeliveryResolution(job)` and nothing else, and
+ * since nothing in either repo ever sets `delivery_width` / `delivery_height` on a job, that is
+ * 1920x1080 on every film in production. Meanwhile the source dimensions were ALREADY measured on
+ * every done clip, ALREADY persisted, and ALREADY read back one function away -- just never at this
+ * seam. This reads them.
+ *
+ * PRECEDENCE, and the order is the contract:
+ *   1. An explicit `delivery_*` on the job WINS, always. An operator target is a decision, and a
+ *      measurement must never silently override a decision.
+ *   2. Otherwise the measured source geometry (selectDeliveryFromMeasured owns the mixed rule).
+ *   3. Otherwise the historical default, reported as `default-unmeasured` rather than as a fact.
+ *
+ * Costs one R2 GET per assemble submit, on the same document `measuredClipSeconds` already reads in
+ * the same pass. It is not on the poll path.
+ */
+export async function resolveAssembleDelivery(env: Env, job: FilmJob): Promise<DeliveryResolution> {
+  const explicit = resolveDeliveryResolution(job);
+  if (explicit.decided) return explicit;
+  const dims = await measuredClipDimensions(env, job);
+  return selectDeliveryFromMeasured([...dims.values()]);
 }
 
 /**
@@ -2629,7 +2656,12 @@ async function enterAssemblePhase(
   // Native AV (Seedance/Flux/Veo) already talks. Keep per-clip audio. Silent i2v
   // clips are padded. Lip-sync is opt-in replace, not the only soundtrack.
   const keepClipAudio = true;
-  const delivery = resolveDeliveryResolution(job);
+  // cf#813: MATCH THE SOURCE. Never upscale a 720p door's output to 1080p for no information, and
+  // never destroy a 1080p or 4k one to hit a constant. `delivery.basis` records which of those
+  // three ways the number was arrived at, because the admission gate below sizes a byte budget
+  // against it and a budget built on a default is a different claim from one built on a
+  // measurement.
+  const delivery = await resolveAssembleDelivery(env, job);
   let payload: FinishPayload = {
     clips: [],
     outputUrl: "https://invalid.invalid/assemble",
