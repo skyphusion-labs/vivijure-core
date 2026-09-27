@@ -16,6 +16,14 @@ Step 1 also closes the changelog cycle: as of core#202, running `node scripts/ch
 
 BEFORE that step, run `node scripts/changelog-release-cut-check.mjs` (core#212): it refuses if any open PR still touches `CHANGELOG.md` directly, since closing the heading now would strand that PRs entry under it once merged. Wait for those PRs to land, or ask their authors to switch to a `changelog.d/` fragment first, which is immune to this by construction.
 
+> **CHECK ALL THREE VERSION SLOTS INDIVIDUALLY, BEFORE AND AFTER THE ASSEMBLE (rollins,
+> 2026-09-27, v1.25.0 cut).** There are three, not two: `package.json`, `package-lock.json`'s
+> top-level `version`, and its `packages[""].version`. Read each one on its own with
+> `node -p 'require("./package-lock.json").packages[""].version'` rather than grepping for the old
+> string, because **a count cannot tell you WHICH slot it found** and a global replace that moved two
+> of three looks identical to one that moved all three. Do it again AFTER the assembler runs: the
+> assembler does not touch `package.json`, and confirming that is cheaper than discovering it did.
+>
 > **The lock file is step 1 too, and the procedure did not say so until the v1.23.0 cut.** Bumping
 > `package.json` alone leaves `package-lock.json` on the spent version. Nothing in the documented
 > steps catches that; the only thing that does is `tests/changelog-version.test.ts`, whose
@@ -34,6 +42,14 @@ BEFORE that step, run `node scripts/changelog-release-cut-check.mjs` (core#212):
 > (`curl https://registry.npmjs.org/@skyphusion-labs%2Fvivijure-core`), which bypasses npm's local
 > cache entirely, ALSO reported the version absent -- so this is not a client cache and you cannot
 > rule it out by removing one. npm's own publish output says so plainly:
+>
+> **THREE READINGS NOW, AND THE WINDOW IS NOT CONVERGING (rollins, 2026-09-27, v1.25.0 cut).**
+> v1.23.0 took about 2 minutes, v1.24.0 about 20 seconds, and **v1.25.0 about 2 minutes 40 seconds**:
+> six consecutive polls returned E404 for the new version with `dist-tags.latest` still reading the
+> PREVIOUS one, beside a green workflow and a signed publish, and then it appeared. **So 20 seconds
+> was the outlier, not the trend, and anyone treating it as typical would have called v1.25.0 a
+> failed publish three times over.** Do not derive a timeout from any single cut; the step log is the
+> evidence and the clock is not.
 > *"Your package is being processed and may take a few minutes to become available."*
 >
 > **Do not conclude a failed publish from an absent version.** Read the `Publish to npm` STEP LOG
@@ -191,7 +207,7 @@ consistent with the file.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
-| `vivijure-core-v1.25.0` | 1.25.0 |  |  | **MINOR.** New consumer surface on the render payload, which is what makes the cycle a MINOR rather than the PATCH it was opened at: cf#836 adds three top-level per-stage degrade keys (`speech`, `master`, `dialogue`) that the panel reads, so three of the four stage signals become reachable for the first time. Also: the assembled film's target resolution now MATCHES its source instead of a fixed 1920x1080 (cf#813); the deliverable film is VERIFIED to exist rather than its key guessed (cf#833); an unreachable finish tier delivers the clips instead of failing the render (core#327); an unreadable clip body is a SKIP and a skip stops disabling Layer 1 (core#310); the /inspect retry budget is spent on the condition it was written for (core#321); dialogue failures fail what that leg cannot deliver (cf#834); film artifact structure (cf#835); content validation reports UNMEASURED honestly (cf#856); and the stale satellite reference in the RunPod job log is corrected, with its audio half recorded as moot (cf#846). Ten fragments folded. |
+| `vivijure-core-v1.25.0` | 1.25.0 | e82db9a | 2026-09-27 | **MINOR.** New consumer surface on the render payload, which is what makes the cycle a MINOR rather than the PATCH it was opened at: cf#836 adds three top-level per-stage degrade keys (`speech`, `master`, `dialogue`) that the panel reads, so three of the four stage signals become reachable for the first time. Also: the assembled film's target resolution now MATCHES its source instead of a fixed 1920x1080 (cf#813); the deliverable film is VERIFIED to exist rather than its key guessed (cf#833); an unreachable finish tier delivers the clips instead of failing the render (core#327); an unreadable clip body is a SKIP and a skip stops disabling Layer 1 (core#310); the /inspect retry budget is spent on the condition it was written for (core#321); dialogue failures fail what that leg cannot deliver (cf#834); film artifact structure (cf#835); content validation reports UNMEASURED honestly (cf#856); and the stale satellite reference in the RunPod job log is corrected, with its audio half recorded as moot (cf#846). Ten fragments folded. |
 | `vivijure-core-v1.24.0` | 1.24.0 | 832e823 | 2026-09-27 | **MINOR.** Two additive changes, no `MODULE_API` bump. (1) The module contract's `/invoke` failure arm gains `reason?: InvokeFailureReason` (core#291): a closed union of eleven fault classes with an enumerable `INVOKE_FAILURE_REASONS` and a total `INVOKE_FAILURE_DISPOSITION` map. `error` stays required; ABSENT means the module has not adopted the field, and is never defaulted to a class. (2) A pre-flight input-bytes admission check refuses an assemble that cannot fit the container's ephemeral disk before the first presign is minted (cf#815), with the threshold derived from cf#813's measured normalized bitrate rather than from `MAX_CLIPS x MAX_CLIP_BYTES`, which is the whole disk and could never fire. **No behaviour change for any film that fits:** the gate admits everything under roughly 82 minutes of 1080p24 delivery, and the largest film the clip path can produce keeps a 7x margin. A refused film fails LOUD and terminal with the arithmetic, never a silent degrade. |
 | `vivijure-core-v1.23.0` | 1.23.0 | a54e32e | 2026-09-27 | **MINOR.** Chunked assemble goes LIVE: the Worker mints the `partialUrls` pool and every assemble presign gets a TTL that outlives the job (core#301). CPU media doors gain an optional in-process Fetcher seam, so the container is reached through a binding instead of a hostname (cf#810). **Two behaviour changes:** a studio with the container BOUND and `VIDEO_FINISH_URL` UNSET is now reachable, where it previously degraded to tier-not-installed; and a MISSING bearer is no longer fatal on the bound path (a configured token is still sent, and the public path keeps fail-closed). |
 | `vivijure-core-v1.22.5` | 1.22.5 |  |  | **PATCH.** Resubmit a clip shot that died on provider load / 429 / 7003. Cap 3. A real 400 still fails immediately. |
