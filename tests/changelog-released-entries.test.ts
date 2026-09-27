@@ -90,14 +90,32 @@ function releasedSections(changelog: string, tags: Set<string>): Section[] {
   return out;
 }
 
+/** Memo for introducingCommit. core#319: the two expensive cases below resolve the SAME entry set
+ *  independently -- 94 entries, so 188 pickaxe searches for 94 answers. Cached across both.
+ *
+ *  A MEMO AND NOT A BATCH, deliberately, and the measurement is why: one `-S` search costs about
+ *  10ms, there are 94 entries, and 104 commits touch CHANGELOG.md. So the batched alternative
+ *  (`git show <sha>:CHANGELOG.md` for every commit, then match in memory) needs MORE subprocesses
+ *  than the thing it replaces. Halving 188 to 94 is the whole reduction available here; the rest of
+ *  this file's cost is irreducible, which is why its elevated timeout stays. Do not "finish the job"
+ *  by batching this one -- it was measured and it is slower.
+ *
+ *  `null` is cached as well as a sha: an unresolvable entry is a real answer and re-searching for it
+ *  is the most expensive case, since the pickaxe walks the whole history before returning nothing. */
+const introducingCommitMemo = new Map<string, string | null>();
+
 /** The oldest commit that introduced this entry's title into CHANGELOG.md. */
 function introducingCommit(title: string): string | null {
+  const cached = introducingCommitMemo.get(title);
+  if (cached !== undefined) return cached;
   // Match on the title text, escaped for the shell. A 70-char slice keeps the -S needle away from
   // trailing punctuation that a later reword may have touched.
   const needle = title.slice(0, 70).replace(/'/g, "'\\''");
   const shas = git(`log --format=%H --diff-filter=AM -S'${needle}' -- CHANGELOG.md`, true)
     .split("\n").filter(Boolean);
-  return shas.length ? shas[shas.length - 1] : null;
+  const result = shas.length ? shas[shas.length - 1] : null;
+  introducingCommitMemo.set(title, result);
+  return result;
 }
 
 // The reason must be on the SAME LINE as the marker. `\s` matches newlines, so an earlier
