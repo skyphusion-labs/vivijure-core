@@ -20,6 +20,7 @@ import {
   validateConfig,
 } from "./modules/registry.js";
 import { tenantR2FromEnv, withTenantR2 } from "./modules/tenant-r2.js";
+import { INVOKE_FAILURE_DISPOSITION, isInvokeFailureReason } from "./modules/types.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
 
@@ -87,6 +88,30 @@ export function classifyTransientFailure(error: string | undefined): "transient"
   if (/\b7003\b/.test(e)) return "transient";
   if (/high load|cannot process your request|please try again later/i.test(e)) return "transient";
   return "deterministic";
+}
+
+/**
+ * Classify a module FAILURE, preferring its DECLARED fault class over its prose (#291).
+ *
+ * `classifyTransientFailure` above reads English to decide whether a render step is retried. That
+ * is the defect #291 exists to end, and this is the consumer that ends it: when the module declared
+ * `reason`, the disposition comes from the CONTRACT and the sentence is never inspected, so
+ * rewording an error message cannot move a retry decision.
+ *
+ * ABSENT OR MALFORMED FALLS BACK TO PROSE, for two different reasons that happen to share one
+ * branch. Absent is a module that has not adopted the field, and the legacy road must keep working
+ * or nothing ships. Malformed is refused at the conformance GATE, so the safe reading at RUNTIME is
+ * "learned nothing", never "invent a nearby class". Neither is ever mapped onto a fault class here.
+ *
+ * The fallback surviving the new field is the failure mode worth testing, and prose agreeing with
+ * the class cannot catch it, so tests/invoke-failure-reason-291.test.ts CONTRADICTS the two
+ * channels against each other in both directions.
+ */
+export function classifyInvokeFailure(
+  failure: { error?: string; reason?: unknown },
+): "transient" | "deterministic" {
+  if (isInvokeFailureReason(failure.reason)) return INVOKE_FAILURE_DISPOSITION[failure.reason];
+  return classifyTransientFailure(failure.error);
 }
 
 /** Consecutive transient poll errors a clip shot tolerates before failing loud (#719). */
@@ -369,7 +394,7 @@ export async function startClipJob(
       ),
     );
     if (!r.ok) {
-      if (classifyTransientFailure(r.error) === "transient") {
+      if (classifyInvokeFailure(r) === "transient") {
         shot.submit_attempts = 1;
         shot.error = `transient submit retry 1/${CLIP_SUBMIT_MAX_ATTEMPTS}: ${r.error}`;
         // stays pending with no poll token; advanceClipJob re-invokes next tick
@@ -486,7 +511,7 @@ export async function advanceClipJob(env: Env, jobId: string, preModules?: Regis
       ),
     );
     if (!r.ok) {
-      if (classifyTransientFailure(r.error) === "transient") {
+      if (classifyInvokeFailure(r) === "transient") {
         const attempts = (shot.submit_attempts ?? 0) + 1;
         if (attempts < CLIP_SUBMIT_MAX_ATTEMPTS) {
           shot.submit_attempts = attempts;

@@ -9,16 +9,30 @@
 
 /** The contract version a module targets. Bumped only on a breaking change to these shapes. */
 export const MODULE_API = "vivijure-module/2" as const;
-// Contract versions the host + conformance ACCEPT. The host is /2 (the identity strip dropped the
-// legacy per-operator identity field from NotifyInput + InvokeContext -- a breaking narrowing for a
-// consumer that read it, so change-control bumps the version). /1 is accepted TRANSITIONALLY so
-// first-party /1 modules keep loading while they migrate: they never read that field, so a /2 host
-// (which sends none) is functionally fine for them. A simultaneous 28-module cutover would be riskier.
+// THE /1 WINDOW IS CLOSED. #293 opened it, #294 closed it, and this block is now the whole truth
+// about it, because the prose that used to sit here said the OPPOSITE of the code nine lines below
+// for two releases (#291). /1 is REJECTED, at LOAD and at CONFORMANCE alike: `validateManifest` and
+// `checkManifest` both test membership of SUPPORTED_MODULE_APIS, which holds /2 and nothing else.
+// There is no transitional acceptance, no grace period, and no first-party /1 module left.
+//
+// The host is /2 because the identity strip dropped the legacy per-operator identity field from
+// NotifyInput + InvokeContext: a breaking narrowing for a consumer that read it, so change-control
+// bumped the epoch.
+
+/** Every module contract epoch that has EXISTED. Naming an epoch is not accepting one: /1 stays
+ *  nameable so historical code and migration notes remain expressible, and it is refused everywhere
+ *  it is actually read. Anything the core will LOAD is `SupportedModuleApi` instead. */
 export type ModuleApi = "vivijure-module/1" | "vivijure-module/2";
-// A SET of currently-supported contract epochs, not a brittle exact-match. The /1 deprecation
-// window from #293 is CLOSED (#294): every first-party module is /2 and /1 manifests are rejected.
-// The ModuleApi union above keeps /1 nameable as a historical epoch; this Set is the policy.
-export const SUPPORTED_MODULE_APIS: ReadonlySet<ModuleApi> = new Set(["vivijure-module/2"]);
+
+/** The epoch a manifest must target to load. Kept as its own NAME rather than narrowing `ModuleApi`
+ *  in place, so the type the code enforces and the type that merely names history can never be
+ *  mistaken for each other again -- which is exactly how the stale prose above survived. */
+export type SupportedModuleApi = "vivijure-module/2";
+
+/** A SET of currently-supported contract epochs, not a brittle exact-match, and THIS IS THE POLICY:
+ *  when a comment, a type or a doc disagrees with this Set, the Set is right and the prose is stale.
+ *  Built from MODULE_API rather than a repeated literal, so the two cannot drift apart. */
+export const SUPPORTED_MODULE_APIS: ReadonlySet<ModuleApi> = new Set([MODULE_API]);
 
 /** The pipeline extension points. `pick one` hooks resolve to a single module; `chain` hooks run
  *  every installed module in `ui.order`, each consuming the previous output. */
@@ -252,7 +266,7 @@ export interface FinishArtifactsDecl {
 export interface ModuleManifest {
   name: string; // unique module id
   version: string;
-  api: ModuleApi;
+  api: SupportedModuleApi;
   hooks: HookName[];
   provides?: Provides[];
   config_schema?: ConfigSchema;
@@ -466,6 +480,134 @@ export interface InvokeRequest<I = unknown> {
   r2?: TenantR2Config;
 }
 
+/**
+ * Closed fault classes a module may declare on an `/invoke` FAILURE (#291).
+ *
+ * WHY A FIELD AND NOT A SENTENCE. `error` is prose, and prose is for humans. Until this existed the
+ * failure arm had exactly ONE channel, so a consumer that needed to branch on WHY had to regex
+ * English -- and the core does precisely that today, in `classifyTransientFailure`
+ * (render-orchestrator.ts), which matches `/->\s*(\d{3})/`, `/unreachable|timed? ?out|network|.../i`,
+ * `/\b7003\b/` and `/high load|please try again later/i` to decide whether a render step is retried
+ * or failed. A module that REWORDS its message therefore changes a retry decision it never knew it
+ * was making. The success arm has enforced the opposite discipline for a long time (`applied`,
+ * `PollResponse.outcome`), so the contract demanded on the way up what it made impossible on the
+ * way down.
+ *
+ * GLOBAL, NOT PER-HOOK, and that is a decision rather than an omission. The consumer that needs
+ * this most -- the transient-vs-deterministic retry call -- is hook-agnostic: ONE function serves
+ * motion.backend, finish, speech and the rest, so a per-hook vocabulary would still need a global
+ * projection to feed it, plus twelve sets to keep in step. `PollFailureOutcome` on the sibling arm
+ * is already global for the same reason. A hook's OWN vocabulary belongs in its typed output and in
+ * `error` prose; it does not belong in the fault class.
+ *
+ * EVERY MEMBER IS DERIVED FROM A FAILURE THIS CODEBASE ALREADY PRODUCES. None was invented to round
+ * the set out, and the citation for each sits on the member so a later reader can check the claim
+ * rather than trust it.
+ */
+export type InvokeFailureReason =
+  /** The module REJECTED the request payload. Deterministic: the identical call fails identically.
+   *  Cited: beat-analyze.ts `"audioKey required"`; runpod-submit.ts `"invalid job id", status: 400`;
+   *  the classifier's own deterministic fixture `Invalid request body: field "resolution" ...`. */
+  | "bad-input"
+  /** The module does not serve the requested hook / capability at all. Cited: the install gate's
+   *  `DEGRADE_PROBE_HOOK` (`"not.a.real.hook"`, conformance.ts) -- the one `ok:false` the core
+   *  provokes on purpose -- and `checkHookOutput`'s `"unknown hook"`. */
+  | "unsupported"
+  /** A binding, endpoint id or URL the module needs is ABSENT. This is the issue's "endpoint
+   *  absent". Cited: runpod-submit.ts `runpodMissingEndpoint()` and `runpodMissingCredential()`;
+   *  render-mux.ts `"video-finish URL not configured"`; beat-analyze.ts `"AUDIO_BEAT_SYNC_URL
+   *  unset"`; runpod-submit.ts `"LOCAL_BACKEND_URL not configured"`. */
+  | "not-configured"
+  /** A credential EXISTS and the upstream refused it. Deliberately apart from `not-configured`: the
+   *  operator action is rotate-or-grant, not set-the-binding, and collapsing the two sends someone
+   *  hunting a key that is already there. Cited: runpod-endpoint-reconcile.ts
+   *  `live.status === 401 || live.status === 403`; media-finish-auth.ts (a token that 401s every
+   *  film); the plane refusals runpod-route.ts enumerates (unauthorized 401, endpoint_not_allowed
+   *  and tenant_suspended 403). */
+  | "unauthorized"
+  /** A CEILING was reached, so the work was refused rather than attempted. Cited: storage-quota.ts,
+   *  which denies with status 507 and `"storage quota reached: ... delete renders or raise the
+   *  knob"`. */
+  | "quota-exceeded"
+  /** Throttled; the identical call may succeed later. Kept apart from `upstream-unavailable`
+   *  because runpod-submit.ts already names the two separately ("429 (rate limited) and 5xx (server
+   *  error)"), and because only one of them is anyone's to fix. */
+  | "rate-limited"
+  /** The module could not REACH its backend, or the backend answered 5xx / a provider blip. Cited:
+   *  the transient limb of `classifyTransientFailure` -- `unreachable|timeout|network|econnreset|
+   *  fetch failed`, 5xx, AiGatewayError 7003, and the google-veo "high load ... try again later"
+   *  body measured 2026-08-20. */
+  | "upstream-unavailable"
+  /** The backend ACCEPTED the work and the work itself failed (model / pipeline fault). Cited:
+   *  `PollFailureOutcome`'s own `"backend-error"` on the sibling arm, and the classifier's
+   *  deterministic fixture `"CUDA out of memory"`. */
+  | "backend-error"
+  /** The work was cancelled. Cited: `PollFailureOutcome`'s `"cancelled"`, the note beside it that
+   *  the legacy path derives it from `runpodStatus === "CANCELLED"`, and CancelRequest /
+   *  `cancelModule`. */
+  | "cancelled"
+  /** The module's OWN wall-clock ceiling elapsed. Cited: `ModuleManifest.max_invocation_seconds`,
+   *  which IS that guard and exists because core could not otherwise learn it, plus registry.ts
+   *  `"module async job did not finish within the poll window"`. */
+  | "timeout"
+  /** The module faulted in a way it cannot classify. The honest last resort and NOT a dumping
+   *  ground: a module that CAN name the class must. Cited: cast-lora-train.ts
+   *  `{ ok: false, error: "poll threw" }`, and registry.ts `"module returned a malformed
+   *  InvokeResponse"`. */
+  | "internal";
+
+/** The closed set, ENUMERABLE by a consumer. #291 asks that a consumer be able to list the classes
+ *  rather than discover them from a switch statement somewhere, so this array is the list and
+ *  `InvokeFailureReason` is derived from the same eleven words by hand-kept parity that
+ *  tests/invoke-failure-reason-291.test.ts asserts in both directions. */
+export const INVOKE_FAILURE_REASONS: readonly InvokeFailureReason[] = [
+  "bad-input",
+  "unsupported",
+  "not-configured",
+  "unauthorized",
+  "quota-exceeded",
+  "rate-limited",
+  "upstream-unavailable",
+  "backend-error",
+  "cancelled",
+  "timeout",
+  "internal",
+];
+
+/**
+ * What a consumer should DO with each class: may the identical call be retried, or is the answer
+ * settled?
+ *
+ * THIS IS THE MECHANISM HALF of #291, and it is why the set cannot grow silently. It is a TOTAL
+ * `Record`, so adding a member to the union without deciding its disposition is a typecheck
+ * failure rather than a shrug at some call site. A closed set with no total map over it is a free
+ * string wearing a union's clothes.
+ *
+ * The values are a faithful projection of what `classifyTransientFailure` already decides from
+ * prose, so adopting `reason` changes NO render's behaviour on day one: it only stops the decision
+ * depending on wording. That agreement is asserted against the real error strings cited above in
+ * tests/invoke-failure-reason-291.test.ts, rather than claimed here in a comment.
+ */
+export const INVOKE_FAILURE_DISPOSITION: Record<InvokeFailureReason, "transient" | "deterministic"> = {
+  "bad-input": "deterministic",
+  unsupported: "deterministic",
+  "not-configured": "deterministic",
+  unauthorized: "deterministic",
+  "quota-exceeded": "deterministic",
+  "rate-limited": "transient",
+  "upstream-unavailable": "transient",
+  "backend-error": "deterministic",
+  cancelled: "deterministic",
+  timeout: "transient",
+  internal: "deterministic",
+};
+
+/** Membership test for a value arriving off the wire. NOTE WHAT IT REFUSES TO DO: it never maps an
+ *  unknown string onto a nearby class, so a typo can never read as a fault. */
+export function isInvokeFailureReason(v: unknown): v is InvokeFailureReason {
+  return typeof v === "string" && (INVOKE_FAILURE_REASONS as readonly string[]).includes(v);
+}
+
 /** A module failure is data, never an exception across the wire: the core degrades, it does not
  *  crash, when a module returns `ok: false`. */
 export type InvokeResponse<O = unknown> =
@@ -474,7 +616,37 @@ export type InvokeResponse<O = unknown> =
   //   jobId (#318, OPTIONAL/additive -- no MODULE_API bump): the backend RunPod job id, so the core can
   //   read that job's progress snapshot (counts.keyframe_done) for sub-phase progress. Omit -> graceful
   //   degrade (no sub-progress).
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      /** Human-readable, and it STAYS required. A person reading a job log needs the sentence; the
+       *  whole point of `reason` is that a MACHINE never has to. */
+      error: string;
+      /**
+       * The machine-readable fault class (#291). OPTIONAL and additive -- no MODULE_API bump, the
+       * same class of change as `jobId` on this arm (#318) and `outcome` on PollResponse (local#304).
+       *
+       * OPTIONAL, AND DELIBERATELY NOT DEFAULTED. A default has to pick a class, and every class is
+       * a claim: defaulting to `internal` would report a fault the module never declared, and an
+       * `"unknown"` member would make "this module has not adopted the field" indistinguishable
+       * from "no class applies" -- which is the two-states-rendering-as-one defect this issue
+       * exists to remove, relocated one layer down. So ABSENT means exactly one thing: THIS MODULE
+       * HAS NOT ADOPTED `reason`. A consumer reading an absent value takes the prose path it took
+       * before; that is the legacy road, not a fault class.
+       *
+       * MALFORMED IS NOT ABSENT. A value outside the set FAILS conformance (checkInvokeResponse),
+       * which is the same division of labour `participation` uses: refuse the typo at the GATE so
+       * it can never read as a class, while the LOADER stays permissive so a third-party module is
+       * not ours to fail. Read it with `isInvokeFailureReason`, never with a bare truthiness check.
+       *
+       * DEGRADES ARE NOT FAILURES AND DO NOT BELONG HERE. An honest soft-degrade on a polish step
+       * is `ok: true` + passthrough + `applied: []` + `degraded: "<reason>"` on the hook's OWN
+       * output type (FinishOutput / SpeechOutput / ScoreOutput), and it must never be reported as
+       * an invoke failure. A structured class for THAT arm is a separate, per-hook-output change
+       * (#291 design question 2); putting it on this envelope would make the two indistinguishable
+       * at exactly the seam that must keep them apart.
+       */
+      reason?: InvokeFailureReason;
+    };
 
 /** Body POSTed to a long-running module's `/poll` to check an async job. */
 export interface PollRequest {
@@ -1094,7 +1266,7 @@ export interface RenderConfigProjection {
  *  module view (no internal `binding`); the hook index maps each hook to the module NAMES serving
  *  it, so the frontend has everything it needs to project the pipeline without seeing topology. */
 export interface ModulesResponse {
-  api: ModuleApi;
+  api: SupportedModuleApi;
   modules: PublicModule[];
   hooks: Partial<Record<HookName, string[]>>; // hook -> module names serving it
   catalog: HookCatalogEntry[];                 // every hook (name + blurb + cardinality)
