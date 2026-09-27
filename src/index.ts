@@ -62,6 +62,7 @@ export {
   mediaDoorUrl,
   mediaDoorReachable,
   mediaDoorFetch,
+  mediaDoorFetcher,
   videoFinishUrl,
   videoFinishReachable,
   videoFinishFetch,
@@ -69,6 +70,8 @@ export {
   MediaFinishAuthError,
   isMediaFinishAuthError,
   type MediaDoorKey,
+  type MediaDoorFetcher,
+  type MediaDoorFetchers,
 } from "./media-finish-auth.js";
 export * from "./runpod-types.js";
 export * from "./render-module-config.js";

@@ -12,7 +12,13 @@
  * is not "job gone".
  */
 import type { Env } from "./platform/orchestrator-context.js";
-import { isMediaFinishAuthError, mediaFinishHeaders, videoFinishFetch, videoFinishUrl } from "./media-finish-auth.js";
+import {
+  isMediaFinishAuthError,
+  mediaDoorFetcher,
+  mediaFinishHeaders,
+  videoFinishFetch,
+  videoFinishUrl,
+} from "./media-finish-auth.js";
 import { presignR2Get, presignR2Put } from "./presign.js";
 
 export const HOSTED_FINISH_POLL_BOXES = ["jello", "descendents", "badbrains"] as const;
@@ -281,10 +287,26 @@ type StatusHit =
   | { kind: "missing" };
 
 async function pollOne(env: Env, base: string, jobId: string): Promise<StatusHit> {
+  return pollVia(env, (path, init) => fetch(base + path, init), jobId);
+}
+
+/**
+ * One poll, over whatever transport the caller supplies.
+ *
+ * Split out for cf#810: SUBMIT goes through the binding but POLL used a raw global fetch against
+ * per-box hostnames, and shipping only half of that would have submitted into the container and
+ * then polled three authoritative NXDOMAINs for the answer. Every job would have hung as `missing`
+ * until the not-found streak gave up. Transport is one decision, so it is made in one place.
+ */
+async function pollVia(
+  env: Env,
+  send: (path: string, init: RequestInit) => Promise<Response>,
+  jobId: string,
+): Promise<StatusHit> {
   const headers = await mediaFinishHeaders(env);
   let resp: Response;
   try {
-    resp = await fetch(`${base}/async/status/${encodeURIComponent(jobId)}`, { headers });
+    resp = await send(`/async/status/${encodeURIComponent(jobId)}`, { headers });
   } catch {
     return { kind: "missing" };
   }
@@ -310,6 +332,18 @@ async function pollOne(env: Env, base: string, jobId: string): Promise<StatusHit
 }
 
 export async function pollVideoFinishAsync(env: Env, jobId: string): Promise<StatusHit> {
+  // Bound door: ONE target, not a fan-out. The per-box fan-out exists because jobs lived in the
+  // memory of one of several replicas behind a load balancer, so a 404 from a peer was not
+  // evidence. A DO stub is a single addressable instance and there are no peers to ask.
+  //
+  // The not-found STREAK is kept anyway, deliberately. Async job state still lives in container
+  // process memory (#784 item 2 is not done), and a container restart or an instance eviction
+  // loses it, so a 404 here is still "possibly transient" rather than proof the job never existed.
+  // Tightening that debounce is a change to make when the state is externalised, not now.
+  const bound = mediaDoorFetcher(env, "VIDEO_FINISH_URL");
+  if (bound) {
+    return pollVia(env, (path, init) => bound.fetch("http://video-finish" + path, init), jobId);
+  }
   const urls = videoFinishPollUrls(env);
   if (urls.length === 0) return { kind: "missing" };
   const hits = await Promise.all(urls.map((u) => pollOne(env, u, jobId)));
