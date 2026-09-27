@@ -2,7 +2,14 @@
 
 import type { Env, ExecutionContext } from "./platform/orchestrator-context.js";
 import { videoFinishReachable } from "./media-finish-auth.js";
-import { encodeAssemblePoll, tickVideoFinishAssemble } from "./video-finish-assemble.js";
+import {
+  ASSEMBLE_PRESIGN_TTL_SECONDS,
+  deletePartialPool,
+  encodeAssemblePoll,
+  mintPartialUrlPool,
+  tickVideoFinishAssemble,
+  type FinishPayload,
+} from "./video-finish-assemble.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 import {
   advanceFilmJob,
@@ -499,22 +506,28 @@ async function assembleScatterClips(
     return;
   }
   const outputKey = scatterOutKey(job.scatter_id);
-  let payload = {
-    clips: [] as { url: string }[],
+  let payload: FinishPayload = {
+    clips: [],
     outputUrl: "https://invalid.invalid/gather",
     outputKey,
     keepClipAudio: true,
   };
   if (!job.assemble_poll) {
-    const presigned: { url: string }[] = [];
-    for (const c of clips) {
-      presigned.push({ url: await presignR2Get(env, c.clip_key, 1800) });
-    }
-    payload = {
-      ...payload,
-      clips: presigned,
-      outputUrl: await presignR2Put(env, outputKey, 1800),
-    };
+    // ASSEMBLE_PRESIGN_TTL_SECONDS, not the old hardcoded 1800. Under chunked assemble batch N
+    // downloads its clips only after batch N-1 has finished encoding, and the final pass reads
+    // the FIRST partial at the very END of the job, so every URL here has to cover the whole
+    // job rather than its first half hour. Minted in parallel: a chunked film needs 1 + 3n
+    // signatures and sequential awaits add up.
+    const [presigned, outputUrl, partialUrls] = await Promise.all([
+      Promise.all(
+        clips.map(async (c) => ({
+          url: await presignR2Get(env, c.clip_key, ASSEMBLE_PRESIGN_TTL_SECONDS),
+        })),
+      ),
+      presignR2Put(env, outputKey, ASSEMBLE_PRESIGN_TTL_SECONDS),
+      mintPartialUrlPool(env, outputKey, clips.length),
+    ]);
+    payload = { ...payload, clips: presigned, outputUrl, partialUrls };
   }
   const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll);
   if (tick.kind === "pending") {

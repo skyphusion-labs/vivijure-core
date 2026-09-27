@@ -13,6 +13,7 @@
  */
 import type { Env } from "./platform/orchestrator-context.js";
 import { isMediaFinishAuthError, mediaFinishHeaders, videoFinishFetch, videoFinishUrl } from "./media-finish-auth.js";
+import { presignR2Get, presignR2Put } from "./presign.js";
 
 export const HOSTED_FINISH_POLL_BOXES = ["jello", "descendents", "badbrains"] as const;
 export const ASSEMBLE_NOTFOUND_STREAK = 12;
@@ -27,7 +28,163 @@ export type FinishPayload = {
   audioUrl?: string;
   remuxAudioOnly?: boolean;
   keepClipAudio?: boolean;
+  /**
+   * cf#784 chunked assemble. One presigned {put,get} pair per batch partial, consumed in order.
+   * ABSENT or EMPTY selects the container's single-pass path, so omitting it is the old
+   * behaviour byte for byte. Never sent with remuxAudioOnly, which is single-pass by definition.
+   */
+  partialUrls?: PartialUrlPair[];
 };
+
+
+// ---------------------------------------------------------------------------------------------
+// Chunked assemble: the partialUrls pool, and the TTL that has to outlive the whole job.
+// ---------------------------------------------------------------------------------------------
+//
+// The container (vivijure-cf containers/video-finish, cf#784/#801) holds NO R2 credentials by
+// design, so it can only write a batch partial to a URL the Worker handed it. It consumes one
+// {put,get} pair per batch, in order, and raises a loud 400 when the pool runs out. With no pool
+// at all it takes the single-pass path, which is why chunked assemble was inert until this code
+// existed.
+//
+// WHY THE TTL IS A CONSTANT WITH AN ASSERTION AND NOT A COMMENT. Every presigned URL in an
+// assemble payload used to be minted at 1800s. Under single-pass that was sound: every clip is
+// downloaded in the first seconds of the job, so a 30 minute window covered the only access that
+// happened. Chunking invalidates that assumption in TWO places, and only one of them is new code:
+//
+//   * the final pass concatenates the partials, and partial_gets[0] is minted at t0 but first
+//     READ at t_final, so a partial GET sized to the join has already expired by the time it is
+//     used;
+//   * batch N downloads its own clips only after batches 0..N-1 have fully normalized through
+//     libx264, so the INPUT clip GETs must outlive the whole job too. This is the one that gets
+//     missed, because the line of code did not change; its assumption did.
+//
+// A README cannot fail and a comment cannot fail. assertAssembleTtl() fails, at module load and
+// again on every mint, so a URL that cannot outlive its job cannot be produced at all.
+
+/**
+ * The wall clock one assemble job may occupy before the Worker declares it dead.
+ *
+ * Derived from the container's own contract rather than picked: MAX_CLIP_BYTES is 256 MB and
+ * MAX_CLIPS is 80, and every clip is re-encoded through libx264 at `-preset medium`. A 256 MB
+ * clip is minutes of video, so a contracted-maximum film is hours of CPU on a 4 vCPU instance,
+ * not minutes. Six hours covers that with margin while still being a bound rather than "forever".
+ *
+ * This is ALSO the give-up horizon, deliberately. Past it the presigned URLs are expired, so the
+ * job provably cannot succeed and further polling waits on a guaranteed failure. Tying the two to
+ * one constant is what stops them drifting apart: shorten the TTL and you shorten the horizon.
+ */
+export const ASSEMBLE_MAX_JOB_SECONDS = 6 * 3600;
+
+/**
+ * TTL every presigned URL in an assemble payload is minted with. Strictly greater than the
+ * horizon so a job that dies exactly at the horizon dies of the horizon, with a clear error,
+ * rather than of an expired signature two seconds earlier with a 403 from R2.
+ */
+export const ASSEMBLE_PRESIGN_TTL_SECONDS = ASSEMBLE_MAX_JOB_SECONDS + 1800;
+
+/**
+ * Upper bound on pool size. Mirrors MAX_CLIPS in containers/video-finish/app.py; a film with more
+ * clips than this is refused by the container regardless, so minting past it is pure waste.
+ */
+export const ASSEMBLE_MAX_POOL_PAIRS = 80;
+
+/** A presigned {put,get} pair for one batch partial. */
+export type PartialUrlPair = { put: string; get: string };
+
+/**
+ * Refuse a TTL that cannot outlive the job it is being minted for.
+ *
+ * Throws rather than clamping: a caller that asked for 1800s has a wrong model of the job, and
+ * silently widening it to 7h would hide exactly the mistake this exists to surface.
+ */
+export function assertAssembleTtl(ttlSeconds: number, what: string): number {
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds < ASSEMBLE_MAX_JOB_SECONDS) {
+    throw new Error(
+      `${what}: ${ttlSeconds}s cannot outlive an assemble job (horizon ${ASSEMBLE_MAX_JOB_SECONDS}s). ` +
+        "Under chunked assemble the final pass reads the FIRST partial at the END of the job, and " +
+        "batch N downloads its clips only after batch N-1 has encoded, so every URL in an assemble " +
+        "payload must cover the whole job. Use ASSEMBLE_PRESIGN_TTL_SECONDS.",
+    );
+  }
+  return ttlSeconds;
+}
+
+// Load-bearing: this runs at module load, so a future edit that shortens the TTL below the
+// horizon fails the Worker at deploy and in every test that imports this module, not in
+// production six hours into somebody's film.
+assertAssembleTtl(ASSEMBLE_PRESIGN_TTL_SECONDS, "ASSEMBLE_PRESIGN_TTL_SECONDS");
+
+/**
+ * Deterministic R2 key for batch partial `index` of the film whose output is `outputKey`.
+ *
+ * Deterministic on purpose: cleanup then needs no stored state, so a partial cannot be orphaned
+ * by a job doc that lost a field.
+ */
+export function partialKeyFor(outputKey: string, index: number): string {
+  const slash = outputKey.lastIndexOf("/");
+  const dir = slash >= 0 ? outputKey.slice(0, slash) : "";
+  const n = String(index).padStart(3, "0");
+  return dir ? `${dir}/partials/partial-${n}.mp4` : `partials/partial-${n}.mp4`;
+}
+
+/**
+ * Mint the {put,get} pool for a chunked assemble.
+ *
+ * POOL SIZE IS PROVABLE, NOT A GUESS. The container flushes a batch only when the batch is
+ * non-empty, so every batch contains at least one clip, so the number of batches can never exceed
+ * the number of clips. `clipCount` pairs is therefore an exact upper bound -- no HEAD probe, no
+ * byte accounting on the Worker side, no way to under-mint. The container consumes what its
+ * byte-batching needs and the unused tail simply expires; presigning is local HMAC with no
+ * network, so that tail is close to free.
+ */
+export async function mintPartialUrlPool(
+  env: Env,
+  outputKey: string,
+  clipCount: number,
+  ttlSeconds: number = ASSEMBLE_PRESIGN_TTL_SECONDS,
+): Promise<PartialUrlPair[]> {
+  assertAssembleTtl(ttlSeconds, "partialUrls pool TTL");
+  const pairs = Math.max(0, Math.min(clipCount, ASSEMBLE_MAX_POOL_PAIRS));
+  if (pairs === 0) return [];
+  return Promise.all(
+    Array.from({ length: pairs }, async (_unused, i) => {
+      const key = partialKeyFor(outputKey, i);
+      const [put, get] = await Promise.all([
+        presignR2Put(env, key, ttlSeconds, "video/mp4"),
+        presignR2Get(env, key, ttlSeconds),
+      ]);
+      return { put, get };
+    }),
+  );
+}
+
+/**
+ * Best-effort delete of every partial a job could have written.
+ *
+ * Candidate keys are deterministic, so this needs nothing from the job doc. Slots the container
+ * never used were never written and their delete is a no-op. A cleanup miss NEVER fails a film
+ * that rendered: the partials are intermediate garbage and a storage leak is a smaller harm than
+ * failing a finished film. It is not silent either -- the count of failures is returned.
+ */
+export async function deletePartialPool(
+  env: Env,
+  outputKey: string,
+  clipCount: number,
+): Promise<{ attempted: number; failed: number }> {
+  const pairs = Math.max(0, Math.min(clipCount, ASSEMBLE_MAX_POOL_PAIRS));
+  let failed = 0;
+  await Promise.all(
+    Array.from({ length: pairs }, async (_unused, i) => {
+      try {
+        await env.R2_RENDERS.delete(partialKeyFor(outputKey, i));
+      } catch {
+        failed += 1;
+      }
+    }),
+  );
+  return { attempted: pairs, failed };
+}
 
 export type FinishResult = {
   ok?: boolean;
@@ -202,6 +359,12 @@ async function tickVideoFinishAssembleInner(
     // concat is still pending and the next poll tick picks it up.
   }
   const hit = await pollVideoFinishAsync(env, jobId);
+  // Past the horizon every presigned URL in this job's payload has expired, so the job CANNOT
+  // succeed: the container will 403 on its next clip download or on the final partial read. Before
+  // this check nothing read submittedAt at all (verified grep-zero) and notFoundStreak resets to 0
+  // on any `pending`, so an expired job polled forever. That is why a short TTL presented as a hang
+  // rather than an error, and it is why the TTL and this horizon are one constant.
+  const expired = Date.now() - submittedAt > ASSEMBLE_MAX_JOB_SECONDS * 1000;
   if (hit.kind === "completed") {
     if (hit.result.ok === false) {
       return { kind: "failed", error: hit.result.error || "video-finish gather failed" };
@@ -209,6 +372,14 @@ async function tickVideoFinishAssembleInner(
     return { kind: "done", result: hit.result };
   }
   if (hit.kind === "failed") return { kind: "failed", error: hit.error };
+  if (expired) {
+    return {
+      kind: "failed",
+      error:
+        `video-finish assemble exceeded ${ASSEMBLE_MAX_JOB_SECONDS}s; its presigned URLs have ` +
+        "expired, so the job cannot complete. Resubmit, or reduce the film.",
+    };
+  }
   if (hit.kind === "pending") {
     return { kind: "pending", poll: { jobId, submittedAt, notFoundStreak: 0 } };
   }

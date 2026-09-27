@@ -11,7 +11,14 @@ import type { Env } from "./platform/orchestrator-context.js";
 import type { FetcherLike } from "./platform/types.js";
 import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorUrl, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
 import { assertBankedLoraKey, assertProjectKey } from "./key-safety.js";
-import { encodeAssemblePoll, tickVideoFinishAssemble } from "./video-finish-assemble.js";
+import {
+  ASSEMBLE_PRESIGN_TTL_SECONDS,
+  deletePartialPool,
+  encodeAssemblePoll,
+  mintPartialUrlPool,
+  tickVideoFinishAssemble,
+  type FinishPayload,
+} from "./video-finish-assemble.js";
 import {
   discoverModules,
   invokeModule,
@@ -2476,8 +2483,8 @@ async function enterAssemblePhase(
   // clips are padded. Lip-sync is opt-in replace, not the only soundtrack.
   const keepClipAudio = true;
   const delivery = resolveDeliveryResolution(job);
-  let payload = {
-    clips: [] as { url: string }[],
+  let payload: FinishPayload = {
+    clips: [],
     outputUrl: "https://invalid.invalid/assemble",
     outputKey,
     keepClipAudio,
@@ -2485,15 +2492,23 @@ async function enterAssemblePhase(
     height: delivery.height,
   };
   if (!job.assemble_poll) {
-    const clips: { url: string }[] = [];
-    for (const c of finalClips) {
-      clips.push({ url: await presignR2Get(env, c.clip_key, 1800) });
-    }
-    payload = {
-      ...payload,
-      clips,
-      outputUrl: await presignR2Put(env, outputKey, 1800),
-    };
+    // ASSEMBLE_PRESIGN_TTL_SECONDS, not the old hardcoded 1800. Under chunked assemble batch N
+    // downloads its clips only after batch N-1 has finished encoding, and the final pass reads
+    // the FIRST partial at the very END of the job, so every URL here has to cover the whole
+    // job rather than its first half hour. Minted in parallel: a chunked film needs 1 + 3n
+    // signatures and sequential awaits add up.
+    const [clips, outputUrl, partialUrls] = await Promise.all([
+      Promise.all(
+        finalClips.map(async (c) => ({
+          url: await presignR2Get(env, c.clip_key, ASSEMBLE_PRESIGN_TTL_SECONDS),
+        })),
+      ),
+      presignR2Put(env, outputKey, ASSEMBLE_PRESIGN_TTL_SECONDS),
+      // The pool is what makes chunked assemble live; without it the container takes the
+      // single-pass path and peak disk is 3-4x total input again (cf#784).
+      mintPartialUrlPool(env, outputKey, finalClips.length),
+    ]);
+    payload = { ...payload, clips, outputUrl, partialUrls };
   }
   // Async /finish: the Worker must not sit on a 17-shot concat. 524 is what
   // that wait looks like. Submit 202s; later ticks poll.
@@ -2505,6 +2520,10 @@ async function enterAssemblePhase(
     return;
   }
   job.assemble_poll = undefined;
+  // Terminal either way, so the batch partials are intermediate garbage now. Keys are
+  // deterministic, so this needs nothing off the job doc and cannot be orphaned by a lost field.
+  // A cleanup miss must never fail a film that rendered, so it warns and carries on.
+  await reapAssemblePartials(env, outputKey, finalClips.length);
   if (tick.kind === "failed") {
     job.phase = "failed";
     job.error = tick.error;
@@ -3623,4 +3642,20 @@ async function advanceFilmJobLocked(
   }
 
   return { job, clipJob };
+}
+
+
+/**
+ * Delete a chunked assemble's batch partials once the job is terminal. Never throws: a storage
+ * leak is a smaller harm than failing a film that actually rendered, but it is not silent either.
+ */
+async function reapAssemblePartials(env: Env, outputKey: string, clipCount: number): Promise<void> {
+  try {
+    const { failed, attempted } = await deletePartialPool(env, outputKey, clipCount);
+    if (failed > 0) {
+      console.warn(`reapAssemblePartials: ${failed}/${attempted} partials left behind for ${outputKey}`);
+    }
+  } catch (e) {
+    console.warn(`reapAssemblePartials: cleanup failed for ${outputKey}: ${(e as Error).message}`);
+  }
 }
