@@ -3,6 +3,15 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.24.1
+
+Cycle opened by the first PR after the v1.24.0 cut, which is the documented steady state and
+not a deviation: `main` sits on a tagged version between releases, so a bare `## Unreleased`
+is refused and the next PR opens the next version. Entries live as `changelog.d/` fragments
+and are folded in here by `changelog-assemble.mjs` at cut time. PATCH: the work opening this
+cycle is `fix(film)` with no new surface. A later PR in this cycle that adds surface has to
+raise this heading and `package.json` to the next MINOR before it lands.
+
 ## [1.24.0] -- 2026-09-27
 
 Cycle opened by the first feature PR after the v1.23.0 cut (core#291), which is the documented

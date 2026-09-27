@@ -75,7 +75,13 @@ describe("film-render-bridge", () => {
     expect(seed.keyframeBackend).toBe("keyframe");
   });
 
-  it("resolveFilmOutputKey falls back to deterministic film.mp4 for done full renders (#99)", () => {
+  // cf#833: this case PINNED the defect. It asserted that a done doc carrying no key resolves to the
+  // deterministic film.mp4 and that the poll view reports that key -- i.e. it asserted the guess, and
+  // the guess is what made both R2-existence heals unreachable. The doc is now reported honestly and
+  // the store is probed by the caller (adoptFilmOutputKeyFromStore), which is what #99 actually asked
+  // for. The #99 behaviour it was protecting is covered end to end in
+  // tests/film-deliverable-gate-cf833.test.ts ("the #99 heal").
+  it("reports no key for a done full render whose doc lost it, instead of guessing one (cf#833)", () => {
     const job: FilmJob = {
       film_id: "film-6df85aed",
       project: "local97_verify_secrets",
@@ -92,15 +98,17 @@ describe("film-render-bridge", () => {
       created_at: Date.now(),
       phase_started_at: Date.now(),
     };
-    expect(resolveFilmOutputKey(job)).toBe(defaultFilmOutputKey("film-6df85aed"));
+    expect(resolveFilmOutputKey(job)).toBeUndefined();
     const view = filmJobToPollView(job, null);
     expect(view.status).toBe("COMPLETED");
-    expect((view.output as { output_key?: string })?.output_key).toBe(
-      "renders/film-6df85aed/film.mp4",
-    );
+    // No fabricated download target on the poll view. The renders row gets its output_key from the
+    // store-probing backfill in renders-db.ts, which this guess used to disable.
+    expect((view.output as { output_key?: string })?.output_key).toBeUndefined();
+    // The deterministic key is still the right thing to PROBE, and still exported for that use.
+    expect(defaultFilmOutputKey("film-6df85aed")).toBe("renders/film-6df85aed/film.mp4");
   });
 
-  it("resolveFilmOutputKey prefers silent_film_key before deterministic fallback", () => {
+  it("resolveFilmOutputKey prefers film_key, then silent_film_key", () => {
     const silent = "renders/film-x/film.mp4";
     const job: FilmJob = {
       film_id: "film-x",

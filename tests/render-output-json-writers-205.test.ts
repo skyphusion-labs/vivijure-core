@@ -107,7 +107,10 @@ function filmEnv(job: Record<string, unknown> = filmJob()) {
     DB: recordingDb(rec.record, (sql) => (/SELECT id FROM renders/i.test(sql) ? { id: 1 } : null)),
     R2_RENDERS: {
       get: async (k: string) => (k === filmJobDocKey(FILM) ? { text: async () => stored } : null),
-      head: async () => null,
+      // cf#833: the done transition HEADs the film it is about to stamp on the row, so a fake that
+      // answers "nothing exists, ever" describes a world this scenario is not in -- the silent and
+      // muxed artifacts are in R2 here, which is what the prose of these cases already says.
+      head: async (k: string) => (k === SILENT || k === MUXED ? { size: 4096 } : null),
       put: async (k: string, v: string) => { if (k === filmJobDocKey(FILM)) stored = v; },
     },
     PRESIGNER: {

@@ -32,7 +32,10 @@ function envFor(job: object, handler: (u: string) => Promise<Response>) {
   const env: Record<string, unknown> = {
     R2_RENDERS: {
       get: async (key: string) => (key === filmJobDocKey(filmId) ? { text: async () => stored } : null),
-      head: async (key: string) => (key === filmJobDocKey(filmId) ? { size: 1 } : null),
+      // cf#833: SILENT really is in R2 on this path -- the last case in this file asserts exactly
+      // that in prose -- and the done transition now HEADs the film before stamping it.
+      head: async (key: string) =>
+        key === filmJobDocKey(filmId) || key === SILENT || key === OUT ? { size: 4096 } : null,
       put: async (key: string, val: string) => { if (key === filmJobDocKey(filmId)) stored = val; },
     },
     PRESIGNER: {
