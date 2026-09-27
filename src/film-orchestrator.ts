@@ -107,6 +107,10 @@ import {
   resolveDeliveryResolution,
   DEFAULT_DELIVERY_FPS,
 } from "./film-model.js";
+import {
+  admitAssemble,
+  resolveAssembleSeconds,
+} from "./assemble-admission.js";
 import type {
   ConfigSchema,
   RegisteredModule,
@@ -1172,6 +1176,41 @@ export async function measuredClipDimensions(
     // Unreadable or unparseable clip doc. Return what we have (nothing) rather than a guess: the
     // finish backend probes when dimensions are absent, so an empty map degrades to today's
     // behaviour honestly instead of shipping a fabricated size.
+    return out;
+  }
+  return out;
+}
+
+/**
+ * Per-shot MEASURED clip seconds, from the clip doc the render already wrote.
+ *
+ * Sibling of `measuredClipDimensions` above, reading the same single R2 object: `delivered_frames`
+ * and `delivered_fps` are persisted on every done clip by `validateDoneClips`
+ * (render-orchestrator.ts:163-164) from the container's own probe. `frames / fps` is therefore a
+ * measurement of what the clip IS, not a plan for what it should have been.
+ *
+ * A MISS IS NOT A DEFAULT, for the same reason as the dimensions sibling. No clip doc, an
+ * unparseable doc, a shot with neither field, or a non-positive fps all yield NO ENTRY, and the
+ * caller falls back to the PLAN and counts the fallback. Inventing a duration here would put a
+ * fabricated number into a refusal message, which is the one place it must not appear.
+ */
+export async function measuredClipSeconds(
+  env: Env,
+  job: FilmJob,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (!job.clip_job_id) return out;
+  try {
+    const obj = await env.R2_RENDERS.get(clipDocKey(job.clip_job_id));
+    if (!obj) return out;
+    const clipJob = JSON.parse(await obj.text()) as ClipJob;
+    for (const sh of clipJob.shots || []) {
+      const frames = Number(sh.delivered_frames), fps = Number(sh.delivered_fps);
+      if (Number.isFinite(frames) && frames > 0 && Number.isFinite(fps) && fps > 0) {
+        out.set(sh.shot_id, frames / fps);
+      }
+    }
+  } catch {
     return out;
   }
   return out;
@@ -2492,6 +2531,49 @@ async function enterAssemblePhase(
     height: delivery.height,
   };
   if (!job.assemble_poll) {
+    // cf#815: PRE-FLIGHT INPUT ADMISSION. Refuse a film that cannot fit the container's ephemeral
+    // disk BEFORE a presign is minted, so nothing is downloaded, normalized or encoded first.
+    //
+    // Inside the `!job.assemble_poll` branch deliberately: this is the one pass that mints URLs and
+    // submits, so it is the only pass where a refusal costs nothing. Later ticks are polls, and
+    // re-gating them would burn two R2 reads each to re-derive an answer that cannot have changed.
+    //
+    // WHY NOT AN OUTPUT CAP, AND WHY NOT `MAX_CLIPS x MAX_CLIP_BYTES`: see src/assemble-admission.ts.
+    // Short form: an output cap rejects after the whole film has been built, and that product is
+    // measured 23x-120x above a real film (cf#813), so a gate written against it could never fire.
+    const [measuredSecs, bundleDurations] = await Promise.all([
+      measuredClipSeconds(env, job),
+      readShotDurationsFromBundle(env, job.bundle_key),
+    ]);
+    const admission = admitAssemble({
+      clipCount: finalClips.length,
+      width: delivery.width,
+      height: delivery.height,
+      fps: DEFAULT_DELIVERY_FPS,
+      basis: resolveAssembleSeconds(
+        finalClips,
+        measuredSecs,
+        resolvePlannedSeconds(job.scenes, bundleDurations),
+      ),
+    });
+    if (!admission.admitted) {
+      // TERMINAL and LOUD, never a degrade (cf#815, the #249/#77 discipline). Truncating the film to
+      // something that fits would ship a different film than was asked for and call it done.
+      emitStructuredEvent({
+        ev: "assemble.refused",
+        film_id: job.film_id,
+        clips: finalClips.length,
+        seconds: Math.round(admission.basis.seconds * 1000) / 1000,
+        predicted_bytes: admission.predictedBytes,
+        ceiling_bytes: admission.ceilingBytes,
+        allowed_seconds: admission.allowedSeconds,
+        basis: admission.basis,
+        reason: admission.reason,
+      });
+      job.phase = "failed";
+      job.error = admission.reason;
+      return;
+    }
     // ASSEMBLE_PRESIGN_TTL_SECONDS, not the old hardcoded 1800. Under chunked assemble batch N
     // downloads its clips only after batch N-1 has finished encoding, and the final pass reads
     // the FIRST partial at the very END of the job, so every URL here has to cover the whole
