@@ -1517,10 +1517,82 @@ export const DEFAULT_DELIVERY_HEIGHT = 1080;
  *  explicit target and a film carrying nothing return identical values, which is precisely the
  *  state the panel modules are in today. A consumer that cannot tell the two apart has rebuilt
  *  `?? 1920` with more steps. */
+export type DeliveryBasis =
+  /** delivery_width + delivery_height were supplied on the job. An explicit operator decision. */
+  | "operator-override"
+  /** Derived from the clips the doors actually produced, and every clip agrees. */
+  | "measured-source"
+  /** Derived from measured clips that DISAGREE. See selectDeliveryFromMeasured for the tie-break. */
+  | "measured-source-mixed"
+  /** Nothing was measurable. The historical 1920x1080 default, and it is labelled as a default. */
+  | "default-unmeasured";
+
 export interface DeliveryResolution {
   width: number;
   height: number;
   decided: boolean;
+  /** HOW this target was arrived at. Required, not optional, so tsc enumerates every construction
+   *  site rather than letting one quietly omit it -- the same reason `decided` exists. `decided`
+   *  answers "did somebody choose this"; `basis` answers "choose it from WHAT", and a consumer
+   *  sizing a budget against the target needs the second to know what it is trusting. */
+  basis: DeliveryBasis;
+}
+
+/**
+ * Pick ONE delivery geometry from the clips a film's doors actually produced.
+ *
+ * WHY THIS EXISTS. The assemble target used to be a constant, so every clip was scaled and padded
+ * to 1920x1080 whatever the door produced. Most installed motion doors default BELOW that, so the
+ * normal case was an upscale that adds no information and costs bytes and CPU, and a door
+ * configured above it was destructively downscaled. Matching the source removes both.
+ *
+ * WHY A SINGLE TARGET IS UNAVOIDABLE. The concat is `-c copy`, which requires every input to share
+ * codec and geometry. So "never upscale AND never downscale" is satisfiable only when the clips
+ * agree, and a mixed film has to break one of the two halves. That makes the mixed case a CHOICE,
+ * and this is where it is made rather than falling out of whatever the constant happened to be.
+ *
+ * THE MIXED RULE: the largest-AREA geometry that a real clip actually has.
+ *
+ *   - Largest rather than smallest, because a downscale DESTROYS information irreversibly while an
+ *     upscale merely wastes bytes. When the two cannot both be honoured, the non-destructive one
+ *     wins. No clip is ever degraded by this rule.
+ *   - A REAL pair rather than componentwise max, and this is the part worth reading twice. Taking
+ *     max(width) and max(height) independently can invent a geometry no clip has: a film mixing
+ *     1920x1080 and 1080x1920 would yield 1920x1920, an aspect ratio nothing produced, pillarboxing
+ *     AND letterboxing every single clip. Choosing an actual pair guarantees at least one clip
+ *     passes through untouched and the film carries an aspect ratio something really rendered.
+ *
+ * Ties (equal area, different shape) resolve to the wider geometry, deterministically, so the same
+ * film always assembles the same way rather than depending on map iteration order.
+ */
+export function selectDeliveryFromMeasured(
+  measured: ReadonlyArray<{ width: number; height: number }>,
+): DeliveryResolution {
+  const valid = measured.filter(
+    (m) => Number.isFinite(m.width) && m.width > 0 && Number.isFinite(m.height) && m.height > 0,
+  );
+  if (valid.length === 0) {
+    // A MISS IS NOT A MEASUREMENT. Absent dimensions land on the historical default and say so,
+    // rather than being reported as though the source had been consulted.
+    return {
+      width: DEFAULT_DELIVERY_WIDTH,
+      height: DEFAULT_DELIVERY_HEIGHT,
+      decided: false,
+      basis: "default-unmeasured",
+    };
+  }
+  let best = valid[0];
+  for (const m of valid) {
+    const a = m.width * m.height, b = best.width * best.height;
+    if (a > b || (a === b && m.width > best.width)) best = m;
+  }
+  const uniform = valid.every((m) => m.width === best.width && m.height === best.height);
+  return {
+    width: best.width,
+    height: best.height,
+    decided: true,
+    basis: uniform ? "measured-source" : "measured-source-mixed",
+  };
 }
 
 function positiveInt(n: unknown): number {
@@ -1537,8 +1609,13 @@ export function resolveDeliveryResolution(
 ): DeliveryResolution {
   const w = positiveInt(job?.delivery_width);
   const h = positiveInt(job?.delivery_height);
-  if (w && h) return { width: w, height: h, decided: true };
-  return { width: DEFAULT_DELIVERY_WIDTH, height: DEFAULT_DELIVERY_HEIGHT, decided: false };
+  if (w && h) return { width: w, height: h, decided: true, basis: "operator-override" };
+  return {
+    width: DEFAULT_DELIVERY_WIDTH,
+    height: DEFAULT_DELIVERY_HEIGHT,
+    decided: false,
+    basis: "default-unmeasured",
+  };
 }
 
 /** Default fan-out for keyframe invokes when KEYFRAME_PARALLEL is unset. */
