@@ -675,7 +675,8 @@ export async function reclaimClipsFromR2(env: Env, job: ClipJob): Promise<number
 
 /** #523 Layer 1: validate each newly-done clip's STRUCTURE (mp4 box tree) before the finish / dialogue /
  *  upscale chain spends anything. Engine-agnostic: every motion.backend clip (cloud backend, both local
- *  doors, any future module) funnels through this one chokepoint. Idempotent per shot via `validated`, so
+ *  doors, any future module) funnels through this one chokepoint. Idempotent per shot via a VERDICT in
+ *  `validated` (a skip is not one, and re-runs next tick -- core#310), so
  *  it runs at most once and can be called from more than one seam. A structural FAILURE flips the shot to
  *  failed with the real reason (honest-failure #245/#249: never a silent advance, never applied=[]) and
  *  clears its poll token so the orphan-cancel pass ignores a clip that already landed. A "skip" (artifact
@@ -689,9 +690,23 @@ export async function reclaimClipsFromR2(env: Env, job: ClipJob): Promise<number
 export async function validateDoneClips(env: Env, job: ClipJob): Promise<boolean> {
   let changed = false;
   for (const shot of job.shots) {
-    if (shot.status !== "done" || !shot.clip_key || shot.validated) continue;
+    // core#310: a SKIP is not a verdict, so it must not short-circuit re-validation. This guard
+    // used to read `|| shot.validated`, and validateClipArtifact's skip was written straight into
+    // that field, so one unreadable moment disabled Layer 1 for that shot permanently. Exactly the
+    // core#30 defect, one layer down, and the reason core#310's fix could not be a one-liner in the
+    // judge: turning a FAIL into a SKIP without this would have turned a refusal into a permanent
+    // unchecked pass, which is worse than the bug it fixes.
+    if (shot.status !== "done" || !shot.clip_key || (shot.validated && shot.validated !== "skip")) continue;
     const res = await validateClipArtifact(env, shot.clip_key, shot.seconds);
-    shot.validated = res.verdict;
+    if (res.verdict !== "skip") shot.validated = res.verdict;
+    // cf#856's vocabulary, same shape one layer down: say that it could not measure, verbatim.
+    // Written only when it CHANGES, cleared the moment a verdict lands.
+    const unmeasured = res.verdict === "skip" ? (res.reason ?? "structural validation could not run") : undefined;
+    if (shot.validated_unmeasured !== unmeasured) {
+      if (unmeasured) shot.validated_unmeasured = unmeasured;
+      else delete shot.validated_unmeasured;
+      changed = true;
+    }
     // cf#507b: keep the dimensions this probe already measured. They were computed here and
     // dropped into the event below while only the verdict survived, which is why the finish chain
     // had to assume a resolution it could have known. Recorded regardless of verdict: a failed
