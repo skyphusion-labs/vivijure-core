@@ -322,7 +322,16 @@ async function pollVia(
     return { kind: "pending" };
   }
   if (body.status === "completed") {
-    return { kind: "completed", result: body.result && typeof body.result === "object" ? body.result : { ok: true } };
+    // cf#835: "completed" with no result OBJECT used to be synthesized into `{ ok: true }`, which is
+    // the studio inventing a success the container never reported. Everything downstream then read
+    // undefined as absent-but-fine: clipDurations undefined no-ops the #697 duration gate, and
+    // hasAudio undefined is not `=== false` so the mux degrade branch is skipped and job.film_key is
+    // set to an output key that may never have been written. A completion with nothing in it is a
+    // FAILURE of the contract, and the studio says so instead of filling the gap in for it.
+    if (!body.result || typeof body.result !== "object") {
+      return { kind: "failed", error: "video-finish reported completed with no result body" };
+    }
+    return { kind: "completed", result: body.result };
   }
   if (body.status === "failed") {
     return { kind: "failed", error: body.error || "video-finish async job failed" };

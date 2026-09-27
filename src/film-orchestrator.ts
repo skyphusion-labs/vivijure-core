@@ -152,6 +152,7 @@ import {
 } from "./render-orchestrator.js";
 import { markFinishDone, markRenderFailedByJobId } from "./renders-db.js";
 import { filmDonePayload } from "./render-output-payload.js";
+import { validateFilmArtifact } from "./clip-validate.js";
 import {
   adoptFilmOutputKeyFromStore,
   defaultFilmOutputKey,
@@ -1603,12 +1604,10 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
   // The doc no longer guesses a key (cf#833), so an absent key here is a real "this doc does not
   // know", and the #99 adoption probe is reachable again: HEAD the deterministic assemble key and
   // adopt it only if the artifact is actually there.
-  let verified = false;
   if (!filmKey && owesFilm) {
     const adopted = await adoptFilmOutputKeyFromStore(env, job.film_id);
     if (adopted) {
       filmKey = adopted;
-      verified = true; // adoptFilmOutputKeyFromStore HEADs before it returns
       if (!job.film_key) job.film_key = adopted;
     }
   }
@@ -1617,14 +1616,29 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
   // owe no film (keyframes-only, and the #519 clips degrade) are exempt by filmDeliverableExpected,
   // and both still finish green. Entry path this closes: enterMuxPhase with a resumed doc whose
   // silent_film_key did not persist sets film_key = undefined and transitions here.
-  if (owesFilm && !(verified || (filmKey && (await r2ObjectExists(env, filmKey))))) {
-    job.phase = "failed";
-    job.error = filmKey
-      ? `assembled film is not in R2 at ${filmKey}`
-      : `no assembled film in R2 for ${job.film_id} (probed ${defaultFilmOutputKey(job.film_id)})`;
-    // putFilm at the tail of the advance tick emits film.phase + film.render.terminal with this
-    // error, so the failure is greppable without a second event channel.
-    return;
+  //
+  // cf#835: and PRESENCE is not proof of a film. The old check was `head(key) !== null` with the
+  // size thrown away, so a 0-byte film.mp4 satisfied it. validateFilmArtifact re-reads the same
+  // object through the structural parser the clips already get (#523) and fails only on positive
+  // evidence; a present-but-unreadable object is a "skip", because a read blip must not kill a film
+  // that rendered. The ADOPTED key is validated too: adoption HEADs, and a HEAD is exactly the proof
+  // this issue is about not accepting.
+  if (owesFilm) {
+    const verdict = filmKey ? await validateFilmArtifact(env, filmKey) : null;
+    if (!verdict || verdict.verdict === "fail") {
+      job.phase = "failed";
+      job.error = verdict
+        ? `assembled film at ${filmKey} is not deliverable: ${verdict.reason}`
+        : `no assembled film in R2 for ${job.film_id} (probed ${defaultFilmOutputKey(job.film_id)})`;
+      // putFilm at the tail of the advance tick emits film.phase + film.render.terminal with this
+      // error, so the failure is greppable without a second event channel.
+      return;
+    }
+    if (verdict.verdict === "skip") {
+      console.warn(
+        `film ${job.film_id}: shipping ${filmKey} unverified -- ${verdict.reason}`,
+      );
+    }
   }
   if (filmKey) {
     // core#205: DERIVED, not restated. filmDonePayload is the single source for this payload and the
