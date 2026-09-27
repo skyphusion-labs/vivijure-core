@@ -314,6 +314,69 @@ describe("RELEASES.md published column (core#126)", () => {
       expect(disagreements).toEqual([]);
     });
 
+    // ---------------------------------------------------------------------------------------------
+    // WHOLE-POPULATION EQUIVALENCE. The two cases above compare a SAMPLE, and a sample is not a
+    // verification: a batched resolver that is right about three tags and wrong about the fortieth
+    // passes every one of them, and reads exactly like one that was checked. The coverage case proves
+    // every tag is PRESENT in the map; presence is not correctness.
+    //
+    // So each map is also compared, across its ENTIRE population, against an INDEPENDENT batched
+    // mechanism -- a different git command with a different output shape, so a bug in one is unlikely
+    // to be mirrored in the other. One extra subprocess each, which is why the whole population is
+    // affordable here where a per-row loop was not.
+    // ---------------------------------------------------------------------------------------------
+
+    it("EQUIVALENCE, WHOLE POPULATION: every tag commit matches `show-ref --tags -d`", () => {
+      // show-ref emits TWO lines for an annotated tag: the tag object, then the same ref with a `^{}`
+      // suffix carrying the COMMIT. A lightweight tag emits one line which already is the commit.
+      // So the peeled line wins where present, exactly as %(*objectname) does in the map under test.
+      const byTag = new Map<string, string>();
+      for (const line of git("show-ref --tags -d", true).split("\n")) {
+        const m = /^([0-9a-f]{40})\s+refs\/tags\/(\S+?)(\^\{\})?$/.exec(line.trim());
+        if (!m) continue;
+        const [, sha, name, peeled] = m;
+        if (!name.startsWith("vivijure-core-v")) continue;
+        if (peeled || !byTag.has(name)) byTag.set(name, sha);
+      }
+      expect(byTag.size, "show-ref resolved no release tags; this control would pass vacuously").toBeGreaterThan(0);
+      // Compare BOTH directions, so neither map can be a subset of the other and still pass.
+      const disagreements: string[] = [];
+      for (const [tag, sha] of byTag) {
+        if (tagCommit(tag) !== sha) disagreements.push(`${tag}: show-ref=${sha} batched=${tagCommit(tag) || "MISSING"}`);
+      }
+      for (const tag of tagCommitMap.keys()) {
+        if (!byTag.has(tag)) disagreements.push(`${tag}: present in the batched map, absent from show-ref`);
+      }
+      expect(disagreements, "the two independent batched mechanisms disagree").toEqual([]);
+      expect(byTag.size).toBe(tagCommitMap.size);
+    });
+
+    it("EQUIVALENCE, WHOLE POPULATION: every commit date matches for-each-ref's committerdate", () => {
+      // The date atoms mirror the objectname atoms: for an ANNOTATED tag `%(*committerdate:short)` is
+      // the commit's date and `%(committerdate:short)` is the tag object's; for a lightweight tag it
+      // is the other way round. Independent of `log --no-walk`, which is what the map under test used.
+      const byTag = new Map<string, string>();
+      const raw = git("for-each-ref --format='%(refname:short)%09%(committerdate:short)%09%(*committerdate:short)' 'refs/tags/vivijure-core-v*'", true);
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        const [name, own, peeled] = line.split("\t");
+        const date = (peeled || "").trim() || (own || "").trim();
+        if (name && date) byTag.set(name, date);
+      }
+      expect(byTag.size, "for-each-ref produced no dates; this control would pass vacuously").toBeGreaterThan(0);
+      const disagreements: string[] = [];
+      for (const [tag, date] of byTag) {
+        const commit = tagCommit(tag);
+        if (!commit) continue; // covered by the coverage case
+        const batched = commitDate(commit);
+        if (batched !== date) disagreements.push(`${tag} (${commit.slice(0, 8)}): for-each-ref=${date} batched=${batched || "MISSING"}`);
+      }
+      expect(disagreements, "the two independent date mechanisms disagree").toEqual([]);
+      // Every commit the map holds must have a date, or a row could be checked against nothing.
+      const datelessCommits = [...tagCommitMap.values()].filter((c) => !commitDate(c));
+      expect(datelessCommits, "these commits are in the tag map with no date resolved").toEqual([]);
+    });
+
     it("no published date is in the future", () => {
       const today = new Date().toISOString().slice(0, 10);
       const bad = filledPub
