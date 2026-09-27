@@ -152,7 +152,17 @@ export interface FinishShot {
   chain: string[];    // finish module transport refs (MODULE_* service or dispatch:<script>), in ui.order
   configs?: Record<string, unknown>[]; // validated config per chain step, parallel to `chain`
   idx: number;
-  status: "pending" | "done" | "failed";
+  // A finish shot has FOUR terminal-or-not states, and the last two are deliberately distinct:
+  //   pending  -- the current chain step is in flight (or awaiting re-dispatch under the retry cap)
+  //   done     -- the chain is exhausted and clip_key is the deliverable finished clip
+  //   failed   -- this step did not deliver, but the shot is RECOVERABLE: a later pass (or the
+  //               same-pass R2 reclaim) may still find the artifact and complete the shot (#141/#166)
+  //   refused  -- the shot must NOT be delivered at all. A terminal SAFETY decision, never an input
+  //               to recovery. It is excluded from RecoverableFinishShot by construction, so no
+  //               recovery path can accept one. See GHSA-hcr9-8jc2-9q4c.
+  // `failed` and `refused` are both terminal; only `failed` is recoverable. Anything reasoning about
+  // "did not deliver" wants finishShotBlocksRender, NOT `status === "failed"`.
+  status: "pending" | "done" | "failed" | "refused";
   poll?: string;
   applied: string[];
   // #583 honesty: the step markers this shot REUSED from R2 this pass (adopted, NOT run this pass).
@@ -498,6 +508,10 @@ export interface FinishSummary {
   total: number;
   done: number;
   failed: number;
+  // Shots whose finish output was REFUSED (terminal, never delivered). Counted separately from
+  // `failed` because they are a different terminal fact; without its own bucket a refused shot would
+  // be in none of them and total would not reconcile, which is an absence rendering as a value.
+  refused: number;
   pending: number;
   adopted: number;
   degraded: number;
@@ -608,6 +622,7 @@ export function summarizeFinish(shots: FinishShot[]): FinishSummary {
     total: shots.length,
     done: shots.filter((s) => s.status === "done").length,
     failed: shots.filter((s) => s.status === "failed").length,
+    refused: shots.filter((s) => s.status === "refused").length,
     pending: shots.filter((s) => s.status === "pending").length,
     adopted: shots.filter((s) => (s.adopted?.length ?? 0) > 0).length, // #583: shots with >=1 finish step reused from R2
     // A soft-degraded shot is DONE and did no work. Count from the reason channel first (#226),
@@ -691,11 +706,16 @@ export function applyFinishOutput(fs: FinishShot, out: FinishOutput, project: st
   if (fs.idx >= fs.chain.length) fs.status = "done"; // else stays pending; next advance submits chain[idx]
 }
 
-/** Fold a finish output, or fail the shot if the output is a CSAM refusal. The fold itself must
- *  never record a CSAM reason as a polish miss -- that is the bright line, not a degrade. */
+/** Fold a finish output, or refuse the shot if the output is a CSAM refusal. The fold itself must
+ *  never record a CSAM reason as a polish miss -- that is the bright line, not a degrade.
+ *
+ *  A refusal goes to the `refused` terminal state, NOT to `failed`. `failed` is the RECOVERABLE
+ *  terminal state (the artifact may yet be adopted from R2), and a refusal is a decision that no
+ *  later pass may revisit, so the two cannot share a status. `error` carries the reason and is never
+ *  cleared for a refused shot. See GHSA-hcr9-8jc2-9q4c. */
 export function applyFinishOutputOrRefuse(fs: FinishShot, out: FinishOutput, project: string): void {
   if (finishOutputIsCsamRefusal(out)) {
-    fs.status = "failed";
+    fs.status = "refused";
     fs.error = typeof out.degraded === "string" && out.degraded.length > 0 ? out.degraded : "csam refusal";
     fs.poll = undefined;
     return;
@@ -713,7 +733,7 @@ export function applyFinishOutputOrRefuse(fs: FinishShot, out: FinishOutput, pro
  *  chain advance as applyFinishOutput, but the step marker lands in `adopted` (the honest reuse channel)
  *  and is NEVER pushed into `applied` -- the record must not claim a run that did not happen (#583).
  *  `clip_key` is the adopted artifact key; `tag` is the reconstructed step marker (finishStepAppliedTag). */
-export function adoptFinishStepOutput(fs: FinishShot, clip_key: string, tag: string): void {
+export function adoptFinishStepOutput(fs: RecoverableFinishShot, clip_key: string, tag: string): void {
   fs.clip_key = clip_key;
   (fs.adopted ??= []).push(tag);
   // #662: account THIS reused step in the per-step ledger (reused:true), so it is PRESENT in the ledger
@@ -780,6 +800,34 @@ export function resolveFinishConfigs(
   return serving.map((m) => validateConfig(m.config_schema, finishConfig?.[m.name]));
 }
 
+/** A finish shot in a state a recovery path is allowed to act on. THE ONLY WAY to obtain this type is
+ *  finishShotRecoverable (or a guard built on it), and that guard admits `pending` and `failed` only.
+ *  A `refused` shot is therefore not merely rejected by a condition somewhere: it cannot be passed to
+ *  anything that recovers, present or future, because it does not inhabit the type. A new recovery path
+ *  takes RecoverableFinishShot as its parameter and gets the guarantee for free. GHSA-hcr9-8jc2-9q4c. */
+declare const RECOVERABLE_FINISH_SHOT: unique symbol;
+export type RecoverableFinishShot = FinishShot & { readonly [RECOVERABLE_FINISH_SHOT]: true };
+
+/** Pure: may a recovery path act on this shot at all? The ONE place the recoverable states are
+ *  enumerated -- every adoption/reclaim guard narrows through this, so the set has a single
+ *  definition rather than one condition per call site. A terminal refusal is not recoverable. */
+export function finishShotRecoverable(fs: FinishShot): fs is RecoverableFinishShot {
+  return fs.status === "pending" || fs.status === "failed";
+}
+
+/** Pure: is this shot terminal WITHOUT a deliverable finished clip, so the render must fail loud
+ *  rather than assemble? True for a failed step with no path left AND for a refusal. This is the
+ *  predicate every "did not deliver" judgment wants: `status === "failed"` alone would let a refused
+ *  shot pass the phase-terminal check and assemble. */
+export function finishShotBlocksRender(fs: FinishShot): boolean {
+  return fs.status === "failed" || fs.status === "refused";
+}
+
+/** Pure: the finish shots that must stop the render, in shot order. Empty means the phase may advance. */
+export function finishPhaseBlockers(shots: FinishShot[]): FinishShot[] {
+  return shots.filter(finishShotBlocksRender);
+}
+
 /** Pure: is this finish shot eligible to be adopted from its R2 artifact? R2 PRESENCE IS AUTHORITATIVE
  *  -- if <shot>_finished.mp4 is in R2 the work is done regardless of what the RunPod job envelope says.
  *  Two cases are adoptable:
@@ -790,13 +838,16 @@ export function resolveFinishConfigs(
  *      90min hard-deadline and FALSE-FAILS a complete render (surfaced by RUN #29; sibling of #141/#142).
  *  A `pending` shot mid-chain (idx < last) is NOT adopted: its R2 key would be an intermediate module's
  *  output, not the chain's final artifact, so the remaining modules must still run. */
-export function finishShotAdoptableFromR2(fs: FinishShot): boolean {
+export function finishShotAdoptableFromR2(fs: FinishShot): fs is RecoverableFinishShot {
   // Adopt an R2 clip ONLY when it is the chain's FINAL artifact (idx === last). A mid-chain shot's
   // R2 key is an INTERMEDIATE module's output, so adopting it skips the remaining finish modules
   // (e.g. lip-sync) and ships a half-finished, silent clip. This guard protected the `pending` branch
   // but the `failed` branch lacked it, so a mid-chain module failure adopted the intermediate as
   // "done" -- the silent showcase render (lip-sync failed at idx 1 of 4 -> the RIFE intermediate was
   // adopted). The failed branch is the #141 GC'd-job path: a fast-failed shot whose FINAL clip is in R2.
+  // A recovery path acts only on a RECOVERABLE shot. This narrows first, so a terminal refusal is
+  // outside the type from here down and nothing below can adopt it (GHSA-hcr9-8jc2-9q4c).
+  if (!finishShotRecoverable(fs)) return false;
   if (fs.idx !== fs.chain.length - 1) return false;
   if (fs.status === "failed") return true;
   return fs.status === "pending" && !!fs.poll;

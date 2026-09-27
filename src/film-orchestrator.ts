@@ -46,6 +46,7 @@ import {
   clipJobDocKey as clipDocKey,
   type FilmScene,
   type FinishShot,
+  type RecoverableFinishShot,
   type SpeechShot,
   type FilmKeyframeRef,
   type FilmJob,
@@ -67,6 +68,8 @@ import {
   classifyFinishRetry,
   resolveFinishConfigs,
   finishShotAdoptableFromR2,
+  finishShotRecoverable,
+  finishPhaseBlockers,
   filmFinishView,
   reclaimFinishShotsFromR2,
   finishStepOutputKey,
@@ -1018,7 +1021,7 @@ async function finishArtifactHashMatches(env: Env, job: FilmJob, fs: FinishShot,
  *  the chain's FINAL artifact: this advances ONE step on its OWN predicted output, so the remaining modules
  *  still run and it can never ship a half-finished clip (the mid-chain phantom-adopt the silent-render bug
  *  warned against). Returns true iff it advanced the step. */
-async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: FinishShot, preModules?: RegisteredModule[]): Promise<boolean> {
+async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: RecoverableFinishShot, preModules?: RegisteredModule[]): Promise<boolean> {
   // The tick threads its once-discovered registry in (preModules); a direct caller discovers fresh.
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   const expected = finishStepOutputKey(job.project, fs, modules);
@@ -1189,6 +1192,9 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     }
   };
   for (const fs of job.finish_shots || []) {
+    // Narrow to RecoverableFinishShot before any recovery helper is reachable: a terminal refusal is
+    // outside that type, so this loop cannot hand one to adoptFinishStepFromR2 (GHSA-hcr9-8jc2-9q4c).
+    if (!finishShotRecoverable(fs)) continue;
     if (fs.status !== "pending") continue;
     const binding = fs.chain[fs.idx];
     const stepMod = finishModByBinding.get(binding);
@@ -1299,11 +1305,14 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     // the render must NOT advance to done/assemble shipping the raw i2v clip with applied=[]. That
     // silent-degrade (#245/#246) shipped green-but-unfinished films (wan: RIFE crashed at idx 0, the
     // shot "failed", the job went done with the raw clip, error:None). Surface the real error instead.
-    const failed = finishShots.filter((fs) => fs.status === "failed");
-    if (failed.length) {
+    // Terminal-without-a-deliverable covers BOTH a failed step with no path left and a REFUSED shot.
+    // Keyed on finishShotBlocksRender, not `status === "failed"`, so a refused shot can never fall
+    // through this check into assemble (GHSA-hcr9-8jc2-9q4c).
+    const blocked = finishPhaseBlockers(finishShots);
+    if (blocked.length) {
       job.phase = "failed";
-      job.error = `finish failed for ${failed.length} shot(s): ` +
-        failed.map((fs) => `${fs.shot_id} at ${fs.chain[fs.idx] ?? "?"} (${fs.error ?? "no error"})`).join("; ");
+      job.error = `finish failed for ${blocked.length} shot(s): ` +
+        blocked.map((fs) => `${fs.shot_id} at ${fs.chain[fs.idx] ?? "?"} (${fs.error ?? "no error"})`).join("; ");
       return;
     }
     job.phase = job.clips_only ? "done" : "assemble";

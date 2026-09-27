@@ -91,10 +91,12 @@ describe("CSAM refusals stay a hard fail, never a degrade", () => {
     expect(finishOutputIsCsamRefusal(out({ degraded: "no detectable face in clip" }))).toBe(false);
   });
 
-  it("applyFinishOutputOrRefuse fails the shot and does not record a polish degrade", () => {
+  it("applyFinishOutputOrRefuse refuses the shot terminally and does not record a polish degrade", () => {
     const fs = shot();
     applyFinishOutputOrRefuse(fs, out({ degraded: "csam detected" }), "p");
-    expect(fs.status).toBe("failed");
+    // `refused`, not `failed`: the two are different terminal facts and only `failed` is recoverable.
+    // tests/finish-refusal-terminal covers what that distinction buys. GHSA-hcr9-8jc2-9q4c.
+    expect(fs.status).toBe("refused");
     expect(fs.error).toBe("csam detected");
     expect(fs.degraded).toBeUndefined();
     expect(fs.applied).toEqual([]);
