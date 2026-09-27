@@ -3,6 +3,14 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.24.0
+
+Cycle opened by the first feature PR after the v1.23.0 cut (core#291), which is the documented
+steady state rather than a deviation: `main` sits on a tagged version between releases, so a
+bare `## Unreleased` is refused and the next feature PR opens the next version. Entries for this
+cycle live as `changelog.d/` fragments and are folded in here by `changelog-assemble.mjs` at cut
+time. See RELEASES.md and CONTRIBUTING.md.
+
 ## [1.23.0] -- 2026-09-27
 
 ### fix(mux): a transport failure is a failure, not a silent film shipped as COMPLETED
