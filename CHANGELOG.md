@@ -3,13 +3,103 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.24.0
+## [1.24.0] -- 2026-09-27
 
 Cycle opened by the first feature PR after the v1.23.0 cut (core#291), which is the documented
 steady state rather than a deviation: `main` sits on a tagged version between releases, so a
 bare `## Unreleased` is refused and the next feature PR opens the next version. Entries for this
 cycle live as `changelog.d/` fragments and are folded in here by `changelog-assemble.mjs` at cut
 time. See RELEASES.md and CONTRIBUTING.md.
+
+### Added
+
+- **Module contract: a machine-readable fault class on the `/invoke` failure arm (core#291).**
+  `InvokeResponse`'s failure arm gains `reason?: InvokeFailureReason`, a closed union of eleven
+  classes with an enumerable `INVOKE_FAILURE_REASONS` and a total `INVOKE_FAILURE_DISPOSITION` map
+  over it. `error` stays required and human-readable; `reason` is what a monitor, a job log and a
+  test read. OPTIONAL and additive: no `MODULE_API` bump, same class of change as `jobId` (#318)
+  and `PollResponse.outcome` (local#304), so a module returning only prose today keeps passing
+  conformance unchanged.
+
+  Until now the failure arm had ONE channel, so the core regexed English to decide whether to retry
+  a render step: `classifyTransientFailure` matches HTTP status substrings, `unreachable|timeout|
+  network|econnreset|fetch failed`, `7003` and `high load|please try again later`. A module that
+  reworded its message changed a retry decision it never knew it was making. The new
+  `classifyInvokeFailure` prefers the declared class and never inspects the sentence when one is
+  present; the two motion-submit call sites in `render-orchestrator` now use it.
+
+  Every class is derived from a failure this repo already produces, cited on the member, and the
+  test asserts that the declared disposition AGREES with what the prose classifier decides for the
+  real string -- so adopting `reason` changes no render's behaviour on day one.
+
+  **Absence is not a fault class.** `reason` is optional and deliberately NOT defaulted, and there
+  is no `"unknown"` member: absent means only "this module has not adopted the field", and a
+  consumer reading an absent value takes the legacy prose path. A MALFORMED value is a third state
+  and fails `checkInvokeResponse`, the same strict-gate / permissive-loader split `participation`
+  uses. The conformance detail names the unadopted case in words, so non-adoption is visible in a
+  report rather than inferred from a green check that would otherwise look identical.
+
+### Fixed
+
+- **`src/modules/types.ts` and `src/modules/conformance.ts` said `/1` was still accepted; it is
+  not.** The `/1` window closed with #294 and both `validateManifest` (load) and `checkManifest`
+  (conformance) reject it, but the header comment, the conformance file's first line and the
+  `ModuleApi` union all still described a transitional acceptance nine lines above the Set that
+  refuses it. `ModuleManifest.api` and `ModulesResponse.api` are now typed `SupportedModuleApi`
+  (`vivijure-module/2`), `ModuleApi` is documented as the historical epoch names rather than as
+  policy, and `SUPPORTED_MODULE_APIS` is built from `MODULE_API` so the two cannot drift. Two test
+  fixtures that declared `api: "vivijure-module/1"` -- an epoch the loader refuses -- were corrected
+  to `/2`.
+
+### feat(assemble): refuse a film that cannot fit the container's disk, before the first presign
+
+A chunked assemble had no bound on the film it produced. cf#784 flattened peak disk for the BATCH
+stage (each batch dir is reaped on flush, each partial goes straight to R2) but left FINALIZE
+untouched, and finalize holds **two** full-length copies at once: `_silent.mp4` from the join, then
+`final.mp4` from `_mux_bed_onto`, with no remove between them and no re-encode on the no-bed branch.
+Nothing bounded either. The container's own comment says "peak disk at that stage is one film"; the
+code says two.
+
+`enterAssemblePhase` now predicts the film's normalized bytes and refuses before a single presigned
+URL is minted, so an over-size job costs zero downloads, zero CPU and zero container time.
+
+**The threshold is deliberately NOT `MAX_CLIPS x MAX_CLIP_BYTES`.** cf#813 measures that product
+(80 x 256 MB = 20.0 GB, the whole disk) as 23x to 120x above what a real film weighs, because
+`MAX_CLIP_BYTES` is the size at which a DOWNLOAD is refused rather than a payload. A gate written
+against it could never fire, which is worse than no gate because it reads as protection. It is also
+the wrong quantity: cf#813 measures the normalized-to-source byte ratio at 0.98x to 5.09x, so
+source bytes do not predict the film either.
+
+It is written instead against cf#813's measured encodes through this container's exact normalize
+command: 0.225 normalized bits per pixel per frame, derived from the 1080p24 crf18 ceiling of
+11.16 Mbps and cross-checked against that measurement's independent 720p row (predicts 4.98 Mbps
+against a measured 4.82). The ceiling of the band, on purpose, so the refusal is early rather than
+late.
+
+**What this catches that nothing else could.** The unbounded dimension is DURATION, not clip count.
+A 62s clip at a plausible bitrate is ~60 MB, a quarter of `MAX_CLIP_BYTES`, so 80 of them sail past
+every existing guard and then ask the container to hold ~13 GB of film on a 20 GB disk. The gate
+fires at roughly 82 minutes of 1080p24 delivery and admits everything below it, so the largest
+legitimate film the clip path can produce (80 clips x 8.0s, about 0.9 GB predicted) keeps a 7x
+margin.
+
+Length comes from EVIDENCE: `measuredClipSeconds` reads `delivered_frames / delivered_fps` off the
+clip doc the render already wrote, the plan fills any shot the probe missed, and a shot with neither
+contributes zero and is COUNTED, so a partial basis is reported as the lower bound it is. An
+all-unknown film is admitted rather than refused, mirroring the #697 duration gate: the check fires
+on evidence, never on absence.
+
+Refusal is terminal and loud, never a degrade (the #249/#77 discipline): the error carries what was
+asked, what fits, by how much it is over, the measured/planned/unknown split, and the length that
+WOULD be accepted, and a test asserts that length is actually admissible.
+
+Both failure modes are held red by construction. Neutering the gate to always-admit fails 11 of the
+28 new tests including every seam assertion; setting it to always-refuse fails 8, including the
+control that a legitimate large film still assembles. The seam tests assert on presign COUNT, which
+is the thing the container's cost actually turns on: a refusal that still minted 80 GETs, a PUT and
+an 80-pair partial pool would have saved nothing.
+
+Refs cf#815, cf#813, cf#784, cf#801, cf#808, cf#793, #301
 
 ## [1.23.0] -- 2026-09-27
 
