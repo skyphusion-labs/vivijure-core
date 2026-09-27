@@ -20,7 +20,7 @@ const STEP0 = "renders/p1/film-ff0.mp4";
 const MOD: RegisteredModule = {
   name: "film-titles",
   version: "0.1.0",
-  api: "vivijure-module/1",
+  api: "vivijure-module/2",
   hooks: ["film.finish"],
   ui: { section: "finish", order: 10 },
   binding: "MODULE_FILM_TITLES",

@@ -1,4 +1,4 @@
-// Module conformance harness (vivijure-module/2; /1 accepted transitionally).
+// Module conformance harness (vivijure-module/2 -- the ONLY accepted epoch; /1 is REJECTED, #294).
 //
 // The "does this module honor the contract?" checker. Anyone writing a module (in this repo or
 // another) runs these checks against their worker to know it will plug into the core cleanly:
@@ -11,7 +11,14 @@
 // .test.ts) drives them against a deployed module URL. This is the conformance half of the module
 // SDK: the contract is the law, and this is how a contributor proves they obey it.
 
-import { CEILING_DERIVED_HOOKS, SELECTABLE_HOOKS, SUPPORTED_MODULE_APIS, type HookName } from "./types.js";
+import {
+  CEILING_DERIVED_HOOKS,
+  INVOKE_FAILURE_REASONS,
+  isInvokeFailureReason,
+  SELECTABLE_HOOKS,
+  SUPPORTED_MODULE_APIS,
+  type HookName,
+} from "./types.js";
 import { validateManifest } from "./manifest-validate.js";
 
 export interface ConformanceCheck {
@@ -98,7 +105,22 @@ export function checkManifest(raw: unknown): ConformanceCheck[] {
   return checks;
 }
 
-/** Validate that a body is a well-formed InvokeResponse: { ok:true, output } or { ok:false, error:string }. */
+/**
+ * Validate that a body is a well-formed InvokeResponse: `{ ok:true, output }`, `{ ok:true, pending,
+ * poll }`, or `{ ok:false, error:string, reason?:InvokeFailureReason }`.
+ *
+ * #291, THE FAILURE ARM. `reason` is OPTIONAL -- absent means THIS MODULE HAS NOT ADOPTED the
+ * field, which is a legal and reportable state and never a fault class -- but a PRESENT value must
+ * be a member of INVOKE_FAILURE_REASONS. Refusing a malformed value HERE is what stops "absent" and
+ * "typo" collapsing into each other at the consumer: the same split `participation` already uses,
+ * where the GATE is strict and the LOADER stays permissive so a third-party module is not ours to
+ * fail.
+ *
+ * THE DETAIL STRING NAMES THE UNADOPTED CASE OUT LOUD, and that is deliberate rather than
+ * decorative. An additive optional field that nothing reports is a field nothing adopts (#291
+ * design question 3); a conformance report that says "no reason" in words makes non-adoption
+ * VISIBLE instead of leaving it to be inferred from a green check that looks identical either way.
+ */
 export function checkInvokeResponse(raw: unknown): ConformanceCheck {
   if (!raw || typeof raw !== "object") return bad("invoke-response", "not an object");
   const r = raw as Record<string, unknown>;
@@ -107,7 +129,21 @@ export function checkInvokeResponse(raw: unknown): ConformanceCheck {
     if (r.pending === true && typeof r.poll === "string") return ok("invoke-response", "ok:true + pending + poll");
     return bad("invoke-response", "ok:true but neither output nor pending+poll");
   }
-  if (r.ok === false) return typeof r.error === "string" ? ok("invoke-response", "ok:false + error") : bad("invoke-response", "ok:false but error is not a string");
+  if (r.ok === false) {
+    if (typeof r.error !== "string") return bad("invoke-response", "ok:false but error is not a string");
+    // `undefined` is ABSENT, not malformed: JSON.stringify drops the key, and a TypeScript module
+    // assigning an optional property explicitly produces the same wire body as omitting it. An
+    // explicit null is NOT absent and is refused, exactly as `participation` refuses a typo.
+    if (r.reason === undefined) {
+      return ok("invoke-response", "ok:false + error (no reason; this module has not adopted InvokeFailureReason, #291)");
+    }
+    return isInvokeFailureReason(r.reason)
+      ? ok("invoke-response", "ok:false + error + reason:" + r.reason)
+      : bad(
+          "invoke-response",
+          `ok:false reason ${JSON.stringify(r.reason)} is not one of ${INVOKE_FAILURE_REASONS.join(" | ")} (#291)`,
+        );
+  }
   return bad("invoke-response", "missing boolean `ok`");
 }
 
