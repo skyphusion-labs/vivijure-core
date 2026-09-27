@@ -287,6 +287,20 @@ export async function validateClipArtifact(env: Env, key: string, expectedSecond
   const probe = await probeMp4Artifact(env, key, expectedSeconds);
   if (probe.threw) return { verdict: "skip", reason: "clip validation errored", checks: empty };
   if (!probe.present) return { verdict: "skip", reason: "clip artifact not found in R2", checks: empty };
+  // core#310: the docstring above has always promised that an unreadable artifact is a SKIP, and for
+  // one of the three ways to be unreadable the code did the opposite. When HEAD said the object
+  // exists but a ranged GET came back empty, locateStructure broke out with ftypOk false and
+  // judgeClip reported "not a valid mp4 (no ftyp/moov box tree); corrupt or wrong format" -- a
+  // positive claim about CONTENT, from a read that returned no content, which then failed the shot.
+  //
+  // ORDER MATTERS AND THIS IS THE WHOLE SUBTLETY: the byte floor is judged FIRST, so a 0-byte or
+  // truncated clip still FAILS on its size rather than being excused as unreadable. An empty body
+  // and an unreadable body are indistinguishable at the transport level, and size is the thing that
+  // separates them. Same order, for the same reason, as validateFilmArtifact (cf#835).
+  if (probe.checks.bytes < CLIP_MIN_BYTES) return judgeClip(probe.checks);
+  if (!probe.readable) {
+    return { verdict: "skip", reason: "clip artifact present but its bytes could not be read this tick", checks: probe.checks };
+  }
   return judgeClip(probe.checks);
 }
 
