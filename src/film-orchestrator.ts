@@ -155,6 +155,7 @@ import { filmDonePayload } from "./render-output-payload.js";
 import {
   adoptFilmOutputKeyFromStore,
   defaultFilmOutputKey,
+  filmDeliverableExpected,
   resolveFilmOutputKey,
 } from "./film-output-key.js";
 import { finishStepInputHash } from "./finish-hash.js";
@@ -1598,12 +1599,32 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
   // artifact is known. Single-film jobs previously relied on updateRenderFromView alone;
   // a done job doc with a missing film_key (but film.mp4 in store) left output_key null (#99).
   let filmKey = resolveFilmOutputKey(job);
-  if (!filmKey && !job.keyframes_only) {
+  const owesFilm = filmDeliverableExpected(job);
+  // The doc no longer guesses a key (cf#833), so an absent key here is a real "this doc does not
+  // know", and the #99 adoption probe is reachable again: HEAD the deterministic assemble key and
+  // adopt it only if the artifact is actually there.
+  let verified = false;
+  if (!filmKey && owesFilm) {
     const adopted = await adoptFilmOutputKeyFromStore(env, job.film_id);
     if (adopted) {
       filmKey = adopted;
+      verified = true; // adoptFilmOutputKeyFromStore HEADs before it returns
       if (!job.film_key) job.film_key = adopted;
     }
+  }
+  // cf#833: the key on the job doc is a CLAIM; the store is the record. A film that is OWED and is
+  // not in R2 is a failed render, not a COMPLETED row whose download link 404s. The two shapes that
+  // owe no film (keyframes-only, and the #519 clips degrade) are exempt by filmDeliverableExpected,
+  // and both still finish green. Entry path this closes: enterMuxPhase with a resumed doc whose
+  // silent_film_key did not persist sets film_key = undefined and transitions here.
+  if (owesFilm && !(verified || (filmKey && (await r2ObjectExists(env, filmKey))))) {
+    job.phase = "failed";
+    job.error = filmKey
+      ? `assembled film is not in R2 at ${filmKey}`
+      : `no assembled film in R2 for ${job.film_id} (probed ${defaultFilmOutputKey(job.film_id)})`;
+    // putFilm at the tail of the advance tick emits film.phase + film.render.terminal with this
+    // error, so the failure is greppable without a second event channel.
+    return;
   }
   if (filmKey) {
     // core#205: DERIVED, not restated. filmDonePayload is the single source for this payload and the

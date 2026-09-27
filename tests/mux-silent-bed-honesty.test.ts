@@ -16,7 +16,10 @@ function muxEnv(job: object, containerBody: unknown) {
   const env: Record<string, unknown> = {
     R2_RENDERS: {
       get: async (key: string) => (key === filmJobDocKey(filmId) ? { text: async () => stored } : null),
-      head: async () => null,
+      // cf#833: the done transition HEADs the film it is about to stamp on the row, so a fake that
+      // answers "nothing exists, ever" describes a world this scenario is not in -- the silent and
+      // muxed artifacts are in R2 here, which is what the prose of these cases already says.
+      head: async (key: string) => (key === SILENT || key === OUT ? { size: 4096 } : null),
       put: async (key: string, val: string) => { if (key === filmJobDocKey(filmId)) stored = val; },
     },
     PRESIGNER: {

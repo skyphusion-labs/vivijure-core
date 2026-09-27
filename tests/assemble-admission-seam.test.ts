@@ -34,8 +34,18 @@ function seamEnv(job: object, clipJob?: object) {
         }
         return null;
       },
-      // OUT absent: no #122 self-heal shortcut, so the run reaches the real assemble path.
-      head: async (key: string) => (key === filmJobDocKey(filmId) ? { size: 1 } : null),
+      // OUT absent BEFORE the container runs: no #122 self-heal shortcut, so the run reaches the
+      // real assemble path. AFTER it runs, OUT exists, because the container PUTs the concat to the
+      // presigned URL and this fixture is the only thing standing in for that. cf#833/cf#835: the
+      // done transition now HEADs and structurally judges the film it is about to stamp on the
+      // renders row, so a store that never acquires the artifact describes a world in which the
+      // assemble silently produced nothing, which is not the world these cases are about.
+      head: async (key: string) =>
+        key === filmJobDocKey(filmId)
+          ? { size: 1 }
+          : key === OUT && finishCalls > 0
+            ? { size: 4096 }
+            : null,
       put: async (key: string, val: string) => { if (key === filmJobDocKey(filmId)) stored = val; },
       delete: async () => undefined,
     },
