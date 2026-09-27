@@ -3,7 +3,8 @@
 Shared orchestration library for [`vivijure-cf`](https://github.com/skyphusion-labs/vivijure-cf) and
 [`vivijure-local`](https://github.com/skyphusion-labs/vivijure-local). A release is:
 
-1. A version bump in `package.json` on `main`
+1. A version bump in `package.json` **and `package-lock.json`** on `main` (BOTH the top-level
+   `version` and `packages[""].version` in the lock, which is two occurrences of the old string)
 2. An annotated git tag `vivijure-core-v<semver>` **pushed to origin**
 3. A **GitHub Release** on that tag (`gh release create vivijure-core-v<semver> ...`)
 4. npm publish via `.github/workflows/publish-npm.yml` (tag push or workflow_dispatch; requires
@@ -14,6 +15,13 @@ Tag prefix `vivijure-core-v` must match `package.json` version (workflow verifie
 Step 1 also closes the changelog cycle: as of core#202, running `node scripts/changelog-assemble.mjs <version> <date>` folds every `changelog.d/` fragment (plus whatever is still open under the Unreleased-shaped heading) into the released section, in place of hand-editing that heading. See CONTRIBUTING.md.
 
 BEFORE that step, run `node scripts/changelog-release-cut-check.mjs` (core#212): it refuses if any open PR still touches `CHANGELOG.md` directly, since closing the heading now would strand that PRs entry under it once merged. Wait for those PRs to land, or ask their authors to switch to a `changelog.d/` fragment first, which is immune to this by construction.
+
+> **The lock file is step 1 too, and the procedure did not say so until the v1.23.0 cut.** Bumping
+> `package.json` alone leaves `package-lock.json` on the spent version. Nothing in the documented
+> steps catches that; the only thing that does is `tests/changelog-version.test.ts`, whose
+> `package-lock.json agrees with package.json` row went red on this cut. That is a good outcome --
+> the guard exists and it fired -- but a procedure that relies on a test to remember one of its own
+> steps is incomplete, so the step is now written down. (rollins, 2026-09-27)
 
 ## Cutting a release
 
@@ -161,6 +169,7 @@ consistent with the file.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
+| `vivijure-core-v1.23.0` | 1.23.0 |  |  | **MINOR.** Chunked assemble goes LIVE: the Worker mints the `partialUrls` pool and every assemble presign gets a TTL that outlives the job (core#301). CPU media doors gain an optional in-process Fetcher seam, so the container is reached through a binding instead of a hostname (cf#810). **Two behaviour changes:** a studio with the container BOUND and `VIDEO_FINISH_URL` UNSET is now reachable, where it previously degraded to tier-not-installed; and a MISSING bearer is no longer fatal on the bound path (a configured token is still sent, and the public path keeps fail-closed). |
 | `vivijure-core-v1.22.5` | 1.22.5 |  |  | **PATCH.** Resubmit a clip shot that died on provider load / 429 / 7003. Cap 3. A real 400 still fails immediately. |
 | `vivijure-core-v1.22.4` | 1.22.4 |  |  | **PATCH.** `audio_url` is the shot LINE; `pre_clip_dialogue` / `pre_clip_speech` before driving-audio clips. |
 | `vivijure-core-v1.22.3` | 1.22.3 |  |  | **PATCH.** Incomplete films are FAILED. |

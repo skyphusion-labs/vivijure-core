@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.22.6
+## [1.23.0] -- 2026-09-27
 
 ### fix(mux): a transport failure is a failure, not a silent film shipped as COMPLETED
 
@@ -26,6 +26,234 @@ unset (the tier is not installed, #519) and `hasAudio:false` (the container ran 
 reported the bed unusable, #245/#249/#77).
 
 Refs vivijure-cf#746.
+
+### fix(core): drop musetalk-the-provider from the legacy finish heuristics and CI roots
+
+musetalk is ruled out permanently as a lip-sync provider and its RunPod
+endpoint is gone. The two legacy binding-name heuristics in `film-model.ts`
+(`finishStepOutputKey`, `finishStepAppliedTag`) drop the `MUSETALK`
+alternative and keep `LIPSYNC`; no module binding named `*MUSETALK*` exists
+in any consumer, so no live derivation changes. CI stops checking out the
+archived `vivijure-musetalk` consumer and drops it from
+`VIVIJURE_CONSUMER_ROOTS`; `handler.py`, the only `.py` basename that repo
+shared with a core comment, still resolves in four remaining roots.
+
+Comments that asserted a live musetalk are corrected, including four that
+carried counts which had gone false. Lip-sync as a concept is unchanged:
+`infinitetalk` is the live audio-driven path and the generic `LIPSYNC`
+vocabulary, tags and fixtures stay.
+
+### docs(core): correct core's speech-upscale references; the speech hook, phases and transport stay
+
+`speech-upscale` was a vivijure-cf MODULE; `speech` is a vivijure-core HOOK. Conrad
+ruled the module out (cf#786): its RunPod endpoint no longer exists, its only planner
+trigger was the `finish-lipsync` checkbox removed in cf#785, its purpose (cleaning
+dialogue before POST-HOC mouth replacement) retired when lip-sync moved to motion time
+via `infinitetalk` taking Cast audio directly, and it is CUDA, a stage the finishing
+tier cannot host (fc#2234).
+
+Measured in cf's manifests rather than assumed: `speech-upscale` declares
+`hooks: ["speech"]` and is the only module under `vivijure-cf/modules/` whose source
+mentions speech (`audio-master` declares `master`). So once cf's PR lands the `speech`
+hook has ZERO shipped implementations. Following #293, the mechanism stays and the docs
+SAY so: `docs/CORE-VS-MODULES.md` now states there is no shipped implementation, and its
+example binding row is the hook-generic `MODULE_SPEECH`, since core branches on hook
+names and never on module names.
+
+Comments that named the deleted module as a live counterpart are corrected.
+`speechEnhancedAudioKey` is no longer described as a mirror of a module helper: with no
+shipped module it is the only live statement of the `_enh.wav` convention, and
+`SpeechInput.output_key` is the side a future speech module matches.
+`tests/finish-presign-312.test.ts` was one half of a cross-repo transcription lock whose
+other half is gone, so its header now says which gate survives --
+`finish-presign-keyset-312.test.ts`, which drives `attachFinishPresigns` /
+`attachSpeechPresigns` at the one injected seam (`env.PRESIGNER`) and asserts the key
+set -- so a pure-helper suite is not mistaken for transport coverage.
+
+No behaviour change and no exported symbol removed. `speechEnhancedAudioKey` stays:
+`attachSpeechPresigns` calls it and `src/index.ts` re-exports `film-orchestrator.js`, so
+removing it would break the published surface for a contract that is still live. The
+`speech` / `pre_clip_speech` phases, `advanceSpeechPhase`, the chain resolution and the
+presign path are untouched, as is `infinitetalk`. Test fixtures naming `speech-upscale`
+or `MODULE_SPEECH_UPSCALE` stay: their subjects are generic speech-chain, phase-ceiling,
+progress-marker, pre-clip-dialogue and ready-classifier logic, and renaming a fixture
+deletes coverage history while proving nothing. `vivijure-local` is deliberately skipped
+(on hold), so that divergence is a decision, not an oversight.
+
+### fix(film-model): distinguish terminal refusal from transient failure in finish-shot recovery
+
+Ref: GHSA-hcr9-8jc2-9q4c.
+
+`FinishShot.status` carried two different terminal facts under one label. A step that did not
+deliver is RECOVERABLE: the finish phase is built around R2 presence being authoritative, so a
+later pass (or the same pass's reclaim) may still find the artifact and complete the shot
+(#141/#166, RUN #29). A REFUSED shot is the opposite kind of fact: a decision that the shot is not
+to be delivered, which no later pass may revisit. Both were `failed`, and every recovery path in the
+phase keys off the status.
+
+`refused` is now its own terminal status, set by `applyFinishOutputOrRefuse`, and the separation is
+enforced by the type system rather than by a condition each recovery path has to remember:
+
+- `RecoverableFinishShot` is a branded type. The only way to obtain one is `finishShotRecoverable`,
+  which admits `pending` and `failed` only, so a refused shot does not inhabit the type at all.
+  `adoptFinishStepOutput` and `adoptFinishStepFromR2` take that type, and `finishShotAdoptableFromR2`
+  is now a type guard that narrows through the single definition. A recovery path added later gets the
+  guarantee by declaring its parameter, with no new condition to remember and no way to opt out.
+- `finishShotBlocksRender` / `finishPhaseBlockers` replace the inline `status === "failed"` test in the
+  finish phase's terminal judgment, so a refused shot stops the render exactly as a failed one does
+  instead of falling through to assemble. This is the half a new status would otherwise break, and it
+  is asserted.
+- `FinishSummary` gains `refused`. Without its own bucket a refused shot would appear in none of them
+  and `total` would not reconcile, which is an absence rendering as a value.
+
+`tests/finish-refusal-terminal.test.ts` asserts both directions, because only one of them is about
+the refusal. Every refused fixture is produced by running the real refusal path rather than by writing
+the status literal, which no shipped code emits: a hand-built fixture would let a status-reading guard
+pass whatever that path actually does. The CONTROL half pins the recovery the `failed` branch exists
+for, at the final chain index and frozen mid-poll, plus the mid-chain non-adoption and the ordinary
+soft-degrade fold. A change that separated the states by disabling recovery would pass half this file
+and is not a fix.
+
+`error` is still cleared on an adopted shot, which is correct there (the finished artifact is the
+source of truth) and unreachable for a refusal, whose reason is what the render reports.
+
+Files: `src/film-model.ts`, `src/film-orchestrator.ts`, `tests/finish-refusal-terminal.test.ts`,
+`tests/apply-finish-output-226.test.ts`.
+
+### fix(render-orchestrator): exclude a content-rejected clip from the R2 presence reclaim
+
+Ref: GHSA-hcr9-8jc2-9q4c. The clips-leg instance of the distinction #296 drew on the finish leg.
+
+`reclaimClipsFromR2` selected any not-done shot whose artifact is present in R2, excluding only
+`validated === "fail"` (Layer 1, structural). Layer 2, the pixel / keyframe-similarity gate, parks a
+`corrupt` verdict on the same `failed` status, and a rejected artifact is by definition still in R2,
+since being there is what it was judged on. Its own idempotence flag (`content_validated`) then
+suppresses re-inspection, so a shot recovered that way is never re-judged.
+
+The filter now also excludes `content_validated === "corrupt"`, which is the shape the Layer 1
+exclusion sitting beside it already had: a terminal state that is a DECISION rather than a delivery
+failure is not something artifact presence should overturn. The pre-existing Layer 1 exclusion is why
+this is additive rather than novel; the same reasoning simply had no Layer 2 counterpart.
+
+Only `corrupt` is excluded, and that is the load-bearing part. `ok` is a pass and `suspect` is
+warn-and-degrade by design, so excluding either would have disabled the #141 recovery for every clip
+the content gate has ever inspected. `tests/clip-content-reject-terminal.test.ts` carries a
+discriminator over all three verdicts for exactly that reason, asserts the Layer 1 exclusion is
+unchanged, and keeps the plain-failed and pending recoveries green. The refusal half was watched
+failing first: the reclaim returned an adopted count of 1 where it must return 0, and the shot read
+`done` where it must read `failed`.
+
+Files: `src/render-orchestrator.ts`, `tests/clip-content-reject-terminal.test.ts`.
+
+### feat(video-finish): mint the partialUrls pool, and give every assemble URL a TTL that outlives the job
+
+Chunked assemble (vivijure-cf#784, container side in cf#801) was **inert**. The container takes its
+single-pass path whenever `partialUrls` is absent, and no Worker ever sent one, so the shipped
+container was byte-for-byte the old behaviour and peak disk was still 3-4x total input.
+
+`FinishPayload` now carries `partialUrls`, and both assemble sites mint one: `enterAssemblePhase`
+and the scatter gather. The two **mux** sites do not, and must not: they send `remuxAudioOnly`,
+which is single-pass by definition.
+
+**Pool size is provable rather than estimated.** The container flushes only a non-empty batch, so
+every batch holds at least one clip, so batches can never outnumber clips. `clips.length` pairs is
+an exact upper bound needing no `HEAD` probe and no byte accounting on the Worker side. Presigning
+is local HMAC with no network, so the unused tail costs almost nothing and expires unread.
+
+**The TTL is the part that would have failed in production.** Every presigned URL in an assemble
+payload was minted at a hardcoded `1800`. Under single-pass that was sound, because every clip is
+downloaded in the first seconds of the job. Chunking invalidates it in two places, and only one of
+them is new code:
+
+- the final pass concatenates the partials, so `partial_gets[0]` is minted at `t0` and first READ
+  at `t_final`; a TTL sized to the join has already expired by the time it is used;
+- batch N downloads its own clips only after batches `0..N-1` have normalized through libx264, so
+  the **input clip GETs** must outlive the whole job too. That line of code did not change; its
+  assumption did, which is exactly why it would have survived review.
+
+A comment cannot fail and a README cannot fail, so this is a constant plus an assertion.
+`ASSEMBLE_PRESIGN_TTL_SECONDS` is checked against `ASSEMBLE_MAX_JOB_SECONDS` at module load and
+again inside `mintPartialUrlPool`, which **throws rather than clamping**: a caller passing 1800 has
+a wrong model of the job, and silently widening it would hide the mistake the check exists for.
+
+**The same constant is the give-up horizon, deliberately.** `AssemblePollState.submittedAt` was
+recorded on every tick and never read (grep-zero), and `notFoundStreak` resets to 0 on any
+`pending`, so a job whose presigns had expired polled **forever** -- which is why a short TTL
+presented as a hang rather than an error. Past the horizon the URLs are dead and the job provably
+cannot succeed, so it now fails with that reason. Tying the TTL and the horizon to one number is
+what stops them drifting: shorten one and you shorten the other.
+
+Batch partials are deleted on a terminal outcome, either way. Keys are deterministic, so cleanup
+needs nothing off the job doc and cannot be orphaned by a lost field; a cleanup miss warns and
+never fails a film that rendered.
+
+`tests/partial-url-pool-301.test.ts` asserts the **TTL alongside the key**, because the key set was
+never wrong and a key-set assertion is structurally blind to this bug. The wiring rows drive
+`advanceFilmJob` to a real submit and assert against the JSON body actually POSTed to
+`/async/finish`, with the stub presigner baking the requested TTL into the URL it returns, so the
+submitted payload is its own witness. Verified red on both halves of the real defect: reverting the
+clip presign to 1800 fails 1 row, dropping `partialUrls` from the payload fails 2.
+
+Files: `src/video-finish-assemble.ts`, `src/film-orchestrator.ts`, `src/scatter-orchestrator.ts`,
+`tests/partial-url-pool-301.test.ts`.
+
+### feat(media-door): reach a CPU media door through an in-process Fetcher instead of a hostname
+
+Ruled as option 3 of vivijure-cf#810.
+
+**The shape vivijure-cf#797 specified cannot exist.** This package is a LIBRARY running inside the
+`vivijure-studio` Worker, and #797 planned to front the container with a ROUTE on that same Worker
+with `VIDEO_FINISH_URL` pointing at it. Cloudflare documents same-zone Worker-to-Worker global
+`fetch()` against a route as failing; it succeeds only against a Custom Domain. `tsc` cannot see
+that and a deploy would succeed against it, so the door had to stop being a hostname.
+
+`Env` gains an optional `MEDIA_DOOR_FETCHERS`, keyed by the door's URL var so there is one door
+vocabulary rather than two. When a door is bound, `mediaDoorFetch` routes through the binding at an
+internal origin (`http://video-finish/...`, a LABEL that nothing resolves) and the public origin is
+never consulted. The interface is duck-typed on `fetch`, matching `vivijure-cf/src/render-frames.ts`
+`FetcherLike`, so a Durable Object stub, a service binding and a test double are all admissible
+without importing a Cloudflare type here.
+
+**Three consequences that are each easy to leave out, and each break the feature on their own:**
+
+- **`mediaDoorReachable` now counts the binding.** Every phase gate in the orchestrators
+  (`enterAssemblePhase`, mux, gather, clip validation) calls it. Without the binding arm, a studio
+  with the container bound and `VIDEO_FINISH_URL` unset degrades to "tier not installed" while the
+  container sits there working.
+- **POLL goes through the binding, not only SUBMIT.** `pollVideoFinishAsync` used a raw global
+  `fetch` against per-box hostnames. Shipping only the submit half would have posted the job into
+  the container and then polled three authoritative NXDOMAINs for the answer, hanging every job as
+  `missing` until the not-found streak gave up: a worse failure than the one being fixed, and
+  harder to read. With a bound door there is exactly ONE target, because a DO stub is a single
+  addressable instance and there are no peers to ask.
+- **A missing bearer no longer fails closed on the bound path.** The bearer authenticates a request
+  that crosses the public internet, and this one never leaves the isolate's request graph. A token
+  is still SENT when the host set one (`mediaFinishHeaders` attaches it at the call site), so a
+  container image configured with `LOCAL_FINISH_TOKEN` keeps working unchanged.
+
+**The public path is untouched.** No binding means the previous behaviour exactly, fail-closed
+bearer included, and that is asserted rather than assumed.
+
+Adjacent, fixed in passing: `mediaDoorUrl` was used directly as a reachability gate for
+`AUDIO_MIX_URL` and `IMAGE_PREP_URL`, which would ignore a binding for those doors. Now
+`mediaDoorReachable`.
+
+The not-found streak is deliberately KEPT on the bound path. Async job state still lives in
+container process memory (vivijure-cf#784 item 2 is not done), so a container restart or instance
+eviction loses it and a 404 remains "possibly transient" rather than proof the job never existed.
+Tightening that debounce belongs with externalising the state.
+
+`tests/media-door-fetcher-810.test.ts` replaces `globalThis.fetch` with a spy that THROWS on
+several rows, so a surviving edge hop fails the suite instead of quietly working in dev and failing
+on a same-zone deploy; asserting only "the binding was called" would pass with a stray global fetch
+still in the code. The wiring row drives `advanceFilmJob` with `VIDEO_FINISH_URL` and
+`MEDIA_FINISH_TOKEN` both unset and asserts the film reaches an assemble submit carrying the #301
+pool, so the two changes are shown to compose. Verified red: dropping the binding arm from
+`mediaDoorReachable` fails 3 rows; dropping the poll binding fails 1.
+
+Files: `src/media-finish-auth.ts`, `src/video-finish-assemble.ts`,
+`src/platform/orchestrator-context.ts`, `src/film-orchestrator.ts`, `src/bundle-assembler.ts`,
+`src/index.ts`, `tests/media-door-fetcher-810.test.ts`.
 
 ## [1.22.5] -- 2026-08-20
 
