@@ -5,6 +5,28 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased / v1.22.6
 
+### fix(mux): a transport failure is a failure, not a silent film shipped as COMPLETED
+
+`enterMuxPhase` answered `tick.kind === "failed"` by degrading to `done` with the
+silent film, while `enterAssemblePhase` answered the identical condition with
+`phase = "failed"`. Ten lines apart, opposite outcomes, so which one a caller got
+depended on where the render happened to die -- and the mux outcome was terminal:
+the job read COMPLETED and the audio was never coming.
+
+It was not a dead-host-only edge. `submitAsync` gives up on the FIRST attempt with
+no retry, so a single transient blip at mux permanently converted a film-with-audio
+into a silent film reported as complete.
+
+Mux now fails loud on a transport failure. Nothing is lost that the degrade kept:
+`silent_film_key` is already in R2, so a resubmit can remux it.
+
+The rule the two legs now share: DEGRADE WHEN A RETRY CANNOT HELP, FAIL WHEN IT CAN.
+Both legitimate mux degrades are unchanged and still covered -- `VIDEO_FINISH_URL`
+unset (the tier is not installed, #519) and `hasAudio:false` (the container ran and
+reported the bed unusable, #245/#249/#77).
+
+Refs vivijure-cf#746.
+
 ## [1.22.5] -- 2026-08-20
 
 ### fix(motion): retry a shot that died on provider load, 429, or 7003

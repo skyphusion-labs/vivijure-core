@@ -2286,7 +2286,21 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
   }
   job.assemble_poll = undefined;
   if (tick.kind === "failed") {
-    await degradeMuxUnavailable(env, job, silentKey, tick.error, preModules);
+    // cf#746(a): a CONFIGURED tier that FAILED is a failure, not a degrade.
+    //
+    // This used to call degradeMuxUnavailable, which ships the silent film and transitions to DONE.
+    // That made the outcome depend on where the render died: the identical `tick.kind === "failed"`
+    // hard-fails at assemble (enterAssemblePhase below) and shipped a silent COMPLETED film here.
+    // It is also not a dead-host-only case -- submitAsync gives up on the FIRST attempt with no
+    // retry, so one transient blip permanently turned a film-with-audio into a silent film the
+    // caller was told was complete.
+    //
+    // Failing loses nothing a degrade kept: silent_film_key is already in R2, so a resubmit can
+    // remux it. The rule is DEGRADE WHEN A RETRY CANNOT HELP, FAIL WHEN IT CAN. The two mux
+    // degrades that survive are both the former: the tier being unset (#519) and the container
+    // reporting the bed unusable (hasAudio:false, #245/#249/#77).
+    job.phase = "failed";
+    job.error = `video-finish mux failed: ${tick.error}`;
     return;
   }
   const body = tick.result as FinishContainerResult;
