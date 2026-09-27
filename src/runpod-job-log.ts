@@ -345,8 +345,32 @@ function describe(e: unknown): string {
 // fell back to matching the English message would classify those endpoints by prose, which is a
 // parser only as fresh as the sample it was built from, and would make the classification LOOK
 // solved on a surface where it is not. Fixing the satellites means the containers emitting a
-// structured marker, which is a vivijure-upscale / -audio-upscale change, filed
-// separately.
+// structured marker, which is a container-side change and not a core one.
+//
+// CORRECTED 2026-09-27. This comment previously said that change was "filed separately". It was
+// not, in either repo, and a citation nobody checks is a control that reads as present. Measured,
+// with a positive control so the zeros mean something (vivijure-cf returned 23 open under the same
+// command): vivijure-upscale had 0 open issues (18 closed, none about a structured marker) and
+// vivijure-audio-upscale had 0 open (9 closed, same).
+//
+//   * video: NOW FILED as skyphusion-labs/vivijure-upscale#126. The repo is live. NOTE that its
+//     RunPod endpoint is currently ABSENT (see below), so that work cannot be verified end to end
+//     until an endpoint exists again; the repo and image are not going anywhere, so it is deferred
+//     rather than moot.
+//
+//   * audio: MOOT, not blocked. skyphusion-labs/vivijure-audio-upscale was ARCHIVED 2026-09-26 and
+//     is read-only, so it cannot receive an issue at all. FOUR independent paths read zero, which
+//     is what makes this a retirement already taken rather than one to decide: the repo is archived;
+//     vivijure-cf carries no `src/` reference and no service binding for it (only CHANGELOG, docs
+//     and tests); and RunPod lists only TWO endpoints in total, `vivijure-wan-train` and
+//     `vivijure-backend` (total 2, truncated false), with no audio-upscale among them.
+//
+// The absent upscale endpoint corroborates cf#757 independently: that issue reports finish-upscale
+// bound to an endpoint that no longer exists, and the endpoint list agrees.
+//
+// So there is no structured marker to add for the audio door, because there is no audio door. Do not
+// re-file it; it is recorded here as moot on purpose, since an issue tracking impossible work reads
+// exactly like an issue tracking neglected work.
 // ---------------------------------------------------------------------------------------------
 
 /** Unwraps python's repr of a class object. "<class 'a.b.C'>" -> "C". Anything else is returned as
