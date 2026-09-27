@@ -23,6 +23,28 @@ BEFORE that step, run `node scripts/changelog-release-cut-check.mjs` (core#212):
 > the guard exists and it fired -- but a procedure that relies on a test to remember one of its own
 > steps is incomplete, so the step is now written down. (rollins, 2026-09-27)
 
+> **A FRESH PUBLISH READS AS ABSENT FOR A FEW MINUTES, AND THAT IS NOT A FAILED RELEASE.
+> (rollins, 2026-09-27, v1.23.0 cut.)** The note further down warns that `npm view` has served a
+> stale YES straight after a publish. This is the OPPOSITE direction and it is the dangerous one:
+> straight after a successful publish the registry answers a confident **NO**.
+>
+> Measured on this cut. The workflow was green, `npm publish --provenance` had signed and logged to
+> the sigstore transparency log, and yet `npm view @...@1.23.0 version` returned **E404** and
+> `dist-tags.latest` still read the PREVIOUS version. Going to the registry directly over HTTP
+> (`curl https://registry.npmjs.org/@skyphusion-labs%2Fvivijure-core`), which bypasses npm's local
+> cache entirely, ALSO reported the version absent -- so this is not a client cache and you cannot
+> rule it out by removing one. npm's own publish output says so plainly:
+> *"Your package is being processed and may take a few minutes to become available."*
+>
+> **Do not conclude a failed publish from an absent version.** Read the `Publish to npm` STEP LOG
+> first and look for `Publishing to https://registry.npmjs.org/` followed by that processing notice.
+> If both are there the publish succeeded and the registry is still catching up; poll until the
+> version appears. It took about two minutes here.
+>
+> Note that `gh run view --log` labels every line `UNKNOWN STEP` for this workflow, so grepping by
+> step name finds nothing and reads like an empty log. Grep the CONTENT (`npm notice`, `Publishing
+> to`) instead.
+
 ## Cutting a release
 
 ```bash
@@ -169,7 +191,7 @@ consistent with the file.
 
 | git tag | npm | source commit | published | notes |
 |---|---|---|---|---|
-| `vivijure-core-v1.23.0` | 1.23.0 |  |  | **MINOR.** Chunked assemble goes LIVE: the Worker mints the `partialUrls` pool and every assemble presign gets a TTL that outlives the job (core#301). CPU media doors gain an optional in-process Fetcher seam, so the container is reached through a binding instead of a hostname (cf#810). **Two behaviour changes:** a studio with the container BOUND and `VIDEO_FINISH_URL` UNSET is now reachable, where it previously degraded to tier-not-installed; and a MISSING bearer is no longer fatal on the bound path (a configured token is still sent, and the public path keeps fail-closed). |
+| `vivijure-core-v1.23.0` | 1.23.0 | a54e32e | 2026-09-27 | **MINOR.** Chunked assemble goes LIVE: the Worker mints the `partialUrls` pool and every assemble presign gets a TTL that outlives the job (core#301). CPU media doors gain an optional in-process Fetcher seam, so the container is reached through a binding instead of a hostname (cf#810). **Two behaviour changes:** a studio with the container BOUND and `VIDEO_FINISH_URL` UNSET is now reachable, where it previously degraded to tier-not-installed; and a MISSING bearer is no longer fatal on the bound path (a configured token is still sent, and the public path keeps fail-closed). |
 | `vivijure-core-v1.22.5` | 1.22.5 |  |  | **PATCH.** Resubmit a clip shot that died on provider load / 429 / 7003. Cap 3. A real 400 still fails immediately. |
 | `vivijure-core-v1.22.4` | 1.22.4 |  |  | **PATCH.** `audio_url` is the shot LINE; `pre_clip_dialogue` / `pre_clip_speech` before driving-audio clips. |
 | `vivijure-core-v1.22.3` | 1.22.3 |  |  | **PATCH.** Incomplete films are FAILED. |
