@@ -56,9 +56,21 @@ function buildRepo() {
 }
 
 describe("changelog-entry-required (core#178, core#202, core#212)", () => {
+  // core#319: ONE synthetic repo for the two READ-ONLY cases instead of one each.
+  //
+  // `buildRepo()` runs `git init` plus a config pair plus several commits and a branch switch, so it
+  // is the most expensive thing in this file and it was being paid three times for two different
+  // questions. This file is in the core#319 timeout family for that reason and NOT for the
+  // ledger-row reason: it has no rows to walk, its cost is the repos it creates.
+  //
+  // THE THIRD CASE KEEPS ITS OWN, deliberately. It checks out a branch, writes CHANGELOG.md and
+  // commits, so it MUTATES the tree. Sharing a mutated repo would make these cases order-dependent,
+  // and an order-dependent suite is a suite whose result depends on something no reader can see.
+  // Two builds instead of three is the honest saving; three instead of one would be a trap.
+  const shared = buildRepo();
+
   it("CONTROL: two-dot against a moved base passes vacuously (the bug the fix avoids)", () => {
-    const built = buildRepo();
-    const files = changedFiles(built.root, built.movedBase, built.head, true);
+    const files = changedFiles(shared.root, shared.movedBase, shared.head, true);
     const result = verdict(files);
     expect(result.ok).toBe(true);
     expect(files).toContain("CHANGELOG.md");
@@ -66,8 +78,7 @@ describe("changelog-entry-required (core#178, core#202, core#212)", () => {
   });
 
   it("three-dot refuses a src-only PR whose base merely happens to carry a changelog change", () => {
-    const built = buildRepo();
-    const files = changedFiles(built.root, built.movedBase, built.head, false);
+    const files = changedFiles(shared.root, shared.movedBase, shared.head, false);
     const result = verdict(files);
     expect(result.ok).toBe(false);
     expect(files).not.toContain("CHANGELOG.md");
