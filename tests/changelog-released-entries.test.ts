@@ -39,11 +39,23 @@ import { join } from "node:path";
 const repoRoot = join(import.meta.dirname, "..");
 const TAG_PREFIX = "vivijure-core-v";
 
-const git = (args: string, allowFail = false): string => {
+/** Run git. `emptyOnFail: true` returns "" instead of throwing.
+ *
+ *  NAMED AND NOT POSITIONAL, on purpose (core#318, fleet-chezmoi#2293). This used to take a bare
+ *  positional boolean, which told the reader nothing about what they were getting: the parameter was
+ *  called `allowFail`, naming what the helper PERMITS rather than what the caller RECEIVES, and a
+ *  positional argument hid even that. A shell-broken command then returned "" and every claim built
+ *  on it passed by iterating nothing, 600x faster than before -- and a 600x speedup is what SUCCESS
+ *  looks like, so nothing about the result invited a second look.
+ *
+ *  EMPTY IS ONLY SAFE WHERE SOMETHING DOWNSTREAM ASSERTS NON-EMPTY. If the result feeds an
+ *  iteration, iterating nothing succeeds, and the failure is silent. Assert the population before
+ *  you trust a loop over it. */
+const git = (args: string, opts: { emptyOnFail?: boolean } = {}): string => {
   try {
     return execSync(`git ${args}`, { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   } catch (e) {
-    if (allowFail) return "";
+    if (opts.emptyOnFail) return "";
     throw e;
   }
 };
@@ -111,7 +123,7 @@ function introducingCommit(title: string): string | null {
   // Match on the title text, escaped for the shell. A 70-char slice keeps the -S needle away from
   // trailing punctuation that a later reword may have touched.
   const needle = title.slice(0, 70).replace(/'/g, "'\\''");
-  const shas = git(`log --format=%H --diff-filter=AM -S'${needle}' -- CHANGELOG.md`, true)
+  const shas = git(`log --format=%H --diff-filter=AM -S'${needle}' -- CHANGELOG.md`, { emptyOnFail: true })
     .split("\n").filter(Boolean);
   const result = shas.length ? shas[shas.length - 1] : null;
   introducingCommitMemo.set(title, result);
@@ -127,14 +139,14 @@ const BACKFILL_RE = /^[^\S\n]*[-*]?[^\S\n]*Backfilled:[^\S\n]*\S+/im;
 
 describe("every entry under a released heading is IN that release (core#202)", () => {
   const changelog = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8");
-  const tags = new Set(git("tag --list", true).split("\n").filter(Boolean));
+  const tags = new Set(git("tag --list", { emptyOnFail: true }).split("\n").filter(Boolean));
   const sections = releasedSections(changelog, tags);
 
   // ---- REFUSALS. Each of these is a state in which the check below would pass while measuring
   // nothing, so each is asserted BEFORE any ancestry claim is made.
 
   it("REFUSES on a shallow clone, which cannot answer an ancestry question", () => {
-    const shallow = git("rev-parse --is-shallow-repository", true);
+    const shallow = git("rev-parse --is-shallow-repository", { emptyOnFail: true });
     expect(
       shallow,
       "shallow clone: merge-base cannot see the history this check depends on. " +
@@ -249,7 +261,7 @@ describe("every entry under a released heading is IN that release (core#202)", (
     // predicate and read as a defect in the subject. Found by this file's own PR CI on the coverage
     // job. Use HEAD's parent, and REFUSE when there is none rather than passing -- no parent means
     // the history this whole file depends on is absent, which is the shallow case by another route.
-    const parent = git("rev-parse --verify -q HEAD^", true);
+    const parent = git("rev-parse --verify -q HEAD^", { emptyOnFail: true });
     expect(
       parent,
       "HEAD has no parent, so the history this check needs is absent -- see the shallow-clone refusal",

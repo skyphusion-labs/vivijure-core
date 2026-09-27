@@ -150,11 +150,14 @@ describe("RELEASES.md published column (core#126)", () => {
   // OFFLINE by construction, like the rest of this file: everything below is answerable from git.
   // The registry read stays a human step (RELEASES.md step 5), so CI does not go flaky on npm.
   describe("the recorded values RESOLVE (core#209)", () => {
-    const git = (args: string, allowFail = false): string => {
+    /** Run git. `emptyOnFail: true` returns "" instead of throwing. NAMED, not positional: a bare
+     *  boolean hid what the caller RECEIVES, and a silent "" here once made every claim pass by
+     *  iterating nothing (core#318). Empty is safe only where something asserts non-empty. */
+    const git = (args: string, opts: { emptyOnFail?: boolean } = {}): string => {
       try {
         return execSync(`git ${args}`, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
       } catch (e) {
-        if (allowFail) return "";
+        if (opts.emptyOnFail) return "";
         throw e;
       }
     };
@@ -175,7 +178,10 @@ describe("RELEASES.md published column (core#126)", () => {
     // lacked -- see the annotation hint below, which exists because that mistake was made once.
     const tagCommitMap = ((): Map<string, string> => {
       const out = new Map<string, string>();
-      const raw = git("for-each-ref --format='%(refname:short)%09%(objectname)%09%(*objectname)' 'refs/tags/vivijure-core-v*'", true);
+      // FEEDS AN ITERATION, so an empty result would make every claim below pass on nothing.
+      // Guarded by the EQUIVALENCE, WHOLE POPULATION cases: they compare this map against
+      // `show-ref --tags -d` in both directions and assert both populations are non-empty.
+      const raw = git("for-each-ref --format='%(refname:short)%09%(objectname)%09%(*objectname)' 'refs/tags/vivijure-core-v*'", { emptyOnFail: true });
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
         const [name, obj, peeled] = line.split("\t");
@@ -196,7 +202,9 @@ describe("RELEASES.md published column (core#126)", () => {
       if (!commits.length) return out;
       // `--no-walk` prints one line per named commit rather than walking their ancestry, which is
       // what makes a single invocation equivalent to N `log -1` calls.
-      const raw = git(`log --no-walk --format=%H%x09%cs ${commits.join(" ")}`, true);
+      // FEEDS AN ITERATION, same as above. Guarded by the whole-population date comparison
+      // against `for-each-ref`'s committerdate atoms, plus the dateless-commits assertion.
+      const raw = git(`log --no-walk --format=%H%x09%cs ${commits.join(" ")}`, { emptyOnFail: true });
       for (const line of raw.split("\n")) {
         const [sha, date] = line.split("\t");
         if (sha && date) out.set(sha.trim(), date.trim());
@@ -214,13 +222,13 @@ describe("RELEASES.md published column (core#126)", () => {
     // nothing, so none of them may be a silent skip.
     it("REFUSES on a shallow clone, which cannot resolve tags to commits", () => {
       expect(
-        git("rev-parse --is-shallow-repository", true),
+        git("rev-parse --is-shallow-repository", { emptyOnFail: true }),
         "shallow clone: tags cannot be resolved, so this guard would pass vacuously. CI needs fetch-depth: 0.",
       ).toBe("false");
     });
 
     it("REFUSES when no release tags are visible", () => {
-      const tags = git("tag --list vivijure-core-v*", true).split("\n").filter(Boolean);
+      const tags = git("tag --list vivijure-core-v*", { emptyOnFail: true }).split("\n").filter(Boolean);
       console.log(`  denominator: ${rows.length} ledger rows, ${filledSha.length} with a source commit, ` +
         `${filledPub.length} with a published date, ${tags.length} release tags visible`);
       expect(tags.length, "no vivijure-core-v* tags visible -- nothing to resolve against").toBeGreaterThan(0);
@@ -245,7 +253,7 @@ describe("RELEASES.md published column (core#126)", () => {
         if (!commit) continue; // covered by the refusal above
         const recorded = r.sourceCommit.trim().toLowerCase();
         if (!commit.toLowerCase().startsWith(recorded)) {
-          const annotated = git(`rev-parse ${tag}`, true);
+          const annotated = git(`rev-parse ${tag}`, { emptyOnFail: true });
           const hint = annotated.toLowerCase().startsWith(recorded)
             ? " (this is the tag ANNOTATION object, not the commit -- use `git rev-list -n 1 <tag>`)"
             : "";
@@ -283,11 +291,11 @@ describe("RELEASES.md published column (core#126)", () => {
       // reading the object instead of the commit is the exact mistake the hint below exists for. So
       // the sample is deliberately two annotated tags plus one lightweight, not three of a kind.
       const sample = ["vivijure-core-v1.25.0", "vivijure-core-v1.24.0", "vivijure-core-v0.9.0"]
-        .filter((t) => git(`rev-parse --verify --quiet ${t}`, true));
+        .filter((t) => git(`rev-parse --verify --quiet ${t}`, { emptyOnFail: true }));
       expect(sample.length, "no sample tags resolve; this control would pass vacuously").toBeGreaterThan(0);
       const disagreements: string[] = [];
       for (const tag of sample) {
-        const perRow = git(`rev-list -n 1 ${tag}`, true);
+        const perRow = git(`rev-list -n 1 ${tag}`, { emptyOnFail: true });
         const batched = tagCommit(tag);
         if (perRow !== batched) disagreements.push(`${tag}: rev-list=${perRow} batched=${batched}`);
       }
@@ -297,7 +305,7 @@ describe("RELEASES.md published column (core#126)", () => {
     it("EQUIVALENCE: the batched map covers every visible release tag, so nothing is silently absent", () => {
       // The empty-map failure mode again, from the other side: a map that resolves the sample but
       // covers only the sample would make every per-row claim pass on a subset.
-      const visible = git("tag --list 'vivijure-core-v*'", true).split("\n").filter(Boolean);
+      const visible = git("tag --list 'vivijure-core-v*'", { emptyOnFail: true }).split("\n").filter(Boolean);
       expect(visible.length).toBeGreaterThan(0);
       const missing = visible.filter((t) => !tagCommit(t));
       expect(missing, "these visible tags are absent from the batched map").toEqual([]);
@@ -308,7 +316,7 @@ describe("RELEASES.md published column (core#126)", () => {
       expect(commits.length, "no commits to compare; this control would pass vacuously").toBeGreaterThan(0);
       const disagreements: string[] = [];
       for (const c of commits) {
-        const perRow = git(`log -1 --format=%cs ${c}`, true);
+        const perRow = git(`log -1 --format=%cs ${c}`, { emptyOnFail: true });
         if (perRow !== commitDate(c)) disagreements.push(`${c}: log=${perRow} batched=${commitDate(c)}`);
       }
       expect(disagreements).toEqual([]);
@@ -331,7 +339,7 @@ describe("RELEASES.md published column (core#126)", () => {
       // suffix carrying the COMMIT. A lightweight tag emits one line which already is the commit.
       // So the peeled line wins where present, exactly as %(*objectname) does in the map under test.
       const byTag = new Map<string, string>();
-      for (const line of git("show-ref --tags -d", true).split("\n")) {
+      for (const line of git("show-ref --tags -d", { emptyOnFail: true }).split("\n")) {
         const m = /^([0-9a-f]{40})\s+refs\/tags\/(\S+?)(\^\{\})?$/.exec(line.trim());
         if (!m) continue;
         const [, sha, name, peeled] = m;
@@ -356,7 +364,7 @@ describe("RELEASES.md published column (core#126)", () => {
       // the commit's date and `%(committerdate:short)` is the tag object's; for a lightweight tag it
       // is the other way round. Independent of `log --no-walk`, which is what the map under test used.
       const byTag = new Map<string, string>();
-      const raw = git("for-each-ref --format='%(refname:short)%09%(committerdate:short)%09%(*committerdate:short)' 'refs/tags/vivijure-core-v*'", true);
+      const raw = git("for-each-ref --format='%(refname:short)%09%(committerdate:short)%09%(*committerdate:short)' 'refs/tags/vivijure-core-v*'", { emptyOnFail: true });
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
         const [name, own, peeled] = line.split("\t");
@@ -388,7 +396,7 @@ describe("RELEASES.md published column (core#126)", () => {
     // CONTROLS, on the same predicates the claims use. Without these, every assertion above is
     // consistent with a resolver that returns nothing and a comparison that never runs.
     it("CONTROL: an annotated tag's annotation object and its commit really do differ here", () => {
-      const tag = filledSha.map((r) => bare(r.tag)).find((t) => git(`cat-file -t ${t}`, true) === "tag");
+      const tag = filledSha.map((r) => bare(r.tag)).find((t) => git(`cat-file -t ${t}`, { emptyOnFail: true }) === "tag");
       expect(tag, "no annotated tag found -- the trap this guard exists for cannot be demonstrated").toBeTruthy();
       const annotation = git(`rev-parse ${tag}`);
       const commit = tagCommit(tag as string);
@@ -406,7 +414,7 @@ describe("RELEASES.md published column (core#126)", () => {
     it("CONTROL: the comparison rejects a wrong-but-well-formed commit", () => {
       const tag = bare(filledSha[0].tag);
       const commit = tagCommit(tag);
-      const parent = git(`rev-parse ${commit}^`, true);
+      const parent = git(`rev-parse ${commit}^`, { emptyOnFail: true });
       expect(parent, "no parent -- the control cannot run").toBeTruthy();
       // The parent is a real commit, seven hex characters, and NOT the tagged one.
       expect(SHA_OR_EMPTY.test(parent.slice(0, 7))).toBe(true);
