@@ -213,7 +213,10 @@ export type AssemblePollState = {
 export type AssembleTick =
   | { kind: "pending"; poll: AssemblePollState }
   | { kind: "done"; result: FinishResult }
-  | { kind: "failed"; error: string };
+  /** core#327: `unreachable` means the tier could not be reached AT ALL, so the caller may take the
+   *  #519 clips degrade instead of failing the render. Absent means the container ran and reported
+   *  something, which still fails loud. The caller reads this FIELD, never the error prose. */
+  | { kind: "failed"; error: string; unreachable?: true };
 
 export function encodeAssemblePoll(p: AssemblePollState): string {
   return JSON.stringify(p);
@@ -256,7 +259,19 @@ export function videoFinishPollUrls(env: Env): string[] {
   return [...new Set(out)];
 }
 
-async function submitAsync(env: Env, payload: FinishPayload): Promise<string | null> {
+/** Why a submit did not produce a job id. core#327: the caller has to tell "the door never answered"
+ *  apart from "the door answered and refused", because those get OPPOSITE outcomes -- the first is
+ *  the #519 unavailability degrade, the second is a container that RAN and reported an error, which
+ *  fails the render loud (#245/#249). Both used to come back as a bare null. */
+type SubmitOutcome =
+  | { kind: "ok"; jobId: string }
+  | { kind: "unreachable"; detail: string }
+  | { kind: "refused"; detail: string };
+
+/** Statuses that mean the EDGE answered, not the app: the request never reached a serving process. */
+const GATEWAY_STATUSES = new Set([502, 503, 504]);
+
+async function submitAsync(env: Env, payload: FinishPayload): Promise<SubmitOutcome> {
   const init = {
     method: "POST",
     headers: await mediaFinishHeaders(env),
@@ -267,16 +282,28 @@ async function submitAsync(env: Env, payload: FinishPayload): Promise<string | n
     resp = await videoFinishFetch(env, "/async/finish", init);
   } catch (e) {
     if (isMediaFinishAuthError(e)) throw e;
-    return null;
+    // The transport failed: NXDOMAIN, connection refused, or a container that died before binding
+    // its port. cf#851 is the worked example.
+    return { kind: "unreachable", detail: `transport failed: ${e instanceof Error ? e.message : String(e)}` };
   }
-  if (!resp || resp.status !== 202) return null;
+  // videoFinishFetch RESOLVES to null when the door is unset or could not be reached at all.
+  if (!resp) return { kind: "unreachable", detail: "no response from the video-finish door" };
+  if (GATEWAY_STATUSES.has(resp.status)) {
+    return { kind: "unreachable", detail: `video-finish answered ${resp.status} at the edge, not the app` };
+  }
+  if (resp.status !== 202) {
+    // The app answered and did not accept the job. A REAL refusal, and it must not be laundered
+    // into an availability degrade.
+    return { kind: "refused", detail: `video-finish async submit returned ${resp.status}` };
+  }
   try {
     const body = (await resp.json()) as { ok?: boolean; jobId?: string };
-    return body.ok === true && typeof body.jobId === "string" && body.jobId.length > 0
-      ? body.jobId
-      : null;
+    if (body.ok === true && typeof body.jobId === "string" && body.jobId.length > 0) {
+      return { kind: "ok", jobId: body.jobId };
+    }
+    return { kind: "refused", detail: "video-finish accepted the submit but returned no jobId" };
   } catch {
-    return null;
+    return { kind: "refused", detail: "video-finish returned a 202 with an unreadable body" };
   }
 }
 
@@ -392,10 +419,17 @@ async function tickVideoFinishAssembleInner(
   let notFoundStreak = existing?.notFoundStreak ?? 0;
   if (!jobId) {
     const submitted = await submitAsync(env, payload);
-    if (!submitted) {
-      return { kind: "failed", error: "video-finish async submit failed (no jobId)" };
+    if (submitted.kind === "unreachable") {
+      return {
+        kind: "failed",
+        error: `video-finish async submit failed (${submitted.detail})`,
+        unreachable: true,
+      };
     }
-    jobId = submitted;
+    if (submitted.kind === "refused") {
+      return { kind: "failed", error: `video-finish async submit failed (${submitted.detail})` };
+    }
+    jobId = submitted.jobId;
     submittedAt = Date.now();
     notFoundStreak = 0;
     // Same tick: a remux that already finished completes now. A 20-shot
