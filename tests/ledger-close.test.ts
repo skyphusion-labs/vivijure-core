@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   EXIT,
+  compareVersions,
   decideClose,
+  deriveNewestServed,
   fillRow,
   findUnclosedPublishedRows,
   isIsoDate,
@@ -164,5 +166,85 @@ describe("core#318 fillRow touches exactly two cells", () => {
     expect(isIsoDate("2026-08-18")).toBe(true);
     expect(isIsoDate("2026-08-18T00:21:30.473Z")).toBe(false);
     expect(isIsoDate("")).toBe(false);
+  });
+});
+
+describe("core#318 option 3: the exemption is DERIVED, and exactly one row wide", () => {
+  // WHY AN EXEMPTION AT ALL. Between the publish and the close-row merge, main LEGITIMATELY has a
+  // served version whose cells are empty. A guard firing then reddens unrelated PRs on every release,
+  // and a gate that reddens for reasons unconnected to the change in front of it gets bypassed.
+  const rows = parseLedgerRows(LEDGER);
+
+  it("exempts the newest served version, so the release window is silent", () => {
+    // 1.24.0 is the newest here and its row is closed; re-read the open one as if it were newest.
+    const openNewest = parseLedgerRows(
+      [LEDGER.split("\n")[0], LEDGER.split("\n")[1], "| `vivijure-core-v1.24.0` | 1.24.0 |  |  | x |", OPEN_ROW_1218].join("\n"),
+    );
+    expect(findUnclosedPublishedRows(openNewest, ["1.24.0", "1.21.8"], "1.24.0").map((r: { version: string }) => r.version))
+      .toEqual(["1.21.8"]);
+  });
+
+  it("does NOT exempt an older served version, so the window is one row and not a hole", () => {
+    // The failure mode an exemption invites: exempting more than it should. 1.21.8 is served and open
+    // and is NOT the newest, so it must still fire even while 1.24.0 is exempt.
+    const open = findUnclosedPublishedRows(rows, ["1.24.0", "1.21.8"], "1.24.0");
+    expect(open.map((r: { version: string }) => r.version)).toEqual(["1.21.8"]);
+  });
+
+  it("exempting nothing is the same as before, so the exemption is additive", () => {
+    expect(findUnclosedPublishedRows(rows, ["1.24.0", "1.21.8"], null).map((r: { version: string }) => r.version))
+      .toEqual(["1.21.8"]);
+  });
+});
+
+describe("core#318 the derive REFUSES rather than guessing, and says UNMEASURED", () => {
+  it("two independent readings must AGREE, or the exemption is ambiguous", () => {
+    // Legitimate divergence: a patch published to an older line does not move dist-tags.latest. In
+    // that state "the newest served version" genuinely has two answers, so the guard picks neither.
+    const d = deriveNewestServed(["1.24.0", "1.25.0"], "1.24.0");
+    expect(d.ok).toBe(false);
+    expect(d.reason).toContain("disagree");
+    expect(d.reason).toContain("AMBIGUOUS");
+  });
+
+  it("agreeing readings produce the version", () => {
+    const d = deriveNewestServed(["1.23.0", "1.24.0", "1.25.0"], "1.25.0");
+    expect(d.ok).toBe(true);
+    expect(d.version).toBe("1.25.0");
+  });
+
+  it("an EMPTY served set is a failed read, not an empty world", () => {
+    // THE NON-EMPTY ASSERTION. Returning a version here would exempt something arbitrary; returning
+    // null silently would exempt nothing and fire on the legitimate window. Both read as working.
+    const d = deriveNewestServed([], "1.25.0");
+    expect(d.ok).toBe(false);
+    expect(d.reason).toContain("NO published versions");
+  });
+
+  it("an absent dist-tags.latest is a failed read, so there is nothing to cross-check against", () => {
+    const d = deriveNewestServed(["1.24.0", "1.25.0"], null);
+    expect(d.ok).toBe(false);
+    expect(d.reason).toContain("cross-check");
+  });
+
+  it("the UNMEASURED exit code is DISTINCT from found-open-rows", () => {
+    // Asserted specifically: "could not measure" and "measured, and it is bad" must not collapse.
+    expect(EXIT.guardUnmeasured).not.toBe(EXIT.guardFoundOpenRows);
+    expect(EXIT.guardUnmeasured).not.toBe(EXIT.ok);
+    expect(EXIT.guardUnmeasured).toBe(7);
+  });
+});
+
+describe("core#318 compareVersions is numeric per segment", () => {
+  it("1.10.0 is newer than 1.9.0, which a string sort gets wrong", () => {
+    // The classic. A lexicographic sort would call 1.9.0 the newest and exempt the wrong row.
+    expect(compareVersions("1.10.0", "1.9.0")).toBeGreaterThan(0);
+    expect(["1.9.0", "1.10.0", "1.8.0"].slice().sort(compareVersions).at(-1)).toBe("1.10.0");
+  });
+
+  it("derives the newest correctly across a double-digit minor", () => {
+    const d = deriveNewestServed(["1.8.0", "1.9.0", "1.10.0"], "1.10.0");
+    expect(d.ok).toBe(true);
+    expect(d.version).toBe("1.10.0");
   });
 });

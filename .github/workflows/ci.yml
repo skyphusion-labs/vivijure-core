@@ -61,6 +61,23 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
+      # core#318: refuse a ledger row left open on a version the registry is already serving.
+      #
+      # WHY IT RUNS HERE AND NOT ONLY AT RELEASE TIME. Step 8 of a cut sits AFTER the publish, which
+      # is after the part that feels like the release is over, and it was skipped on 11 of 47 rows.
+      # A release-time-only check is a rule someone has to remember, which is the class this repo
+      # keeps re-filing.
+      #
+      # WHY IT DOES NOT REDDEN EVERY RELEASE. The single newest SERVED version is exempt, because
+      # between the publish and the close-row merge main legitimately has a served version with empty
+      # cells. The exemption is DERIVED from the registry at run time and cross-checked against
+      # dist-tags.latest, never configured -- a hardcoded exempt version would exempt the wrong row
+      # forever the moment a release landed and nobody edited it.
+      #
+      # ON AN UNREADABLE REGISTRY IT EXITS 7 (UNMEASURED) rather than exempting nothing or
+      # everything, because both of those read as working. It needs network; it needs no git history.
+      - name: Ledger rows closed (core#318)
+        run: node scripts/ledger-close.mjs --check
       # core#183: comments in src/ that name a consumer-side file which exists in no live consumer.
       # The consumer repos are checked out HERE rather than assumed: the script REFUSES (exit 2) when
       # no root resolves, so a checkout that silently stops working cannot read as a clean repo.

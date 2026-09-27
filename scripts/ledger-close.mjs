@@ -50,6 +50,8 @@ export const EXIT = {
   rowNotFound: 4,
   badRegistryDate: 5,
   guardFoundOpenRows: 6,
+  /** The exemption could not be DERIVED. Reported as UNMEASURED, never guessed. */
+  guardUnmeasured: 7,
 };
 
 export const PACKAGE = "@skyphusion-labs/vivijure-core";
@@ -131,9 +133,72 @@ export function fillRow(markdown, row, sourceCommit, published) {
  * `publishedVersions` is the set the registry reports. A version ABSENT from it is NOT reported --
  * that is the whole point, and it is why this takes a set rather than calling the registry per row.
  */
-export function findUnclosedPublishedRows(rows, publishedVersions) {
+/**
+ * @param {ReturnType<typeof parseLedgerRows>} rows
+ * @param {readonly string[]} publishedVersions
+ * @param {string|null} [exemptVersion] the single newest SERVED version, DERIVED never configured
+ */
+export function findUnclosedPublishedRows(rows, publishedVersions, exemptVersion = null) {
   const serving = new Set(publishedVersions);
-  return rows.filter((r) => serving.has(r.version) && !(r.sourceCommit && r.published));
+  return rows.filter(
+    (r) => serving.has(r.version) && r.version !== exemptVersion && !(r.sourceCommit && r.published),
+  );
+}
+
+/** Compare two dotted versions. Numeric per segment, so 1.10.0 sorts above 1.9.0. */
+export function compareVersions(a, b) {
+  const pa = String(a).split(".").map((n) => parseInt(n, 10));
+  const pb = String(b).split(".").map((n) => parseInt(n, 10));
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const x = Number.isFinite(pa[i]) ? pa[i] : 0;
+    const y = Number.isFinite(pb[i]) ? pb[i] : 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+/**
+ * DERIVE the single newest served version. Never configured, and never guessed.
+ *
+ * WHY THE EXEMPTION EXISTS (core#318 option 3). Between the publish and the close-row merge, `main`
+ * LEGITIMATELY has a served version whose cells are still empty. A guard that fired then would redden
+ * unrelated PRs during every release window, and a gate that reddens for reasons unconnected to the
+ * change in front of it is on the bypass list within a month. So exactly one row is exempt: the newest
+ * served version, for exactly as long as it is the newest.
+ *
+ * WHY IT IS DERIVED AND NOT LISTED. A hardcoded exempt version is a passthrough echo waiting to
+ * happen: it would exempt the wrong row forever the moment a release lands and nobody edits it.
+ *
+ * TWO INDEPENDENT READINGS, AND A DISAGREEMENT IS UNMEASURED RATHER THAN A PICK. The max of the full
+ * published set and the registry's own `dist-tags.latest` are computed separately and must agree. They
+ * can differ legitimately (a patch published to an older line does not move `latest`), and in that case
+ * "the newest served version" is genuinely ambiguous -- so the guard says so and exits non-zero rather
+ * than exempting the wrong row or none.
+ *
+ * THE NON-EMPTY ASSERTION IS THE POINT. An empty served set, or an absent `latest`, is a FAILED READ
+ * and not an empty world. Returning null for it would exempt nothing (and fire on the legitimate
+ * window) or, compared the other way, exempt everything. Both read as working, which is the defect
+ * this whole issue is about.
+ */
+export function deriveNewestServed(publishedVersions, distTagLatest) {
+  const versions = [...new Set((publishedVersions || []).filter(Boolean))];
+  if (!versions.length) {
+    return { ok: false, reason: "the registry reported NO published versions; the read failed rather than the world being empty" };
+  }
+  if (!distTagLatest) {
+    return { ok: false, reason: "the registry reported no dist-tags.latest; cannot cross-check the newest served version" };
+  }
+  const maxOfAll = versions.slice().sort(compareVersions).at(-1);
+  if (maxOfAll !== distTagLatest) {
+    return {
+      ok: false,
+      reason:
+        `two independent readings disagree on the newest served version: max(versions)=${maxOfAll} ` +
+        `but dist-tags.latest=${distTagLatest}. That is legitimate when a patch lands on an older ` +
+        "line, and it means the exemption is AMBIGUOUS. Refusing to pick one.",
+    };
+  }
+  return { ok: true, version: maxOfAll };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -143,6 +208,15 @@ export function findUnclosedPublishedRows(rows, publishedVersions) {
 export function readTagCommit(tag, cwd) {
   try {
     return execFileSync("git", ["rev-list", "-n1", tag], { cwd, encoding: "utf8" }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function readDistTagLatest() {
+  try {
+    const raw = execFileSync("npm", ["view", PACKAGE, "dist-tags.latest"], { encoding: "utf8" });
+    return raw.trim() || null;
   } catch {
     return null;
   }
@@ -165,7 +239,15 @@ function main(argv) {
 
   if (guard) {
     const times = readRegistryTimes();
-    const open = findUnclosedPublishedRows(rows, Object.keys(times));
+    // The served set comes from the registry's own version list, not from the ledger, so a row the
+    // ledger does not mention cannot influence what counts as served.
+    const served = Object.keys(times).filter((k) => /^\d/.test(k));
+    const newest = deriveNewestServed(served, readDistTagLatest());
+    if (!newest.ok) {
+      console.error(`ledger-close --check: UNMEASURED -- ${newest.reason}`);
+      return EXIT.guardUnmeasured;
+    }
+    const open = findUnclosedPublishedRows(rows, served, newest.version);
     if (open.length) {
       console.error(
         `ledger-close --check: ${open.length} row(s) are OPEN on a version the registry is already ` +
@@ -174,7 +256,10 @@ function main(argv) {
       for (const r of open) console.error(`  ${r.version}`);
       return EXIT.guardFoundOpenRows;
     }
-    console.log(`ledger-close --check: OK. ${rows.length} row(s) examined, none open on a served version.`);
+    console.log(
+      `ledger-close --check: OK. ${rows.length} row(s) examined, none open on a served version ` +
+        `(newest served ${newest.version} is exempt while it is newest).`,
+    );
     return EXIT.ok;
   }
 
