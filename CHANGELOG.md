@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.25.0
+## [1.25.0] -- 2026-09-27
 
 Cycle opened by the first PR after the v1.24.0 cut, which is the documented steady state and
 not a deviation: `main` sits on a tagged version between releases, so a bare `## Unreleased`
@@ -15,6 +15,372 @@ said had to happen: cf#836 puts three new top-level per-stage degrade keys (`spe
 `dialogue`) on the render payload, and the panel reads them. New consumer surface makes the
 cycle a MINOR. The cycle was opened at PATCH correctly, because the work opening it was
 `fix(film)` with none; raising it here is the documented move and not a correction.
+
+### fix(assemble): the delivery target matches the measured source instead of a constant (cf#813)
+
+The assemble seam called `resolveDeliveryResolution(job)` and nothing else. That function reads
+`delivery_width` / `delivery_height` and nothing about the clips, and **nothing in either repo ever
+sets those fields on a job**, so the target was 1920x1080 on every film in production, applied with
+no source-equals-target short circuit. Most installed motion doors default BELOW that, so the normal
+case was an upscale carrying no information and costing bytes and CPU; a door configured above it
+was destructively downscaled.
+
+The source dimensions were already measured on every done clip, already persisted, and already read
+back by `measuredClipDimensions` one function away. They were simply never read at this seam.
+`resolveAssembleDelivery` now does, in a fixed precedence:
+
+1. an explicit `delivery_*` on the job **wins**, because a measurement must never silently override
+   an operator decision;
+2. otherwise the measured source geometry;
+3. otherwise the historical default, reported as `default-unmeasured` rather than as a fact.
+
+`DeliveryResolution` gains a required `basis` (`operator-override` / `measured-source` /
+`measured-source-mixed` / `default-unmeasured`). Required rather than optional so tsc enumerates
+every construction site, for the same reason `decided` exists: `decided` answers "did somebody
+choose this", `basis` answers "choose it from WHAT". The admission gate added in core#307 sizes a
+byte budget against this target, and a budget built on a default is a different claim from one built
+on a measurement.
+
+**The mixed-resolution rule is now a choice rather than an accident.** A `-c copy` concat needs one
+geometry, so "never upscale AND never downscale" is satisfiable only when the clips agree. A mixed
+film takes the largest-AREA geometry **that a real clip actually has**:
+
+- largest, because a downscale destroys information irreversibly while an upscale only wastes bytes,
+  so when the two cannot both be honoured the non-destructive one wins and no clip is degraded;
+- a real pair rather than componentwise max, because `max(width)` and `max(height)` taken
+  independently can invent a geometry no clip has. A film mixing 1920x1080 and 1080x1920 would yield
+  1920x1920, an aspect ratio nothing rendered, pillarboxing AND letterboxing every clip. Choosing an
+  actual pair guarantees at least one clip passes through untouched.
+
+Ties resolve to the wider geometry, deterministically, so input order cannot change the film.
+
+**Aspect ratio falls out of the same rule.** `pad=` used to pillarbox a 9:16 clip into a landscape
+frame; a vertical film now targets a vertical frame and there is nothing to pillarbox.
+
+No container change is required: `video-finish` already scales to the width and height it is handed.
+
+14 cases in `tests/assemble-delivery-matches-source-cf813.test.ts`, both directions pinned (a
+720p-source film delivers 720p, a 4k-source film is not downscaled) because a rule proven in one
+direction is half a rule. Watched red twice: reverting the seam to ignore measurements fails 3 cases
+and leaves the 11 pure-selector cases green, and swapping the mixed rule for componentwise max fails
+exactly the trap case (`expected 3686400 to be 2073600`).
+
+### fix(film): a film that is not in R2 FAILS, instead of completing on a guessed key
+
+`resolveFilmOutputKey` ended with `return defaultFilmOutputKey(job.film_id)`, so it
+handed back a truthy key for every job that was neither keyframes-only nor a clips
+degrade, probed or not. That guess did not merely mislabel a row. BOTH R2-existence
+heals are guarded on the key being FALSY (`transitionToDone` ->
+`adoptFilmOutputKeyFromStore`, and the COMPLETED backfill in `renders-db.ts`), so a
+key that is always truthy made the two checks written to catch a COMPLETED row with
+no artifact unreachable. The helper feeding the gates disabled them.
+
+The resolver now reports only what the job doc records, `filmDeliverableExpected`
+carries the "this shape owes no film" question that the `undefined` return used to
+carry as well, and `transitionToDone` HEADs the film it is about to stamp on the
+renders row: a film that is OWED and is not in R2 is a failed render, not a
+COMPLETED row whose download link 404s. Both shapes that legitimately owe no film
+(keyframes-only, and the #519 clips degrade) still finish green.
+
+Entry path this closes: `enterMuxPhase` resuming a persisted doc whose `phase` is
+`"mux"` but whose `silent_film_key` did not persist sets `film_key = undefined` and
+transitions straight to done.
+
+Three fixtures asserted a world they had not built: their fake `R2_RENDERS.head`
+answered "nothing exists, ever" while the prose of the cases said the silent film
+was in R2. They now model the store the scenario describes.
+
+Refs vivijure-cf#833.
+
+### fix(dialogue): the post-clips leg fails what it cannot deliver, and declares what it degrades
+
+The POST-CLIPS dialogue leg answered all six of its failure branches with a
+`console.warn` and a silent finish, while the PRE-CLIP leg answers the identical
+six with `incompleteFilmError`. Which leg a film takes is decided by its motion
+door declaring `driving_audio`, and only `infinitetalk` and `alibaba-wan` do: 13
+of the 15 installed doors, `seedance` (the hosted speed default) among them, took
+the unguarded one. A film that asked for voices shipped mute and the record said
+it shipped.
+
+Two of those six branches did not even warn, and there was a seventh route on the
+SUCCESS path: `audio: []` is a conformance-valid dialogue output, so a module that
+returned nothing took the green path and `applyDialogueOutput` folded nothing. The
+completeness check `finalizePreClipDialogue` has always run (a set difference of
+the lined shots against `dialogue_audio`) is the only thing that can see it, and
+this leg never ran it.
+
+The rule applied is the one the mux leg adopted in 1.23.0: DEGRADE WHEN A RETRY
+CANNOT HELP, FAIL WHEN IT CAN. Five branches fail (submit failure, contract
+violation, poll failure, module unbound mid-flight, an incomplete or empty set).
+The sixth, no dialogue module INSTALLED, is a real degrade (the same shape as the
+#519 video-finish tier being absent): the film ships silent, and now says so
+through a new `job.dialogue_degraded` and a `dialogue.unavailable` structured
+event, instead of leaving nothing behind at all.
+
+`dialogue_degraded` is deliberately NOT folded into `finish_unavailable`, whose
+contract is the video-finish tier being unavailable at assemble or mux; widening
+its two closed unions to carry another stage would turn the field into "something,
+somewhere, was missing". Projecting it to the payload is cf#836.
+
+Also, nothing in the suite drove this leg: the only file binding a dialogue module
+sets `driving_audio: true` in both of its fixtures, so every case there took the
+pre-clip branch. There was no reachable world in which this leg's guard went red,
+because there was neither a guard nor a test. Both now exist.
+
+Refs vivijure-cf#834.
+
+### fix(film): judge the assembled film, do not merely count it
+
+The film was accepted on R2 PRESENCE alone: both decision points read
+`head(key) !== null` and discarded the size, so a 0-byte `film.mp4` satisfied the
+#122 shortcut and shipped as `done`. Clips have had a real structural gate since
+#523 (a byte floor, duration bounds, an `ftyp`/`moov` parse); the film, the thing
+the user actually receives, had none.
+
+`clip-validate.ts` now exposes ONE probe with TWO judges. The parser is shared;
+the bounds are not, and that distinction is the point: `CLIP_MAX_DURATION_S` is
+900s, so reusing `judgeClip` wholesale would have REFUSED any film longer than
+fifteen minutes as a runaway. `judgeFilm` keeps the byte floor, the container
+parse, the video-track and frame checks, and drops the upper duration bound.
+
+The done transition validates the key it is about to stamp on the renders row,
+including a key recovered by the #99 adoption probe, since adoption proves
+presence and presence is what this issue is about not accepting. A film that is
+present but whose bytes could not be read this tick is a SKIP, not a failure: that
+is an R2 condition, not a verdict on the artifact, and it is logged.
+
+Separately, `pollVideoFinishAsync` synthesized `{ ok: true }` when the container
+reported `completed` with no result object. That is the studio inventing a success
+the container never claimed, and everything downstream read the resulting
+undefineds as absent-but-fine: `clipDurations` undefined no-ops the #697 duration
+gate, and `hasAudio` undefined is not `=== false`, so the mux degrade branch is
+skipped and `film_key` advances to an output key that may never have been written.
+A completion carrying nothing is now a failure.
+
+The #697 duration gate itself is unchanged. Its skip-on-no-durations is correct
+under "fire only on evidence"; what was wrong was that a caller could reach it
+with a result that had no durations in it on demand, and that is what the
+synthesis fix closes.
+
+Refs vivijure-cf#835.
+
+### fix(payload): master, speech and dialogue degrades reach the render payload
+
+The `master` and `speech` degrades were `console.warn` only, so nothing they
+recorded ever reached `renders.output_json`. The panel's "completed with limits"
+projection reads `finish_unavailable` plus the clip-level `finish` summary, so a
+film that was never mastered, or whose speech chain was skipped, was
+indistinguishable in the UI from one that got both. The panel was doing its job
+correctly on the information it was given.
+
+The correction that makes this small: BOTH RECORDS ALREADY EXISTED on the job doc
+and are persisted with it (`job.master.degraded: string[]` written by
+`degradeMasterStep` and `applyMasterOutput`, `job.speech_shots[].degraded: string`
+written by `advanceSpeechPhase`). This was never a missing channel, only a missing
+projection. The third, `dialogue`, is the record cf#834 added.
+
+All three project in the vocabulary the panel ALREADY parses for the clip finish
+chain, `{ degraded: <count>, reasons: <string[]> }`, so the frontend adds a parse
+per stage rather than a parser per stage. Built in `film-model.ts` and added to
+`filmDonePayload` only, per core#205: one builder, no call-site inlining, and both
+writers on each path go through it.
+
+The ladder is the contract, and a stage that collapses its states rebuilds cf#549
+one field over:
+
+    key ABSENT        the stage was never reached. NOT MEASURED.
+    degraded: 0       it ran and ran clean.
+    degraded: n > 0   it ran and degraded, and `reasons` says how.
+
+`finish_unavailable` is deliberately NOT widened. Its contract is the video-finish
+tier being unavailable at assemble or mux, its `at` and `delivered` are closed
+two-member unions, and `film-output-key.ts` keys the deliverable off
+`delivered === "clips"`. A master degrade delivers a COMPLETE film that is merely
+unpolished; recording it in a field whose meaning is "something was not delivered"
+would make that field mean nothing in particular.
+
+Refs vivijure-cf#836.
+
+### docs(runpod-job-log): the "filed separately" satellite reference pointed at nothing, and half of it is moot
+
+`src/runpod-job-log.ts` explained, correctly, that the satellite endpoints emit no structured
+`error_type` and that this parser returns `undefined` rather than guessing a class from prose. It then
+said fixing them was "a vivijure-upscale / -audio-upscale change, filed separately."
+
+**It was not filed, in either repo.** Measured with a positive control so the zeros mean something
+(`vivijure-cf` returned 23 open under the same command): `vivijure-upscale` 0 open / 18 closed, none
+about a structured marker; `vivijure-audio-upscale` 0 open / 9 closed, same.
+
+- **video: now filed**, `skyphusion-labs/vivijure-upscale#126`. The repo is live, but its RunPod
+  endpoint is currently absent, so that work is **deferred** rather than actionable today.
+- **audio: MOOT, not blocked.** `vivijure-audio-upscale` was archived 2026-09-26 and is read-only, so
+  it cannot receive an issue at all.
+
+**Four independent paths read zero for the audio door**, which is what makes it a retirement already
+taken rather than one to decide: the repo is archived; `vivijure-cf` carries no `src/` reference and no
+service binding for it, only CHANGELOG, docs and tests; and RunPod lists **two endpoints in total**,
+`vivijure-wan-train` and `vivijure-backend` (`total: 2, truncated: false`), with no audio-upscale
+among them. One zero is a blast-radius reading; four is a conclusion.
+
+The absent upscale endpoint **corroborates cf#757 independently** -- that issue reports
+`finish-upscale` bound to an endpoint that no longer exists, and the endpoint list agrees.
+
+The comment now records the audio half as moot on purpose rather than tracking it somewhere it can
+never be done, because **an issue tracking impossible work reads exactly like an issue tracking
+neglected work.** A citation nobody checks is a control that reads as present, which is the same class
+as a guard that cannot fail: it satisfies a reader without doing anything. Fifth stale
+cross-reference found in this sweep.
+
+### fix(content-validate): a Layer 2 skip is recorded as UNMEASURED instead of vanishing
+
+Measured on a live film while the video-finish container was crash-looping (cf#851):
+five `clip.content_validate` events, every one `verdict: "skip"`, zero passes, and
+the film advanced from clips to assemble anyway. The #523 Layer 2 pixel gate did not
+look at a single clip and nothing in the render record said so. It was visible only
+because someone had `wrangler tail` attached at the time.
+
+It is deceptive rather than merely quiet: Layer 1 (structural) PASSES on the same
+clips, because it needs no container. A reader sees `validate: pass` beside
+`content_validate: skip`, one word apart, and only one of them inspected anything.
+Today the consequence is hidden because assemble fails afterwards; the day assemble
+works, a film ships with content validation never having run.
+
+**The fix is not to fail on a skip.** A momentary `/inspect` blip must not kill a
+fully rendered film, and #30 already established that a skip must not even be
+persisted as a VERDICT, because a truthy `content_validated` short-circuits
+re-inspection and one blip disables the gate for the whole pass. The defect is that
+the skip is SILENT and indistinguishable from a pass.
+
+So the two facts are now separate fields. `content_validated` still stays unset on a
+skip, exactly as #30 requires, and a new `content_unmeasured` carries the honest
+reason, written only when it CHANGES (so a down inspector does not rewrite the doc
+every tick) and cleared the moment a terminal verdict lands (so it cannot go stale).
+
+The film doc then carries `content_validation { checked, unmeasured, reasons }`,
+recomputed from the clip doc on every finish pass, and `filmDonePayload` projects it.
+It lives on the FILM doc rather than being derived from the clip doc at projection
+time for a specific reason: `filmDonePayload` has two writers and only one holds the
+clip doc (core#205), so a clip-derived key is absent from the finalize write, and a
+field whose whole purpose is to say "this did not run" cannot be the field that goes
+missing.
+
+Same three-state ladder as cf#836, because it is the same failure: absent means Layer
+2 never ran (a self-host with no `VIDEO_FINISH_URL` is exactly this, and honest),
+`unmeasured: 0` means it ran on every clip, and `unmeasured: n` means it could not
+measure n of them.
+
+Refs vivijure-cf#856, vivijure-cf#851, core#30, core#205, vivijure-cf#836.
+
+### fix(clip-validate): an unreadable clip body is a skip, and a skip stops disabling Layer 1
+
+`clip-validate.ts` promises in its own docstring that "an unreadable artifact is a
+'skip' (transient), not a fail, so a blip cannot false-reject a real render". It
+honoured that for two of the three ways an artifact can be unreadable and not for the
+third: when HEAD said the object exists but a ranged GET came back empty,
+`locateStructure` broke out with `ftypOk: false` and `judgeClip` reported "not a valid
+mp4 (no ftyp/moov box tree); corrupt or wrong format", failing the shot on a positive
+claim about CONTENT derived from a read that returned no content.
+
+**The order is the subtlety, and it is why this is not a one-liner.** The byte floor
+is judged FIRST, so a 0-byte or truncated clip still FAILS on its size rather than
+being excused as unreadable: an empty body and an unreadable body are
+indistinguishable at the transport level, and size is the only thing that separates
+them. Same order, for the same reason, as `validateFilmArtifact` (cf#835).
+
+**And the caller had to change in the same breath.** `validateDoneClips` wrote the
+skip straight into `shot.validated`, whose truthiness is the idempotence guard, so
+turning this FAIL into a SKIP without touching the caller would have converted a wrong
+refusal into a permanent unchecked pass: the shot would never be structurally
+validated again. That is exactly core#30's defect, proven in Layer 2 in August, quietly
+present in Layer 1 the whole time. `validated` now takes only a VERDICT, a skip
+re-runs next tick, and the reason lands on `validated_unmeasured` in the vocabulary
+cf#856 established one layer up (written only when it changes, cleared the moment a
+verdict lands).
+
+Not added: a film-level projection for Layer 1 skips. Layer 2's `content_validation`
+exists because a pixel gate that could not run is invisible otherwise, whereas a Layer
+1 skip means the artifact itself could not be read, and the deliverable gates from
+cf#833/cf#835 plus the #697 duration gate act on that class downstream. One signal per
+fact; a second key restating a condition the payload already reaches by another route
+would be paperwork.
+
+Refs core#310, core#30, vivijure-cf#856, vivijure-cf#835, core#523.
+
+### fix(content-validate): spend the /inspect retry budget on the condition it was written for
+
+`callVideoFinishInspect` retried a THROWN fetch three times at 1500ms, because the
+loop's break tested `resp && resp.status !== 503 ...` and a throw leaves `resp` null,
+which is falsy, which is not a break. `contentValidateDoneClips` walks shots
+SEQUENTIALLY, so with the container down that is about 3s per shot: roughly 15s on
+the 5-shot film cf#851 was found on, and about 51s of a finish pass on a 17-shot one,
+re-paid on later ticks because core#30 says not to persist the skip.
+
+A thrown fetch (NXDOMAIN, connection refused, a container that died before binding
+8000) is not the gateway-busy condition the backoff exists for, and one attempt
+establishes it. A `videoFinishFetch` that RESOLVES to null is the same class and was
+sitting in the same loop for the same reason.
+
+Second, a per-pass circuit breaker: once one shot establishes that the tier is not
+serving, the remaining shots in that pass do not re-probe it. They still get the
+cf#856 `content_unmeasured` record, because the film is equally unvouched-for either
+way and a record that depended on probe ORDER would be a worse lie than no record.
+O(shots) transport failures become O(1) per pass, and nothing latches beyond the
+pass: the next tick starts clean.
+
+**The 503/504 retry is deliberately unchanged**, and there is a test asserting the
+full budget is still spent on it. That one is the container saying "busy, come back",
+and cutting it would trade this latency problem for a coverage problem: more false
+`unmeasured` records, which is precisely the state cf#856 exists to make visible.
+
+The breaker trips on a typed `unreachable` flag, never on a reason string. A string
+match is not a relationship, and a reason is prose that someone will reword without
+thinking about a breaker. A 2xx with an unparseable body is explicitly NOT unreachable
+(the tier is up; that one clip is not readable) and does not trip it.
+
+Refs core#321, vivijure-cf#856, vivijure-cf#851, core#30.
+
+### fix(assemble): an unreachable finish tier delivers the clips instead of failing the render
+
+`videoFinishReachable` answers "configured or bound", never "serving", so the #519
+clips degrade was only reachable when `VIDEO_FINISH_URL` was UNSET. With the door
+bound and DEAD the guard was false, the degrade was skipped, and the film hard-failed
+at assemble, after the keyframe and i2v spend, delivering nothing.
+
+That is not hypothetical: cf#851 is a container that crash-looped on a missing import
+and died before binding 8000. The binding resolved, the predicate said reachable, and
+tonight's films failed in exactly this shape.
+
+**The submit is the honest observation, so no probe was added.** A probe answers "was
+it up a moment ago"; the submit answers "is it up now, for this request", and it costs
+nothing extra because the call already happens. `submitAsync` now reports WHY it
+failed instead of returning a bare null:
+
+- **unreachable** (the transport threw, no response, or a 502/503/504 from the EDGE):
+  the tier could not be reached at all, so the film takes the #519 clips degrade and
+  declares it through `finish_unavailable delivered: "clips"`.
+- **refused** (the app answered with a non-202, a 202 with no jobId, or an unreadable
+  body): the container RAN and said no. That still fails the render loud, as do an
+  expired job and an auth error. `degradeAssembleUnavailable` has always documented
+  itself as the unavailability path only (#245/#249), and this keeps it that way.
+
+The caller reads a typed `unreachable` field, never the error prose.
+
+**This NARROWS cf#746(a) rather than reversing it.** Its three mux cases are untouched
+and stay green. What is retired is the parity assertion that both legs must reach the
+same PHASE, because cf#746(a)'s own rationale is mux-specific: "the silent film is
+still in R2, so failing loses nothing a degrade would have kept" is true at mux and
+false at assemble, where failing loses the clips. Measured rather than assumed:
+`FILM_SUBMIT_IDEMPOTENCY_WINDOW_SECONDS` is 60, a double-click guard and not a resume,
+so a resubmit is a new `film_id`, new clip keys and re-paid GPU. Both outcomes are
+terminal; the degrade additionally hands over clips already paid for.
+
+The offence in the original defect was never partial delivery, it was mislabelling: a
+silent film presented as complete is a lie about content, while per-shot clips declared
+as a clips delivery are a partial deliverable labelled partial. cf#836 put those keys on
+the payload and cf#833 exempted the clips shape from the deliverable gate, so as of
+this cycle the declaration is visible to a user rather than only in a log line.
+
+Refs core#327, vivijure-cf#746, vivijure-cf#851, core#519, vivijure-cf#836, vivijure-cf#833.
 
 ## [1.24.0] -- 2026-09-27
 
