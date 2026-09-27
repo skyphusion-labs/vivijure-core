@@ -607,7 +607,14 @@ export async function cancelInFlightClips(env: Env, jobId: string, preModules?: 
  *  the single reclaim used both inside advanceClipJob AND by the film orchestrator before it judges the
  *  clip job complete, so a fast-fail at 150s can never advance the film with a clip dropped. */
 export async function reclaimClipsFromR2(env: Env, job: ClipJob): Promise<number> {
-  const notDone = job.shots.filter((s) => s.status !== "done" && s.validated !== "fail");
+  // A shot excluded here is one whose terminal state is a DECISION, not a delivery failure, so the
+  // artifact being present is not evidence it should be adopted. `validated === "fail"` is Layer 1
+  // (structural) and predates this; `content_validated === "corrupt"` is Layer 2 (pixel / keyframe
+  // similarity) and is the same kind of fact, so it belongs in the same exclusion. Only `corrupt`
+  // qualifies: `ok` is a pass and `suspect` is warn-and-degrade, and excluding either would disable
+  // this recovery for every clip the gate has inspected. Ref: GHSA-hcr9-8jc2-9q4c.
+  const notDone = job.shots.filter((s) =>
+    s.status !== "done" && s.validated !== "fail" && s.content_validated !== "corrupt");
   if (!notDone.length) return 0;
   // #767: list ALL candidate clips per shot, not first-match-wins. A sibling render of the SAME project
   // leaves its OWN <shot>_<backend>.mp4 next to ours at the same shot-id path, so we must inspect every
