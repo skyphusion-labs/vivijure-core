@@ -158,8 +158,53 @@ describe("RELEASES.md published column (core#126)", () => {
         throw e;
       }
     };
-    /** The COMMIT a tag points at. `rev-list -n 1` peels an annotated tag; `rev-parse` does not. */
-    const tagCommit = (tag: string): string => git(`rev-list -n 1 ${tag}`, true);
+    // core#319: TWO git subprocesses for the whole file, not two PER ROW.
+    //
+    // WHY THE BUDGET ROUTE IS UNAVAILABLE, not merely inelegant. This file used one
+    // `rev-list -n 1 <tag>` per filled row, in THREE separate loops that resolve the same tags, plus
+    // one `log` per row with a published date. At 46 filled rows that is ~184 subprocesses per run,
+    // and the row count grows by one every release. Measured gradient on one machine, same commit:
+    // load 154.75 -> 5 timeout failures, 103 -> 4, 14.9 -> 0, 2.4 -> 0. **Continuous degradation with
+    // no cliff**, so any timeout you pick is a bet on the machine rather than a property of the code.
+    // `tests/changelog-released-entries.test.ts` had already taken that bet at 15000ms, 3x the
+    // default, and load 154 still beat it. So the cost has to come down.
+    //
+    // `for-each-ref` resolves EVERY release tag in one call. `%(*objectname)` is the peeled object,
+    // which is the commit for an ANNOTATED tag; `%(objectname)` is the commit for a lightweight one.
+    // Preferring the peeled value keeps the property the old `rev-list -n 1` had and `rev-parse`
+    // lacked -- see the annotation hint below, which exists because that mistake was made once.
+    const tagCommitMap = ((): Map<string, string> => {
+      const out = new Map<string, string>();
+      const raw = git("for-each-ref --format='%(refname:short)%09%(objectname)%09%(*objectname)' 'refs/tags/vivijure-core-v*'", true);
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        const [name, obj, peeled] = line.split("\t");
+        if (!name) continue;
+        const commit = (peeled || "").trim() || (obj || "").trim();
+        if (commit) out.set(name, commit);
+      }
+      return out;
+    })();
+
+    /** The COMMIT a tag points at. Resolved from the one batched read; "" when the tag is unknown. */
+    const tagCommit = (tag: string): string => tagCommitMap.get(tag) ?? "";
+
+    /** Commit date (%cs) for every commit the ledger references, in ONE call. */
+    const commitDateMap = ((): Map<string, string> => {
+      const out = new Map<string, string>();
+      const commits = [...new Set([...tagCommitMap.values()])];
+      if (!commits.length) return out;
+      // `--no-walk` prints one line per named commit rather than walking their ancestry, which is
+      // what makes a single invocation equivalent to N `log -1` calls.
+      const raw = git(`log --no-walk --format=%H%x09%cs ${commits.join(" ")}`, true);
+      for (const line of raw.split("\n")) {
+        const [sha, date] = line.split("\t");
+        if (sha && date) out.set(sha.trim(), date.trim());
+      }
+      return out;
+    })();
+
+    const commitDate = (commit: string): string => commitDateMap.get(commit) ?? "";
     const bare = (t: string) => t.replace(/`/g, "").trim();
 
     const filledSha = rows.filter((r) => r.sourceCommit.trim().length > 0);
@@ -217,12 +262,119 @@ describe("RELEASES.md published column (core#126)", () => {
       for (const r of filledPub) {
         const commit = tagCommit(bare(r.tag));
         if (!commit) continue;
-        const committed = git(`log -1 --format=%cs ${commit}`, true);
+        const committed = commitDate(commit);
         if (committed && r.published.trim() < committed) {
           bad.push(`L${r.line} ${r.tag}: published=${r.published.trim()} precedes its commit date ${committed}`);
         }
       }
       expect(bad).toEqual([]);
+    });
+
+    // core#319 EQUIVALENCE CONTROL. The batching above replaced ~184 git subprocesses with 2, and an
+    // optimisation that is also a behaviour change is worse than the slowness it fixed.
+    //
+    // THIS CONTROL ALREADY EARNED ITSELF. The first version of the batched read passed its format
+    // string through a shell unquoted, and `%(refname:short)` contains parentheses, which are shell
+    // metacharacters -- so the command failed, `allowFail` returned "", and the map was EMPTY. Every
+    // claim above then passed by iterating nothing, 600x faster than before. The sibling controls in
+    // this file caught it. This one makes that catch explicit rather than incidental.
+    it("EQUIVALENCE: the batched resolver agrees with per-tag rev-list, on both tag shapes", () => {
+      // Annotated tags are the case that matters: for them the tag OBJECT and the commit differ, and
+      // reading the object instead of the commit is the exact mistake the hint below exists for. So
+      // the sample is deliberately two annotated tags plus one lightweight, not three of a kind.
+      const sample = ["vivijure-core-v1.25.0", "vivijure-core-v1.24.0", "vivijure-core-v0.9.0"]
+        .filter((t) => git(`rev-parse --verify --quiet ${t}`, true));
+      expect(sample.length, "no sample tags resolve; this control would pass vacuously").toBeGreaterThan(0);
+      const disagreements: string[] = [];
+      for (const tag of sample) {
+        const perRow = git(`rev-list -n 1 ${tag}`, true);
+        const batched = tagCommit(tag);
+        if (perRow !== batched) disagreements.push(`${tag}: rev-list=${perRow} batched=${batched}`);
+      }
+      expect(disagreements, "the batched map does not match per-tag rev-list").toEqual([]);
+    });
+
+    it("EQUIVALENCE: the batched map covers every visible release tag, so nothing is silently absent", () => {
+      // The empty-map failure mode again, from the other side: a map that resolves the sample but
+      // covers only the sample would make every per-row claim pass on a subset.
+      const visible = git("tag --list 'vivijure-core-v*'", true).split("\n").filter(Boolean);
+      expect(visible.length).toBeGreaterThan(0);
+      const missing = visible.filter((t) => !tagCommit(t));
+      expect(missing, "these visible tags are absent from the batched map").toEqual([]);
+    });
+
+    it("EQUIVALENCE: the batched commit dates agree with per-commit log", () => {
+      const commits = [...new Set(filledPub.map((r) => tagCommit(bare(r.tag))).filter(Boolean))].slice(0, 3);
+      expect(commits.length, "no commits to compare; this control would pass vacuously").toBeGreaterThan(0);
+      const disagreements: string[] = [];
+      for (const c of commits) {
+        const perRow = git(`log -1 --format=%cs ${c}`, true);
+        if (perRow !== commitDate(c)) disagreements.push(`${c}: log=${perRow} batched=${commitDate(c)}`);
+      }
+      expect(disagreements).toEqual([]);
+    });
+
+    // ---------------------------------------------------------------------------------------------
+    // WHOLE-POPULATION EQUIVALENCE. The two cases above compare a SAMPLE, and a sample is not a
+    // verification: a batched resolver that is right about three tags and wrong about the fortieth
+    // passes every one of them, and reads exactly like one that was checked. The coverage case proves
+    // every tag is PRESENT in the map; presence is not correctness.
+    //
+    // So each map is also compared, across its ENTIRE population, against an INDEPENDENT batched
+    // mechanism -- a different git command with a different output shape, so a bug in one is unlikely
+    // to be mirrored in the other. One extra subprocess each, which is why the whole population is
+    // affordable here where a per-row loop was not.
+    // ---------------------------------------------------------------------------------------------
+
+    it("EQUIVALENCE, WHOLE POPULATION: every tag commit matches `show-ref --tags -d`", () => {
+      // show-ref emits TWO lines for an annotated tag: the tag object, then the same ref with a `^{}`
+      // suffix carrying the COMMIT. A lightweight tag emits one line which already is the commit.
+      // So the peeled line wins where present, exactly as %(*objectname) does in the map under test.
+      const byTag = new Map<string, string>();
+      for (const line of git("show-ref --tags -d", true).split("\n")) {
+        const m = /^([0-9a-f]{40})\s+refs\/tags\/(\S+?)(\^\{\})?$/.exec(line.trim());
+        if (!m) continue;
+        const [, sha, name, peeled] = m;
+        if (!name.startsWith("vivijure-core-v")) continue;
+        if (peeled || !byTag.has(name)) byTag.set(name, sha);
+      }
+      expect(byTag.size, "show-ref resolved no release tags; this control would pass vacuously").toBeGreaterThan(0);
+      // Compare BOTH directions, so neither map can be a subset of the other and still pass.
+      const disagreements: string[] = [];
+      for (const [tag, sha] of byTag) {
+        if (tagCommit(tag) !== sha) disagreements.push(`${tag}: show-ref=${sha} batched=${tagCommit(tag) || "MISSING"}`);
+      }
+      for (const tag of tagCommitMap.keys()) {
+        if (!byTag.has(tag)) disagreements.push(`${tag}: present in the batched map, absent from show-ref`);
+      }
+      expect(disagreements, "the two independent batched mechanisms disagree").toEqual([]);
+      expect(byTag.size).toBe(tagCommitMap.size);
+    });
+
+    it("EQUIVALENCE, WHOLE POPULATION: every commit date matches for-each-ref's committerdate", () => {
+      // The date atoms mirror the objectname atoms: for an ANNOTATED tag `%(*committerdate:short)` is
+      // the commit's date and `%(committerdate:short)` is the tag object's; for a lightweight tag it
+      // is the other way round. Independent of `log --no-walk`, which is what the map under test used.
+      const byTag = new Map<string, string>();
+      const raw = git("for-each-ref --format='%(refname:short)%09%(committerdate:short)%09%(*committerdate:short)' 'refs/tags/vivijure-core-v*'", true);
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        const [name, own, peeled] = line.split("\t");
+        const date = (peeled || "").trim() || (own || "").trim();
+        if (name && date) byTag.set(name, date);
+      }
+      expect(byTag.size, "for-each-ref produced no dates; this control would pass vacuously").toBeGreaterThan(0);
+      const disagreements: string[] = [];
+      for (const [tag, date] of byTag) {
+        const commit = tagCommit(tag);
+        if (!commit) continue; // covered by the coverage case
+        const batched = commitDate(commit);
+        if (batched !== date) disagreements.push(`${tag} (${commit.slice(0, 8)}): for-each-ref=${date} batched=${batched || "MISSING"}`);
+      }
+      expect(disagreements, "the two independent date mechanisms disagree").toEqual([]);
+      // Every commit the map holds must have a date, or a row could be checked against nothing.
+      const datelessCommits = [...tagCommitMap.values()].filter((c) => !commitDate(c));
+      expect(datelessCommits, "these commits are in the tag map with no date resolved").toEqual([]);
     });
 
     it("no published date is in the future", () => {
