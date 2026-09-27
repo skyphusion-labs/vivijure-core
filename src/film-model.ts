@@ -406,6 +406,13 @@ export interface FilmJob {
   // being unavailable at assemble/mux, and widening its two closed unions to carry a different
   // stage would make the field mean "something, somewhere, was missing". Projected by cf#836.
   dialogue_degraded?: string;
+  // cf#856: what the #523 Layer 2 pixel gate MEASURED on this film's clips. Derived from the CLIP
+  // doc but stored HERE, on the film doc, deliberately: filmDonePayload is built by two writers and
+  // only ONE of them holds the clip doc (core#205), so a clip-derived key is absent from the
+  // finalize write, which on the single-film path is the LAST writer of the tick. A field whose
+  // whole purpose is to say "this did not run" cannot be the field that goes missing.
+  // undefined = Layer 2 never ran (self-host with no VIDEO_FINISH_URL is exactly this, and honest).
+  content_validation?: { checked: number; unmeasured: number; reasons: string[] };
   finish_unavailable?: {
     at: "assemble" | "mux";      // which delegated step could not run
     reason: string;              // the honest cause (VIDEO_FINISH_URL unset, or unreachable-after-retry)

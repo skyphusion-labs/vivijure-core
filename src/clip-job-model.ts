@@ -26,6 +26,15 @@ export interface ClipShot extends ClipShotInput {
   validated?: "pass" | "fail" | "skip";
   content_validated?: "ok" | "suspect" | "corrupt" | "skip";
   content_degraded?: string;
+  /** cf#856: why Layer 2 COULD NOT RUN on this shot, when it could not.
+   *
+   *  Deliberately NOT `content_validated = "skip"`. #30 established that a skip must not be
+   *  persisted as a verdict, because a truthy value there short-circuits re-inspection and one
+   *  inspector blip disables the pixel gate for the whole pass. So the two facts are separate
+   *  fields: `content_validated` stays UNSET so the next tick re-inspects, and this says out loud
+   *  that the last attempt could not measure anything. Cleared the moment a terminal verdict lands,
+   *  so it can never be stale. */
+  content_unmeasured?: string;
   delivered_fps?: number;
   delivered_frames?: number;
   /** cf#507b: the clip's ACTUAL pixel dimensions, as probed from its mp4 `tkhd` box.
