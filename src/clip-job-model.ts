@@ -24,6 +24,15 @@ export interface ClipShot extends ClipShotInput {
   runpod_job_id?: string;
   cancel_sent?: boolean;
   validated?: "pass" | "fail" | "skip";
+  /** core#310: why Layer 1 COULD NOT RUN on this shot, when it could not.
+   *
+   *  The same split core#30 made for Layer 2 and cf#856 gave a word to, applied one layer down:
+   *  `validated` holds a VERDICT and stays unset on a skip so the next tick re-validates, while
+   *  this carries the honest reason meanwhile. Before this, a skip was written into `validated`,
+   *  where it is truthy, so the idempotence guard short-circuited and a shot whose artifact was
+   *  momentarily unreadable was never structurally checked again. Cleared the moment a verdict
+   *  lands. */
+  validated_unmeasured?: string;
   content_validated?: "ok" | "suspect" | "corrupt" | "skip";
   content_degraded?: string;
   /** cf#856: why Layer 2 COULD NOT RUN on this shot, when it could not.
