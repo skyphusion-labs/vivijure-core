@@ -162,7 +162,7 @@ import {
 import { finishStepInputHash } from "./finish-hash.js";
 import { presignR2Get, presignR2Put, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
-import { contentValidateDoneClips } from "./clip-content-validate.js";
+import { contentValidateDoneClips, contentValidationView } from "./clip-content-validate.js";
 import { buildCaptionCues } from "./captions.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
 import { getCastById, markLoraReady } from "./cast-db.js";
@@ -613,6 +613,12 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
   if (job.clip_job_id && (await contentValidateDoneClips(env, clipJob))) {
     await env.R2_RENDERS.put(clipDocKey(job.clip_job_id), JSON.stringify(clipJob), { httpMetadata: { contentType: "application/json" } });
   }
+  // cf#856: carry what Layer 2 measured onto the FILM doc, so the render record can say that the
+  // pixel gate did not run rather than leaving a reader to infer it from an absence. Recomputed
+  // from the clip doc on every pass (not only when the pass CHANGED something), so it self-corrects
+  // the moment a later tick gets a verdict. Undefined stays undefined: a film whose tier is not
+  // installed never attempted Layer 2, and that is a different fact from attempting and failing.
+  if (job.clip_job_id) job.content_validation = contentValidationView(clipJob);
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   const servingAll = servingForHook(modules, "finish"); // ui.order; every BOUND finish module
   const doneClips = clipJob.shots.filter((s) => s.status === "done" && s.clip_key);

@@ -85,6 +85,12 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
   if (master) out.master = master;
   const dialogue = dialogueDegradeView(job);
   if (dialogue) out.dialogue = dialogue;
+  // cf#856: the #523 Layer 2 pixel gate, same ladder. A live film ran with 5 skips and 0 passes
+  // because the inspect container was crashing, and the ONLY place that was visible was a tail
+  // session someone happened to have attached. `unmeasured > 0` is not a degrade of the film, it is
+  // the studio saying it cannot vouch for these clips, which is a different sentence and gets its
+  // own key rather than being folded into one of the degrade counts.
+  if (job.content_validation) out.content_validation = job.content_validation;
   if (job.keyframes_only && job.keyframes?.length) {
     out.keyframes = job.keyframes.map((k) => ({ shot_id: k.shot_id, key: k.keyframe_key }));
     out.scenes = job.scenes;

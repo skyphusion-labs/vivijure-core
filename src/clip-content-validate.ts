@@ -117,6 +117,20 @@ export async function contentValidateDoneClips(
     const v = await inspect(env, shot.clip_key, shot.keyframe_key);
     // Don't persist "skip" as a verdict: leave it unset so a later tick re-inspects.
     if (v.verdict !== "skip") shot.content_validated = v.verdict;
+    // cf#856: but DO say that it could not run. Measured on a live film while the container was
+    // crashing: 5 skips, 0 passes, and the film advanced with nothing anywhere recording that the
+    // pixel gate never looked at a single clip. A skip left only in a log line is indistinguishable
+    // from a pass to every reader except one who happened to have `wrangler tail` attached.
+    // SEPARATE from content_validated on purpose (see #30 above): the verdict stays unset so
+    // re-inspection still happens, and this carries the reason meanwhile. Written only when it
+    // CHANGES, so a down inspector does not rewrite the doc every tick, and cleared the moment a
+    // terminal verdict lands, so it cannot go stale.
+    const unmeasured = v.verdict === "skip" ? (v.reason ?? "content validation could not run") : undefined;
+    if (shot.content_unmeasured !== unmeasured) {
+      if (unmeasured) shot.content_unmeasured = unmeasured;
+      else delete shot.content_unmeasured;
+      changed = true;
+    }
     emitStructuredEvent({
       ev: "clip.content_validate",
       job_id: job.job_id,
@@ -137,4 +151,34 @@ export async function contentValidateDoneClips(
     }
   }
   return changed;
+}
+
+/** cf#856: what Layer 2 actually MEASURED on this clip job, for the render record.
+ *
+ *  THE LADDER, the same three states cf#836 established for the per-stage degrades, because the
+ *  failure they both prevent is the same one (two states reported as one):
+ *    undefined    -> Layer 2 never ran on this job at all. NOT MEASURED. (Self-host with no
+ *                    VIDEO_FINISH_URL is exactly this, and it is honest: the tier is not installed.)
+ *    unmeasured 0 -> it ran on every done clip and every one got a verdict.
+ *    unmeasured n -> it could not measure n of them, and `reasons` says why, verbatim.
+ *
+ *  Counts the population Layer 2 covers: DONE shots that produced a clip. */
+export function contentValidationView(
+  job: ClipJob,
+): { checked: number; unmeasured: number; reasons: string[] } | undefined {
+  const covered = job.shots.filter((s) => s.status === "done" && s.clip_key);
+  const checked = covered.filter((s) => s.content_validated && s.content_validated !== "skip").length;
+  const blocked = covered.filter(
+    (s) => typeof s.content_unmeasured === "string" && s.content_unmeasured.length > 0,
+  );
+  if (checked === 0 && blocked.length === 0) return undefined;
+  const seen = new Set<string>();
+  const reasons: string[] = [];
+  for (const s of blocked) {
+    const r = s.content_unmeasured as string;
+    if (seen.has(r)) continue;
+    seen.add(r);
+    reasons.push(r);
+  }
+  return { checked, unmeasured: blocked.length, reasons };
 }
