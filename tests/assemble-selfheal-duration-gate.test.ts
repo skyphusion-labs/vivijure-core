@@ -22,7 +22,9 @@ function assembleEnv(job: object) {
     R2_RENDERS: {
       // the film-job doc AND the concat output both "exist": head(OUT) != null trips the self-heal path.
       get: async (key: string) => (key === filmJobDocKey(filmId) ? { text: async () => stored } : null),
-      head: async (key: string) => (key === OUT || key === filmJobDocKey(filmId) ? { size: 1 } : null),
+      // cf#835: `size` used to be an arbitrary token because nothing read it; the done gate now
+      // judges the film's LENGTH, so a 1-byte film.mp4 is a fixture describing a truncated film.
+      head: async (key: string) => (key === OUT || key === filmJobDocKey(filmId) ? { size: 4096 } : null),
       put: async (key: string, val: string) => { if (key === filmJobDocKey(filmId)) stored = val; },
     },
     PRESIGNER: {

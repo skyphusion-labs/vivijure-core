@@ -198,34 +198,46 @@ type RangeReader = (offset: number, length: number) => Promise<Uint8Array | null
 
 // Locate ftyp + moov by walking top-level box HEADERS only (each read is a few bytes; mdat is skipped by
 // its size, never downloaded). moov may be at the front (faststart) or after mdat; both are handled.
-async function locateStructure(read: RangeReader, totalBytes: number): Promise<{ ftypOk: boolean; moov?: { offset: number; size: number; headerSize: number } }> {
+async function locateStructure(read: RangeReader, totalBytes: number): Promise<{ ftypOk: boolean; readable: boolean; moov?: { offset: number; size: number; headerSize: number } }> {
   let ftypOk = false;
+  // cf#835: an object HEAD says exists whose first box header will not come back is an I/O
+  // condition, not evidence about its content. The CLIP judge does not use this -- its verdict on an
+  // unreadable body is unchanged (a fail, via container:false) -- and the FILM judge does, because
+  // failing a fully rendered film on a read blip would be the opposite of what this gate is for.
+  let readable = false;
   let offset = 0;
   for (let i = 0; i < MAX_TOPLEVEL_BOXES && offset + 8 <= totalBytes; i++) {
     const hdrBytes = await read(offset, 16);
     if (!hdrBytes || hdrBytes.length < 8) break;
+    readable = true;
     const h = readBoxHeader(hdrBytes, 0);
     if (!h) break;
     if (i === 0) {
       if (h.type !== "ftyp") break; // a real mp4 opens with ftyp; anything else is not our format
       ftypOk = true;
     }
-    if (h.type === "moov") return { ftypOk, moov: { offset, size: h.size, headerSize: h.headerSize } };
+    if (h.type === "moov") return { ftypOk, readable, moov: { offset, size: h.size, headerSize: h.headerSize } };
     if (h.size === 0) break; // last box extends to EOF and is not moov
     offset += h.size;
   }
-  return { ftypOk };
+  return { ftypOk, readable };
 }
 
-// Async wrapper: bounded R2 reads -> structural checks -> verdict. NEVER throws; an unreadable artifact
-// is a "skip" (transient), not a fail, so a blip cannot false-reject a real render. Returns skip when
-// validation is disabled or the object is absent.
-export async function validateClipArtifact(env: Env, key: string, expectedSeconds: number): Promise<ClipValidateResult> {
+// Bounded R2 reads -> the structural facts. Shared by the clip gate and the film gate (cf#835), so
+// the box parser has ONE implementation and the two differ only in how they JUDGE what it found.
+// NEVER throws.
+interface ArtifactProbe {
+  present: boolean; // HEAD found the object
+  readable: boolean; // its first box header came back
+  threw: boolean; // the probe itself errored, so NOTHING here is evidence about the artifact
+  checks: ClipValidateChecks;
+}
+
+async function probeMp4Artifact(env: Env, key: string, expectedSeconds: number): Promise<ArtifactProbe> {
   const empty: ClipValidateChecks = { container: false, video_track: false, duration_s: null, expected_s: expectedSeconds, frames: null, width: null, height: null, bytes: 0 };
-  if (!CLIP_VALIDATE_ENABLED) return { verdict: "skip", reason: "clip validation disabled", checks: empty };
   try {
     const head = await env.R2_RENDERS.head(key);
-    if (!head) return { verdict: "skip", reason: "clip artifact not found in R2", checks: empty };
+    if (!head) return { present: false, readable: false, threw: false, checks: empty };
     const totalBytes = head.size;
     const checks: ClipValidateChecks = { ...empty, bytes: totalBytes };
     const read: RangeReader = async (offset, length) => {
@@ -254,13 +266,97 @@ export async function validateClipArtifact(env: Env, key: string, expectedSecond
       }
       // #25: payloadLen <= 0 (a header-only moov where size === headerSize, or a size-0 "extends to EOF"
       // box) is a CORRUPT container, not a trustworthy one. Fall through leaving video_track FALSE so
-      // judgeClip fails the "no video track" gate, instead of the old blanket `else` trusting it and
+      // the judge fails the "no video track" gate, instead of the old blanket `else` trusting it and
       // shipping a degenerate ftyp+empty-moov+noise-mdat clip (the self-host path with no VIDEO_FINISH_URL
       // content-validate is most exposed).
     }
-    return judgeClip(checks);
-  } catch (e) {
-    // Reading/parsing threw: do NOT fail the shot on an I/O hiccup; skip and let the render proceed.
-    return { verdict: "skip", reason: `clip validation errored: ${e instanceof Error ? e.message : String(e)}`, checks: empty };
+    return { present: true, readable: loc.readable, threw: false, checks };
+  } catch {
+    // Reading/parsing threw: report it as an unreadable probe and let each judge decide. Neither
+    // judge fails a render on this: the clip gate skips, the film gate skips.
+    return { present: false, readable: false, threw: true, checks: empty };
   }
+}
+
+// Async wrapper: bounded R2 reads -> structural checks -> verdict. NEVER throws; an unreadable artifact
+// is a "skip" (transient), not a fail, so a blip cannot false-reject a real render. Returns skip when
+// validation is disabled or the object is absent.
+export async function validateClipArtifact(env: Env, key: string, expectedSeconds: number): Promise<ClipValidateResult> {
+  const empty: ClipValidateChecks = { container: false, video_track: false, duration_s: null, expected_s: expectedSeconds, frames: null, width: null, height: null, bytes: 0 };
+  if (!CLIP_VALIDATE_ENABLED) return { verdict: "skip", reason: "clip validation disabled", checks: empty };
+  const probe = await probeMp4Artifact(env, key, expectedSeconds);
+  if (probe.threw) return { verdict: "skip", reason: "clip validation errored", checks: empty };
+  if (!probe.present) return { verdict: "skip", reason: "clip artifact not found in R2", checks: empty };
+  return judgeClip(probe.checks);
+}
+
+// --- cf#835: the same parser, judged for an ASSEMBLED FILM ------------------------------------
+//
+// Clips get a real gate (CLIP_MIN_BYTES, duration bounds, an ftyp/moov parse) and the film did not:
+// the done transition decided on `head(key) !== null` and threw the size away, so a 0-byte film.mp4
+// satisfied the #122 R2 shortcut and shipped as `done`. The PARSER is the right thing to reuse; the
+// JUDGE is not, and reusing judgeClip wholesale would have been worse than no gate at all --
+// CLIP_MAX_DURATION_S is 900s, so it would REFUSE any film longer than 15 minutes as a runaway.
+//
+// So: one probe, two judges.
+
+export const FILM_MIN_BYTES = 2048; // same lenient floor as clips: catches 0-byte / truncated, never content
+export const FILM_MIN_DURATION_S = 0.15; // a zero / near-zero duration container
+// Deliberately NO upper duration bound. A film is as long as its storyboard; the clip cap exists to
+// catch a runaway single SHOT and has no meaning here.
+
+/** PURE: the film verdict over the same checks. Fails ONLY on positive evidence, like judgeClip.
+ *
+ *  HONEST LIMIT, stated so nobody reads this as more than it is: the floor is structural. A film
+ *  that concatenated 3 of its 12 shots is a structurally perfect mp4 and passes here. Shot-count
+ *  honesty is the #697 duration gate's job, upstream, on the container's per-clip report. */
+export function judgeFilm(checks: ClipValidateChecks): ClipValidateResult {
+  if (checks.bytes < FILM_MIN_BYTES) {
+    return { verdict: "fail", reason: `film is ${checks.bytes} bytes (< ${FILM_MIN_BYTES} floor); truncated or empty`, checks };
+  }
+  if (!checks.container) {
+    return { verdict: "fail", reason: "not a valid mp4 (no ftyp/moov box tree); corrupt or wrong format", checks };
+  }
+  if (checks.duration_s != null && checks.duration_s < FILM_MIN_DURATION_S) {
+    return { verdict: "fail", reason: `film duration ${checks.duration_s.toFixed(3)}s is below the ${FILM_MIN_DURATION_S}s floor`, checks };
+  }
+  if (!checks.video_track) {
+    return { verdict: "fail", reason: "no video track in the film (audio-only or corrupt container)", checks };
+  }
+  if (checks.frames != null && checks.frames <= 0) {
+    return { verdict: "fail", reason: "video track has zero frames (empty/corrupt film)", checks };
+  }
+  return { verdict: "pass", checks };
+}
+
+/** Is the assembled film at `key` a deliverable film? Three outcomes, and the difference between
+ *  the last two is the whole point:
+ *   - "fail": positive evidence it is NOT a film (absent, under the byte floor, not an mp4, no
+ *     video track, zero frames). The render fails loud rather than shipping it as complete.
+ *   - "skip": the object IS there and over the floor, but its bytes could not be read this tick.
+ *     That is an R2 condition, not a verdict on the artifact, and a fully rendered film must not
+ *     die on a read blip. The caller ships it and says so.
+ *   - "pass": parsed and sane.
+ *
+ *  NEVER throws. */
+export async function validateFilmArtifact(env: Env, key: string): Promise<ClipValidateResult> {
+  const probe = await probeMp4Artifact(env, key, 0);
+  // A probe that ERRORED knows nothing, including the size, so it must not reach the byte floor
+  // below: that would read 0 bytes off a failed read and fail a film that may be perfectly fine.
+  if (probe.threw) {
+    return { verdict: "skip", reason: "film artifact could not be probed this tick", checks: probe.checks };
+  }
+  if (!probe.present) {
+    return { verdict: "fail", reason: "film artifact not found in R2", checks: probe.checks };
+  }
+  // BYTES BEFORE READABILITY, deliberately: a 0-byte object reads back as an empty body, which at
+  // the transport level is indistinguishable from a read blip. Judging size first is what keeps the
+  // headline case of cf#835 (a 0-byte film.mp4 shipped as done) on the FAIL side of that line.
+  if (probe.checks.bytes < FILM_MIN_BYTES) {
+    return { verdict: "fail", reason: `film is ${probe.checks.bytes} bytes (< ${FILM_MIN_BYTES} floor); truncated or empty`, checks: probe.checks };
+  }
+  if (!probe.readable) {
+    return { verdict: "skip", reason: "film artifact present but its bytes could not be read this tick", checks: probe.checks };
+  }
+  return judgeFilm(probe.checks);
 }
