@@ -30,12 +30,9 @@ describe("videoFinishPollUrls", () => {
     ]);
   });
 
-  it("adds the three hosted poll names for video-finish.skyphusion.org", () => {
+  it("does not invent fleet box names for video-finish.skyphusion.org", () => {
     const urls = videoFinishPollUrls(envWith({ VIDEO_FINISH_URL: "https://video-finish.skyphusion.org" }));
-    expect(urls).toContain("https://video-finish.skyphusion.org");
-    expect(urls).toContain("https://video-finish-jello.skyphusion.org");
-    expect(urls).toContain("https://video-finish-descendents.skyphusion.org");
-    expect(urls).toContain("https://video-finish-badbrains.skyphusion.org");
+    expect(urls).toEqual(["https://video-finish.skyphusion.org"]);
   });
 
   it("honors VIDEO_FINISH_POLL_URLS", () => {
@@ -71,13 +68,13 @@ describe("tickVideoFinishAssemble", () => {
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/async/status/job-1"))).toBe(true);
   });
 
-  it("polls every hosted replica and takes the completed one", async () => {
+  it("polls an extra origin from VIDEO_FINISH_POLL_URLS and takes the completed one", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       const u = String(url);
       if (u.includes("/async/finish")) {
         return new Response(JSON.stringify({ ok: true, jobId: "job-2" }), { status: 202 });
       }
-      if (u.includes("video-finish-jello") && u.includes("/async/status/job-2")) {
+      if (u.includes("peer.example") && u.includes("/async/status/job-2")) {
         return new Response(JSON.stringify({
           ok: true,
           status: "completed",
@@ -87,7 +84,10 @@ describe("tickVideoFinishAssemble", () => {
       return new Response(JSON.stringify({ ok: true, status: "not_found" }), { status: 404 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const env = envWith({ VIDEO_FINISH_URL: "https://video-finish.skyphusion.org" });
+    const env = envWith({
+      VIDEO_FINISH_URL: "https://video-finish.skyphusion.org",
+      VIDEO_FINISH_POLL_URLS: "https://peer.example",
+    });
     const tick = await tickVideoFinishAssemble(env, payload, undefined);
     expect(tick.kind).toBe("done");
     if (tick.kind === "done") expect(tick.result.durationSeconds).toBe(48);
