@@ -47,7 +47,6 @@ export interface ScatterJob {
   film_key?: string;
   silent_film_key?: string;
   mux_output_key?: string;
-  assemble_attempts?: number;
   assemble_poll?: string;
   error?: string;
   created_at: number;
