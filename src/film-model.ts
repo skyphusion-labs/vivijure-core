@@ -179,7 +179,7 @@ export interface FinishShot {
   // Transient-retry counter for the CURRENT chain step (reset when the step advances). A transient
   // invocation blip (the module worker momentarily unreachable / 5xx -- the musetalk cold-start race
   // that silenced shot_02) re-dispatches the step up to FINISH_STEP_MAX_ATTEMPTS instead of going
-  // failed; a deterministic reject or the cap exhausted fails loud. Mirrors scatter assemble_attempts.
+  // failed; a deterministic reject or the cap exhausted fails loud.
   attempts?: number;
   // #226: per-step FinishOutput.degraded reasons, in chain order. The tag on `applied` is often the
   // generic `passthrough:backend-soft-degrade`; this is the field that tells "no face" from
@@ -433,7 +433,6 @@ export interface FilmJob {
   };
   mux_output_key?: string; // deterministic mux destination for idempotent retries
   mix_audio_key?: string; // #231: multi-track mixed audio (dialogue + ducked music + loudnorm) destination
-  mux_attempts?: number;
   // keyframes-only preview: stop after the keyframe module, no i2v / assemble.
   keyframes_only?: boolean;
   /** Scatter shard: stop after finish (per-shot clips in R2), skip assemble. */
@@ -443,11 +442,6 @@ export interface FilmJob {
   /** Child animation from a keyframes-only preview (finalize / cloud / hybrid). */
   derive_mode?: "finalized" | "cloud-finalized";
   parent_render_id?: number;
-  // Bounded counter for transient assemble retries (issue #82). A cold or slow video-finish concat can
-  // 504 (or be briefly unreachable) on the last CPU-only step; rather than failing a fully-rendered
-  // film, enterAssemblePhase keeps phase="assemble" so the next poll re-attempts (the re-PUT to the same
-  // film key is idempotent), capped by MAX_ASSEMBLE_ATTEMPTS. Absent on pre-#82 jobs (reads as 0).
-  assemble_attempts?: number;
   // Async /finish job token (jobId + streak). A 17-shot concat outlives the
   // Worker fetch; the next poll tick reads this instead of re-POSTing /finish.
   assemble_poll?: string;

@@ -881,8 +881,8 @@ export async function advanceScatterJob(
   // maybeFinalizeScatter), so when the "shards" block transitions to gather and drives it, and the
   // assemble transport returns "retry" (leaving job.phase = "gather") or the gather chains into "mux",
   // the sequential gather/mux blocks must NOT re-drive the same phase this tick -- that double-POSTed the
-  // video-finish container and incremented assemble_attempts twice. The else-if drives only the entry
-  // phase; a transient resumes next tick.
+  // video-finish container. The else-if drives only the entry phase; a transient resumes next tick.
+  // There is no assemble attempt counter on this path.
   if (job.phase === "shards") {
     const decision = gatherDecision([...present], job.expected_shot_ids, shardStatuses);
     if (decision.kind === "failed") {
