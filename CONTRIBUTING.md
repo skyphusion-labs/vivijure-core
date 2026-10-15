@@ -61,3 +61,8 @@ used a changelog.d/ fragment instead is not at risk, by construction. See RELEAS
 
 `npm run typecheck` and `npm test` run in CI on every PR (`.github/workflows/ci.yml`).
 `.github/workflows/changelog.yml` is the changelog entry gate described above.
+
+`npm test` also runs `scripts/changelog-entry-required.mjs --working-tree` before vitest (core#316).
+That is the same `verdict()` the PR job uses, fed the staged, unstaged, and untracked paths, so a
+dirty `src/` with no fragment fails locally instead of only after the fragment exists. A clean tree
+does not fail, and neither does a docs-only or `RELEASES.md`-only change.

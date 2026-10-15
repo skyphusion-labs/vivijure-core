@@ -9,15 +9,19 @@
 
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   changedFiles,
   verdict,
   hasFragment,
+  workingTreeFiles,
   GATED_PREFIXES,
 } from "../scripts/changelog-entry-required.mjs";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function git(root: string, ...args: string[]): void {
   execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
@@ -128,5 +132,177 @@ describe("changelog-entry-required (core#178, core#202, core#212)", () => {
 
   it("GATED_PREFIXES is src/ only -- core has no public/ or modules/ top-level surface", () => {
     expect(GATED_PREFIXES).toEqual(["src/"]);
+  });
+});
+
+// core#316. The PR job only sees committed files, so `npm test` before the fragment exists cannot
+// fail. The local gate feeds staged, unstaged, and untracked paths to the same verdict(). These
+// cases are the four acceptance inputs plus the controls that keep the matcher honest: a fragment
+// turns the same src/ change green, .gitkeep does not, and a rename into src/ still counts.
+function initTree(): string {
+  const root = mkdtempSync(join(tmpdir(), "core-316-"));
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.email", "t@example.com");
+  git(root, "config", "user.name", "t");
+  mkdirSync(join(root, "src"), { recursive: true });
+  mkdirSync(join(root, "docs"), { recursive: true });
+  mkdirSync(join(root, "changelog.d"), { recursive: true });
+  writeFileSync(join(root, "src", "a.ts"), "export const a = 1;\n");
+  writeFileSync(join(root, "docs", "x.md"), "docs\n");
+  writeFileSync(join(root, "RELEASES.md"), "releases\n");
+  writeFileSync(join(root, "changelog.d", ".gitkeep"), "");
+  git(root, "add", "src/a.ts", "docs/x.md", "RELEASES.md", "changelog.d/.gitkeep");
+  git(root, "commit", "-qm", "base");
+  return root;
+}
+
+function runWorkingTreeGate(root: string): { status: number; stdout: string } {
+  const script = join(repoRoot, "scripts", "changelog-entry-required.mjs");
+  try {
+    const stdout = execFileSync(process.execPath, [script, "--working-tree", root], {
+      encoding: "utf8",
+    });
+    return { status: 0, stdout };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string };
+    return { status: e.status ?? 1, stdout: e.stdout ?? "" };
+  }
+}
+
+describe("working-tree gate (core#316)", () => {
+  it("clean tree does not fire", () => {
+    const root = initTree();
+    expect(workingTreeFiles(root)).toEqual([]);
+    expect(verdict(workingTreeFiles(root)).ok).toBe(true);
+    const gate = runWorkingTreeGate(root);
+    expect(gate.status).toBe(0);
+    expect(gate.stdout).toContain("no src/ changes");
+  });
+
+  it("RED: unstaged src/ change and no fragment", () => {
+    const root = initTree();
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 2;\n");
+    const files = workingTreeFiles(root);
+    expect(files).toContain("src/a.ts");
+    expect(verdict(files).ok).toBe(false);
+    const gate = runWorkingTreeGate(root);
+    expect(gate.status).toBe(1);
+    expect(gate.stdout).toContain("changelog.d/");
+  });
+
+  it("RED: staged src/ change and no fragment", () => {
+    const root = initTree();
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 2;\n");
+    git(root, "add", "src/a.ts");
+    expect(verdict(workingTreeFiles(root)).ok).toBe(false);
+    expect(runWorkingTreeGate(root).status).toBe(1);
+  });
+
+  it("RED: untracked new src/ file and no fragment", () => {
+    const root = initTree();
+    writeFileSync(join(root, "src", "b.ts"), "export const b = 1;\n");
+    const files = workingTreeFiles(root);
+    expect(files).toContain("src/b.ts");
+    expect(verdict(files).ok).toBe(false);
+    expect(runWorkingTreeGate(root).status).toBe(1);
+  });
+
+  it("GREEN: the same src/ change plus a fragment", () => {
+    const root = initTree();
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 2;\n");
+    writeFileSync(join(root, "changelog.d", "316-local-gate.md"), "### fix\n\nnotes\n");
+    const files = workingTreeFiles(root);
+    expect(files).toContain("src/a.ts");
+    expect(files).toContain("changelog.d/316-local-gate.md");
+    expect(verdict(files).ok).toBe(true);
+    const gate = runWorkingTreeGate(root);
+    expect(gate.status).toBe(0);
+    expect(gate.stdout).toContain("fragment");
+  });
+
+  it("does not fire on a docs-only change", () => {
+    const root = initTree();
+    writeFileSync(join(root, "docs", "x.md"), "docs changed\n");
+    expect(verdict(workingTreeFiles(root)).ok).toBe(true);
+    expect(runWorkingTreeGate(root).status).toBe(0);
+  });
+
+  it("does not fire on a RELEASES.md-only change", () => {
+    const root = initTree();
+    writeFileSync(join(root, "RELEASES.md"), "releases changed\n");
+    expect(verdict(workingTreeFiles(root)).ok).toBe(true);
+    expect(runWorkingTreeGate(root).status).toBe(0);
+  });
+
+  it("CONTROL: changelog.d/.gitkeep does not count as the fragment", () => {
+    const root = initTree();
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 2;\n");
+    writeFileSync(join(root, "changelog.d", ".gitkeep"), "touched\n");
+    expect(verdict(workingTreeFiles(root)).ok).toBe(false);
+    expect(runWorkingTreeGate(root).status).toBe(1);
+  });
+
+  it("a path with a space is a src/ change, not a split record", () => {
+    const root = initTree();
+    writeFileSync(join(root, "src", "a file.ts"), "export const a = 1;\n");
+    expect(workingTreeFiles(root)).toContain("src/a file.ts");
+    expect(verdict(workingTreeFiles(root)).ok).toBe(false);
+  });
+
+  it("a rename into src/ is a src/ change", () => {
+    const root = initTree();
+    git(root, "mv", "docs/x.md", "src/x.md");
+    const files = workingTreeFiles(root);
+    expect(files).toContain("src/x.md");
+    expect(files).toContain("docs/x.md");
+    expect(verdict(files).ok).toBe(false);
+  });
+
+  it("the positional PR form still refuses a committed src/ change with no fragment", () => {
+    const root = initTree();
+    const base = rev(root);
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 2;\n");
+    git(root, "add", "src/a.ts");
+    git(root, "commit", "-qm", "src only");
+    const head = rev(root);
+    const script = join(repoRoot, "scripts", "changelog-entry-required.mjs");
+    let status = 0;
+    let stdout = "";
+    try {
+      stdout = execFileSync(process.execPath, [script, root, base, head], { encoding: "utf8" });
+    } catch (err) {
+      const e = err as { status?: number; stdout?: string };
+      status = e.status ?? 1;
+      stdout = e.stdout ?? "";
+    }
+    expect(status).toBe(1);
+    expect(stdout).toContain("three-dot");
+    expect(stdout).toContain("changelog.d/");
+  });
+
+  it("the positional PR form still honors a no-changelog label", () => {
+    const root = initTree();
+    const base = rev(root);
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 2;\n");
+    git(root, "add", "src/a.ts");
+    git(root, "commit", "-qm", "src only");
+    const head = rev(root);
+    const script = join(repoRoot, "scripts", "changelog-entry-required.mjs");
+    const stdout = execFileSync(
+      process.execPath,
+      [script, root, base, head, '["no-changelog"]'],
+      { encoding: "utf8" },
+    );
+    expect(stdout).toContain("no-changelog label present");
+  });
+
+  it("npm test invokes this mode before vitest", () => {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+      scripts: { pretest: string; test: string };
+    };
+    expect(pkg.scripts.pretest).toBe(
+      "node scripts/changelog-entry-required.mjs --working-tree",
+    );
+    expect(pkg.scripts.test).toBe("vitest run");
   });
 });

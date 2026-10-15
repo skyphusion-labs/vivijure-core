@@ -29,6 +29,11 @@
 // Logic lives here rather than in the workflow so it can be driven by a test against a synthetic
 // repository, including a fixture that reproduces the two-dot false pass. See
 // tests/changelog-entry-required.test.ts.
+//
+// core#316: `npm test` reaches this same predicate on a dirty tree (`--working-tree`). The PR-time
+// invocation only sees committed files, so a local run that happens before the fragment exists
+// cannot fail. That mode lists staged, unstaged, and untracked paths and calls verdict(). It does
+// not carry a second copy of the rule. A clean tree and a docs-only change do not fail.
 
 import { execFileSync } from "node:child_process";
 
@@ -40,6 +45,32 @@ export function changedFiles(root, base, head, twoDot) {
     encoding: "utf8",
   });
   return out.split("\n").filter((line) => line.trim().length > 0);
+}
+
+// Working-tree paths for the local gate (core#316). Porcelain v1, NUL-terminated, no quoting.
+// A rename is two records, "XY NEW\0OLD\0" (measured: `R ` and `RM`); both names are kept so a
+// rename into or out of src/ is visible. Copies are ordinary additions in `git status`, not `C`.
+export function workingTreeFiles(root) {
+  const out = execFileSync("git", ["-C", root, "status", "--porcelain", "-z", "-uall"], {
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  if (out.length === 0) return [];
+  const records = out.split("\0");
+  if (records.length > 0 && records[records.length - 1] === "") records.pop();
+  const files = [];
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    const xy = rec.slice(0, 2);
+    const path = rec.slice(3);
+    if (path.length > 0) files.push(path);
+    if (xy.includes("R")) {
+      i += 1;
+      const other = records[i];
+      if (other && other.length > 0) files.push(other);
+    }
+  }
+  return files;
 }
 
 export function hasFragment(files) {
@@ -78,7 +109,29 @@ export function verdict(files, labels) {
   };
 }
 
+function emit(header, files, result) {
+  console.log(header);
+  for (const f of files) {
+    console.log("  " + f);
+  }
+  if (!result.ok) {
+    console.log("::error::" + result.message);
+    return 1;
+  }
+  console.log("OK: " + result.message);
+  return 0;
+}
+
 function main(argv) {
+  if (argv[2] === "--working-tree") {
+    const root = argv[3] && argv[3].trim().length > 0 ? argv[3] : ".";
+    const files = workingTreeFiles(root);
+    return emit(
+      "Working tree files (staged, unstaged, untracked):",
+      files,
+      verdict(files),
+    );
+  }
   const root = argv[2];
   const base = argv[3];
   const head = argv[4];
@@ -92,17 +145,11 @@ function main(argv) {
     }
   }
   const files = changedFiles(root, base, head, false);
-  console.log("Changed files (three-dot, from the merge base):");
-  for (const f of files) {
-    console.log("  " + f);
-  }
-  const result = verdict(files, labels);
-  if (!result.ok) {
-    console.log("::error::" + result.message);
-    return 1;
-  }
-  console.log("OK: " + result.message);
-  return 0;
+  return emit(
+    "Changed files (three-dot, from the merge base):",
+    files,
+    verdict(files, labels),
+  );
 }
 
 if (import.meta.url === "file://" + process.argv[1]) {
