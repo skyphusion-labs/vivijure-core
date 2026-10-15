@@ -361,6 +361,28 @@ describe("pre_clip_dialogue tick sequence", () => {
     expect(h.read(job.film_id).dialogue_lines?.map((l) => l.shot_id)).toEqual(["shot_01", "shot_02"]);
   });
 
+  it("a driving_audio door with zero lined shots mints silence instead of skipping the phase", async () => {
+    const h = harness({ usage: USAGE_INFINITETALK, dialogue: "pending" });
+    const mods = modulesFor(h, { usage: USAGE_INFINITETALK });
+    const job = await startFilmJob(h.env, {
+      ...START,
+      motion_backend: "infinitetalk",
+      dialogue_lines: [
+        { shot_id: "shot_01", text: "" },
+        { shot_id: "shot_02", text: "   " },
+      ],
+    }, mods);
+    expect(h.dialogueInvokes).toBe(0);
+    expect(job.phase).toBe("clips");
+    expect(job.error).toBeUndefined();
+    expect(h.motionInvokes.map((m) => m.shot_id).sort()).toEqual(["shot_01", "shot_02"]);
+    for (const shot of ["shot_01", "shot_02"]) {
+      const invoked = h.motionInvokes.find((m) => m.shot_id === shot);
+      expect(invoked?.audio_url).toBe(`https://presigned/renders/film/dialogue/${shot}.wav`);
+      expect(h.store.get(`renders/film/dialogue/${shot}.wav`)).toBeInstanceOf(Uint8Array);
+    }
+  });
+
   it("a board with zero lines never enters pre_clip_dialogue", async () => {
     const h = harness({ usage: USAGE_WAN, dialogue: "pending" });
     const mods = modulesFor(h, { usage: USAGE_WAN });
