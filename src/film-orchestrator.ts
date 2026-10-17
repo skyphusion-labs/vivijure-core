@@ -48,6 +48,7 @@ import {
   type FilmSubmitIdentity,
 } from "./film-submit-idempotency.js";
 import { coerceShotId } from "./storyboard-ids.js";
+import { analyzeAudioBeats } from "./beat-analyze.js";
 import {
   filmJobDocKey as filmKey,
   clipJobDocKey as clipDocKey,
@@ -2385,12 +2386,8 @@ function emitKeyframesIncomplete(job: FilmJob): void {
   });
 }
 
-/** Video-finish tier UNAVAILABLE at assemble (VIDEO_FINISH_URL unset, or the concat container
- *  unreachable after the bounded retry): there is no single concatenated film, but every per-shot clip
- *  is rendered and sitting in R2. COMPLETE the film delivering those clips with a loud, structured
- *  "clips only, finish unavailable" status, rather than hard-failing after the keyframe/i2v/finish GPU
- *  spend (#519 -- "you can at least get your clips if you close your laptop"). UNAVAILABILITY ONLY: a
- *  container that RAN and reported a real assemble error still fails loud (#245/#249). */
+/** The concat did not run. The per-shot clips stay in R2 (a later attempt can join them), and the
+ *  reason is on finish_unavailable, but the film is failed. A skipped join is not a finished film. */
 function degradeAssembleUnavailable(
   job: FilmJob,
   finalClips: { shot_id: string; clip_key: string }[],
@@ -2399,23 +2396,50 @@ function degradeAssembleUnavailable(
   job.finish_unavailable = { at: "assemble", reason, delivered: "clips", clips: finalClips };
   job.assemble_attempts = 0;
   emitFinishUnavailable(job);
-  job.phase = "done"; // no assembled film to finish/notify; the clips ARE the delivered render
+  job.phase = "failed";
+  job.error = reason;
 }
 
-/** Video-finish tier UNAVAILABLE at mux (VIDEO_FINISH_URL unset, or the remux container unreachable
- *  after the bounded retry): the SILENT assembled film exists in R2 (silentKey), the audio bed just
- *  could not be muxed onto it. Ship the silent film with a loud, structured status rather than
- *  hard-failing a fully-rendered film (#519). transitionToDone still runs any film.finish cards on the
- *  silent film and fires notify with its download link. UNAVAILABILITY ONLY (#245/#249). */
+/** Video-finish missed at mux. The silent cut is already in R2 (silentKey).
+ *  A staged song fails the film: dropping that song and calling the cut done is the defect.
+ *  A film with no song still finishes on the silent cut, and transitionToDone still runs the
+ *  film.finish cards on that cut. A container that answered and refused is handled by the caller. */
 async function degradeMuxUnavailable(env: Env, job: FilmJob, silentKey: string, reason: string, preModules?: RegisteredModule[]): Promise<void> {
   job.finish_unavailable = { at: "mux", reason, delivered: "silent_film" };
   job.mux_attempts = 0;
   emitFinishUnavailable(job);
+  // A song was staged. Shipping the silent cut would drop it from the mix and still say done.
+  if (job.audio_key) {
+    job.phase = "failed";
+    job.error = reason;
+    job.film_key = silentKey;
+    return;
+  }
   job.film_key = silentKey;
   await transitionToDone(env, job, preModules);
 }
 
+/** A staged song has to be read by beat-sync before the film can be joined. Returns true when the
+ *  film was failed and the caller must stop. A job that already recorded the read is left alone. */
+async function failIfSongBeatsUnread(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<boolean> {
+  if (!job.audio_key || job.beats_read) return false;
+  const read = await analyzeAudioBeats(
+    env,
+    { audioKey: job.audio_key, mode: "beat" },
+    undefined,
+    preModules,
+  );
+  if (!read.ok) {
+    job.phase = "failed";
+    job.error = `beats were not read: ${read.error}`;
+    return true;
+  }
+  job.beats_read = true;
+  return false;
+}
+
 async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
+  if (await failIfSongBeatsUnread(env, job, preModules)) return;
   const silentKey = job.silent_film_key;
   const audioKey = job.audio_key;
   if (!silentKey || !audioKey) {
@@ -2623,6 +2647,7 @@ async function enterAssemblePhase(
   preModules?: RegisteredModule[],
 ): Promise<void> {
   if (!finalClips.length) { job.phase = "failed"; job.error = "no clips to assemble"; return; }
+  if (await failIfSongBeatsUnread(env, job, preModules)) return;
 
   // Derive completion from R2 presence: if the concat output is already in R2, a prior
   // attempt's ffmpeg PUT succeeded even though its response was lost (the container 504'd
@@ -2747,18 +2772,9 @@ async function enterAssemblePhase(
   // A cleanup miss must never fail a film that rendered, so it warns and carries on.
   await reapAssemblePartials(env, outputKey, finalClips.length);
   if (tick.kind === "failed") {
-    // core#327: the #519 degrade was only reachable when VIDEO_FINISH_URL was UNSET, because
-    // videoFinishReachable above answers "configured or bound", never "serving". So with the door
-    // bound and dead -- cf#851, a container that crash-looped on a missing import and died before
-    // binding 8000 -- the guard was false, the degrade was skipped, and the film hard-failed AFTER
-    // the keyframe and i2v spend. That is the exact outcome #519 was written to prevent: "you can
-    // at least get your clips if you close your laptop".
-    //
-    // The SUBMIT is the honest observation. A probe answers "was it up a moment ago"; the submit
-    // answers "is it up now, for this request", and it costs nothing extra because the call already
-    // happened. UNAVAILABILITY ONLY, which is what degradeAssembleUnavailable has always said it is
-    // for: a container that RAN and refused still fails loud (#245/#249), and so do an expired job
-    // and an auth error.
+    // A dead concat door used to mark the film done and hand back the loose clips. The clips stay
+    // in R2, and the reason stays on the job, but the phase is failed: the join did not run.
+    // A container that RAN and refused still fails loud too, and so do an expired job and an auth error.
     if (tick.unreachable) {
       degradeAssembleUnavailable(job, finalClips, `video-finish tier unreachable (${tick.error}); delivered per-shot clips`);
       return;

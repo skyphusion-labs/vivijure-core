@@ -3,6 +3,10 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.25.1
+
+Opened at PATCH. The work opening the cycle is a film fix, so the version stays on the 1.25 line. The entry is the fragment under changelog.d. No tag is cut here.
+
 ## [1.25.0] -- 2026-09-27
 
 Cycle opened by the first PR after the v1.24.0 cut, which is the documented steady state and

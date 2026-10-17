@@ -94,6 +94,7 @@ const filmJob = (over: Record<string, unknown> = {}): Record<string, unknown> =>
   phase: "mux",
   silent_film_key: SILENT,
   audio_key: `renders/${FILM}/bed.wav`,
+  beats_read: true,
   mux_output_key: MUXED,
   keyframes_incomplete: KF_INCOMPLETE,
   created_at: 0,

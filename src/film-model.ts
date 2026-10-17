@@ -318,6 +318,9 @@ export interface FilmJob {
   actual_clip_durations?: Record<string, number>;
   audio_key?: string; // staged R2_RENDERS audio bed to mux after assemble (the `master` chain polishes
                       // THIS key in place: each master step rewrites it to the mastered bed before mux)
+  // Set once beat-sync has read that song from R2. Absent on a job that has an audio_key means the
+  // beats were not read. A film in that state fails; it does not reach done.
+  beats_read?: boolean;
   // Film-level audio mastering (the `master` chain): polish the assembled film's audio BED -- music
   // upscale (soxr) + LUFS loudness -- AFTER the mix is built (assemble) and BEFORE the final mux. Set
   // only when there IS an audio_key AND a master module is installed; absent => the bed is muxed as-is.
