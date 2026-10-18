@@ -5,7 +5,7 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## Unreleased / v1.25.1
 
-Opened at PATCH. The work opening the cycle is a film fix, so the version stays on the 1.25 line. The entry is the fragment under changelog.d. No tag is cut here.
+Cycle opened so the changelog fragment has a version to land under. 1.25.0 is already tagged. The work on this branch is a film fix, so the version stays on the 1.25 line. No tag is cut here.
 
 ## [1.25.0] -- 2026-09-27
 

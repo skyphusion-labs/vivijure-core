@@ -343,7 +343,9 @@ function motionUsageForJob(job: FilmJob, modules: RegisteredModule[]) {
 }
 
 function wantsPreClipDialogue(job: FilmJob, modules: RegisteredModule[]): boolean {
-  return motionUsageForJob(job, modules)?.driving_audio === true && linedDialogueShots(job.dialogue_lines).length > 0;
+  // driving_audio means the door cannot render a shot without audio. Whether any shot
+  // has a line is a different question; zero lined shots still need silence (core#342).
+  return motionUsageForJob(job, modules)?.driving_audio === true;
 }
 
 function dialogueAudioKey(project: string, shotId: string): string {
@@ -357,9 +359,10 @@ function speechChainAlreadyDone(job: FilmJob): boolean {
   return shots.every((ss) => ss.status !== "pending");
 }
 
-/** Internal: after keyframes, either stop (preview), submit pre-clip TTS, or hand off to clips.
- *  Driving-audio doors SUBMIT TTS on this tick and return; they must not await TTS, must not
- *  call advanceToClips, and must not reuse enterDialogueOrFinish (those helpers next to finish). */
+/** Internal: after keyframes, either stop (preview), submit pre-clip dialogue, or hand off to clips.
+ *  A driving-audio door WITH lined shots SUBMITS TTS on this tick and returns; it must not await
+ *  TTS, must not call advanceToClips, and must not reuse enterDialogueOrFinish (those helpers sit
+ *  next to finish). Zero lined shots skip the provider and mint silence in the same tick. */
 async function afterKeyframeOutput(env: Env, job: FilmJob, kfOut: KeyframeOutput, preModules?: RegisteredModule[]): Promise<void> {
   let confined: KeyframeOutput;
   try {
@@ -757,6 +760,12 @@ async function mintSilenceForShot(env: Env, job: FilmJob, shotId: string): Promi
 
 async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
   const lines = linedDialogueShots(job.dialogue_lines);
+  // Nothing to synthesize. Do not call the dialogue provider. finalize's existing
+  // loop mints silence (or a native-audio neighborhood mark) for every unlined shot.
+  if (lines.length === 0) {
+    await finalizePreClipDialogue(env, job, preModules);
+    return;
+  }
   const envRec = env as unknown as Record<string, unknown>;
   const dialogueModule = servingForHook(preModules, "dialogue")[0];
   const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
@@ -2394,7 +2403,6 @@ function degradeAssembleUnavailable(
   reason: string,
 ): void {
   job.finish_unavailable = { at: "assemble", reason, delivered: "clips", clips: finalClips };
-  job.assemble_attempts = 0;
   emitFinishUnavailable(job);
   job.phase = "failed";
   job.error = reason;
@@ -2406,7 +2414,6 @@ function degradeAssembleUnavailable(
  *  film.finish cards on that cut. A container that answered and refused is handled by the caller. */
 async function degradeMuxUnavailable(env: Env, job: FilmJob, silentKey: string, reason: string, preModules?: RegisteredModule[]): Promise<void> {
   job.finish_unavailable = { at: "mux", reason, delivered: "silent_film" };
-  job.mux_attempts = 0;
   emitFinishUnavailable(job);
   // A song was staged. Shipping the silent cut would drop it from the mix and still say done.
   if (job.audio_key) {
@@ -2663,12 +2670,13 @@ async function enterAssemblePhase(
   // would finalize an UNGATED concat and ship a truncated shot (a 0.085s "4s") as a silent green,
   // defeating the #697 gate precisely where it matters. When durations are absent, fall through to
   // the normal (gated) assemble: the source clips are never deleted by reclaim (only adopted), so
-  // the re-concat is idempotent + bounded by MAX_ASSEMBLE_ATTEMPTS and degrades LOUD on exhaustion
-  // -- preserving #122's anti-loop property without the honesty hole.
+  // the re-concat is idempotent and is not capped. Nothing counts assemble attempts, and
+  // there is no loud degrade on a counter exhausting. The re-concat stops when the concat
+  // succeeds or the finish tier is unreachable. That preserves #122's anti-loop property
+  // without the honesty hole.
   const outputKey = defaultFilmOutputKey(job.film_id);
   const durationsGated = !!job.actual_clip_durations && Object.keys(job.actual_clip_durations).length > 0;
   if (durationsGated && (await r2ObjectExists(env, outputKey))) {
-    job.assemble_attempts = 0;
     await finishAssembledFilm(env, job, outputKey, preModules);
     return;
   }
@@ -3855,8 +3863,8 @@ async function advanceFilmJobLocked(
   // helper chains forward INTERNALLY (enterAssemblePhase -> finishAssembledFilm -> enterMasterOrMux ->
   // enterMuxPhase -> transitionToDone), so when the entry phase's block runs and a later leg hits a
   // transient (leaving job.phase = "master"/"mux"), the sequential block for that phase must NOT re-drive
-  // it in the SAME tick -- that fired a duplicate remux/master container POST and burned two of
-  // MAX_ASSEMBLE_ATTEMPTS. The else-if drives only the tick's ENTRY phase; a transient resumes next tick.
+  // it in the SAME tick -- that fired a duplicate remux/master container POST. The else-if
+  // drives only the tick's ENTRY phase; a transient resumes next tick. There is no attempt cap.
   if (job.phase === "assemble") {
     const source = job.finish_shots
       ? job.finish_shots

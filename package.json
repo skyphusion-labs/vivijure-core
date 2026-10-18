@@ -52,6 +52,7 @@
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
+    "pretest": "node scripts/changelog-entry-required.mjs --working-tree",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage.enabled=true --coverage.provider=v8 --coverage.reporter=cobertura --coverage.reporter=text",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
