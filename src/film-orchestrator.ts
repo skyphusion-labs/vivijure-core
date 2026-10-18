@@ -2397,7 +2397,6 @@ function degradeAssembleUnavailable(
   reason: string,
 ): void {
   job.finish_unavailable = { at: "assemble", reason, delivered: "clips", clips: finalClips };
-  job.assemble_attempts = 0;
   emitFinishUnavailable(job);
   job.phase = "done"; // no assembled film to finish/notify; the clips ARE the delivered render
 }
@@ -2409,7 +2408,6 @@ function degradeAssembleUnavailable(
  *  silent film and fires notify with its download link. UNAVAILABILITY ONLY (#245/#249). */
 async function degradeMuxUnavailable(env: Env, job: FilmJob, silentKey: string, reason: string, preModules?: RegisteredModule[]): Promise<void> {
   job.finish_unavailable = { at: "mux", reason, delivered: "silent_film" };
-  job.mux_attempts = 0;
   emitFinishUnavailable(job);
   job.film_key = silentKey;
   await transitionToDone(env, job, preModules);
@@ -2638,12 +2636,13 @@ async function enterAssemblePhase(
   // would finalize an UNGATED concat and ship a truncated shot (a 0.085s "4s") as a silent green,
   // defeating the #697 gate precisely where it matters. When durations are absent, fall through to
   // the normal (gated) assemble: the source clips are never deleted by reclaim (only adopted), so
-  // the re-concat is idempotent + bounded by MAX_ASSEMBLE_ATTEMPTS and degrades LOUD on exhaustion
-  // -- preserving #122's anti-loop property without the honesty hole.
+  // the re-concat is idempotent and is not capped. Nothing counts assemble attempts, and
+  // there is no loud degrade on a counter exhausting. The re-concat stops when the concat
+  // succeeds or the finish tier is unreachable. That preserves #122's anti-loop property
+  // without the honesty hole.
   const outputKey = defaultFilmOutputKey(job.film_id);
   const durationsGated = !!job.actual_clip_durations && Object.keys(job.actual_clip_durations).length > 0;
   if (durationsGated && (await r2ObjectExists(env, outputKey))) {
-    job.assemble_attempts = 0;
     await finishAssembledFilm(env, job, outputKey, preModules);
     return;
   }
@@ -3839,8 +3838,8 @@ async function advanceFilmJobLocked(
   // helper chains forward INTERNALLY (enterAssemblePhase -> finishAssembledFilm -> enterMasterOrMux ->
   // enterMuxPhase -> transitionToDone), so when the entry phase's block runs and a later leg hits a
   // transient (leaving job.phase = "master"/"mux"), the sequential block for that phase must NOT re-drive
-  // it in the SAME tick -- that fired a duplicate remux/master container POST and burned two of
-  // MAX_ASSEMBLE_ATTEMPTS. The else-if drives only the tick's ENTRY phase; a transient resumes next tick.
+  // it in the SAME tick -- that fired a duplicate remux/master container POST. The else-if
+  // drives only the tick's ENTRY phase; a transient resumes next tick. There is no attempt cap.
   if (job.phase === "assemble") {
     const source = job.finish_shots
       ? job.finish_shots
