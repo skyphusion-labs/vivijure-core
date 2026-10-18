@@ -138,6 +138,12 @@ describe("cf#833: resolveFilmOutputKey reports the doc, it does not guess", () =
         doc({ finish_unavailable: { at: "assemble", reason: "r", delivered: "clips" } }),
       ),
     ).toBe(false);
+    // Retained clips are not a delivery. The film is still owed.
+    expect(
+      filmDeliverableExpected(
+        doc({ finish_unavailable: { at: "assemble", reason: "r", retained: "clips" } }),
+      ),
+    ).toBe(true);
     // A mux degrade DID deliver a film (the silent one), so it stays gated.
     expect(
       filmDeliverableExpected(

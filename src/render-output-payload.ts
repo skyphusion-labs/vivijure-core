@@ -58,12 +58,12 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
   // cf#1662: ALWAYS set, including null. The keys presence is what says this row was measured.
   out.film_finish = filmFinishView(job.film_finish);
   if (job.finish_unavailable) {
-    out.finish_unavailable = {
-      at: job.finish_unavailable.at,
-      reason: job.finish_unavailable.reason,
-      delivered: job.finish_unavailable.delivered,
-    };
-    const uClips = job.finish_unavailable.clips;
+    const u = job.finish_unavailable;
+    const finish: Record<string, unknown> = { at: u.at, reason: u.reason };
+    if (u.delivered) finish.delivered = u.delivered;
+    if (u.retained) finish.retained = u.retained;
+    out.finish_unavailable = finish;
+    const uClips = u.clips;
     if (uClips?.length) out.clips = uClips.map((c) => ({ shot_id: c.shot_id, key: c.clip_key }));
   }
   // #226: clip-level finish reasons on the SAME payload the panel already reads. Absent when the

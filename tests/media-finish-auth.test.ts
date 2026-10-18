@@ -351,7 +351,22 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
       { audioKey: "audio.wav" },
     );
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe("AUDIO_BEAT_SYNC_URL unset");
+    if (!r.ok) {
+      expect(r.error).toBe("AUDIO_BEAT_SYNC_URL unset");
+      expect(r.transient).toBe(false);
+    }
+  });
+
+  it("analyzeAudioBeats marks a presign failure transient", async () => {
+    const r = await analyzeAudioBeats(
+      envWith({ PRESIGNER: { presignGet: async () => { throw new Error("blip"); } } }),
+      { audioKey: "audio.wav" },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.transient).toBe(true);
+      expect(r.error).toMatch(/could not presign audio: blip/);
+    }
   });
 
   it("analyzeAudioBeats fetches AUDIO_BEAT_SYNC_URL /analyze when set", async () => {

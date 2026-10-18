@@ -1040,16 +1040,18 @@ export interface CastImageOutput {
 
 // notify (v1) -----------------------------------------------------------------------------------
 
-/** What the core hands a `notify` module when a film reaches "done": the completion event + the facts
- *  a notifier needs to deliver (a presigned download_url, the project name, the owner address). A
- *  TERMINAL side-effect hook -- fired once on the done-transition, `chain` (every installed notifier
- *  delivers independently: email AND webhook AND ...). A notifier with nothing to do for its channel
- *  (e.g. no recipient address) returns an empty `delivered`, never an error. */
+/** What the core hands a `notify` module when a film reaches a terminal state: the event plus the
+ *  facts a notifier needs (a presigned download_url, the project name). A terminal side-effect
+ *  hook. Fired on the done transition, and on a failed finish that kept an artifact. `chain`
+ *  (every installed notifier delivers independently: email AND webhook AND ...). A notifier with
+ *  nothing to do for its channel (e.g. no recipient address) returns an empty `delivered`, never
+ *  an error. `render.failed` is not a completion. A module that handles only `render.complete`
+ *  does not announce a failure as a finished film. */
 export interface NotifyInput {
-  event: "render.complete";
+  event: "render.complete" | "render.failed";
   film_id: string;
   project: string;
-  download_url?: string; // presigned link to the finished film (the core presigns it)
+  download_url?: string; // presigned link to the film or the retained cut (the core presigns it)
   seconds?: number;      // film length, if known
 }
 

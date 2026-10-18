@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { installVfFetch } from "./install-vf-fetch.js";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
+import { _resetModuleDiscoveryCache } from "../src/modules/registry.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
 // cf#746(a): a TRANSPORT failure at mux must not ship a silent film as COMPLETED.
@@ -125,8 +126,99 @@ describe("cf#746(a) inverse controls: the degrades that SHOULD survive", () => {
     const r = await advanceFilmJob(env, FILM);
     expect(r?.job.phase).toBe("failed");
     expect(r?.job.finish_unavailable?.at).toBe("mux");
+    expect(r?.job.finish_unavailable?.retained).toBe("silent_film");
+    expect(r?.job.finish_unavailable?.delivered).toBeUndefined();
+    expect(r?.job.film_key).toBeUndefined();
     expect(r?.job.error).toMatch(/video-finish tier not installed/i);
+    expect(r?.job.error).not.toMatch(/shipped silent film/);
     expect(read().silent_film_key).toBe(SILENT);
+  });
+
+  it("a staged song whose mux tier is absent notifies render.failed and does not set film_key", async () => {
+    _resetModuleDiscoveryCache();
+    const invokes: Array<Record<string, unknown>> = [];
+    const { env } = envFor(muxJob({ beats_read: true }), submitThrows);
+    const rec = env as unknown as Record<string, unknown>;
+    rec.VIDEO_FINISH_URL = "";
+    rec.MODULE_NOTIFY = {
+      fetch: async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/module.json")) {
+          return json({
+            name: "notify-stub",
+            version: "1.0.0",
+            api: "vivijure-module/2",
+            hooks: ["notify"],
+            config_schema: {},
+          }, 200);
+        }
+        if (u.endsWith("/invoke")) {
+          const body = JSON.parse(String(init?.body)) as { input?: Record<string, unknown> };
+          invokes.push(body.input ?? {});
+          return json({ ok: true, output: { delivered: ["stub"] } }, 200);
+        }
+        return json({ ok: false }, 404);
+      },
+    };
+    const r = await advanceFilmJob(env, FILM);
+    expect(r?.job.phase).toBe("failed");
+    expect(r?.job.film_key).toBeUndefined();
+    expect(r?.job.finish_unavailable?.retained).toBe("silent_film");
+    expect(invokes).toEqual([{
+      event: "render.failed",
+      film_id: FILM,
+      project: "p",
+      download_url: `https://presigned/${SILENT}`,
+    }]);
+  });
+
+  it("a transient beat read stays in phase, then fails once the finish cap is used", async () => {
+    _resetModuleDiscoveryCache();
+    const calls: Array<{ job_id?: string; project?: string; film_key?: string }> = [];
+    const { env, read } = envFor(muxJob({ beats_read: false }), submitThrows);
+    (env as unknown as Record<string, unknown>).MODULE_BEAT = {
+      fetch: async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/module.json")) {
+          return json({
+            name: "audio-beat-sync",
+            version: "1.0.0",
+            api: "vivijure-module/2",
+            hooks: ["score"],
+            config_schema: { clip_seconds: { type: "float", default: 8 } },
+          }, 200);
+        }
+        if (u.endsWith("/invoke")) {
+          const body = JSON.parse(String(init?.body)) as {
+            input?: { film_key?: string };
+            context?: { job_id?: string; project?: string };
+          };
+          calls.push({
+            job_id: body.context?.job_id,
+            project: body.context?.project,
+            film_key: body.input?.film_key,
+          });
+          return json({ ok: false, error: "cold" }, 200);
+        }
+        return json({ ok: false }, 404);
+      },
+    };
+
+    const first = await advanceFilmJob(env, FILM);
+    expect(first?.job.phase).toBe("mux");
+    expect(first?.job.error).toBe("beats read transient (attempt 1/3), retrying: cold");
+    expect(first?.job.beat_attempts).toBe(1);
+    expect(read().beats_read).toBe(false);
+    expect(calls[0]).toEqual({ job_id: FILM, project: "p", film_key: `beat-analyze/${FILM}` });
+
+    const second = await advanceFilmJob(env, FILM);
+    expect(second?.job.phase).toBe("mux");
+    expect(second?.job.beat_attempts).toBe(2);
+
+    const third = await advanceFilmJob(env, FILM);
+    expect(third?.job.phase).toBe("failed");
+    expect(third?.job.error).toBe("beats were not read: cold");
+    expect(third?.job.beat_attempts).toBe(3);
   });
 });
 
@@ -153,7 +245,8 @@ describe("core#327: both legs answer an unreachable tier by failing, and they na
     // A skipped join is not a finished film.
     expect(ra?.job.phase).toBe("failed");
     expect(ra?.job.finish_unavailable?.at).toBe("assemble");
-    expect(ra?.job.finish_unavailable?.delivered).toBe("clips");
+    expect(ra?.job.finish_unavailable?.retained).toBe("clips");
+    expect(ra?.job.finish_unavailable?.delivered).toBeUndefined();
     expect(ra?.job.finish_unavailable?.reason).toMatch(/unreachable/i);
     expect(ra?.job.finish_unavailable?.clips?.map((c) => c.clip_key)).toEqual([CLIP]);
     // NOT a silent green: the film key is absent, so nothing claims a film was produced.
@@ -192,7 +285,8 @@ describe("core#327: both legs answer an unreachable tier by failing, and they na
     const a = envFor(assembleJob(), gateway);
     const r = await advanceFilmJob(a.env, FILM);
     expect(r?.job.phase).toBe("failed");
-    expect(r?.job.finish_unavailable?.delivered).toBe("clips");
+    expect(r?.job.finish_unavailable?.retained).toBe("clips");
+    expect(r?.job.finish_unavailable?.delivered).toBeUndefined();
   });
 
   it("a container that RAN and reported a failed job still fails loud", async () => {

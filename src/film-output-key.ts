@@ -12,8 +12,10 @@ export function defaultFilmOutputKey(filmId: string): string {
 /** Does this job owe the user a single assembled film at all?
  *
  *  FALSE for the two shapes that are complete WITHOUT one, because they deliver something else:
- *  a keyframes-only render (the stills are the deliverable), and an assemble degrade that shipped
+ *  a keyframes-only render (the stills are the deliverable), and a finish that delivered the
  *  per-shot clips (`finish_unavailable.delivered === "clips"`, #519).
+ *
+ *  A failed finish that only retained clips still owes a film. `retained` is not a delivery.
  *
  *  Split out of resolveFilmOutputKey because an `undefined` key used to mean BOTH "no film is owed"
  *  and "a film is owed and this doc does not know its key". Those two need OPPOSITE handling at the

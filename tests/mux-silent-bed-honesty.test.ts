@@ -54,7 +54,10 @@ describe("mux honesty: a dropped bed is an OBSERVABLE degrade, never a silent gr
     expect(r?.job.phase).toBe("failed");
     expect(r?.job.finish_unavailable?.at).toBe("mux");
     expect(r?.job.finish_unavailable?.reason).toMatch(/could not attach the audio bed/i);
-    expect(r?.job.film_key).toBe(SILENT);
+    expect(r?.job.finish_unavailable?.retained).toBe("silent_film");
+    expect(r?.job.finish_unavailable?.delivered).toBeUndefined();
+    expect(r?.job.film_key).toBeUndefined();
+    expect(read().silent_film_key).toBe(SILENT);
     expect(read().phase).toBe("failed");
   });
 
