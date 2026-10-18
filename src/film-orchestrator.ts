@@ -342,7 +342,9 @@ function motionUsageForJob(job: FilmJob, modules: RegisteredModule[]) {
 }
 
 function wantsPreClipDialogue(job: FilmJob, modules: RegisteredModule[]): boolean {
-  return motionUsageForJob(job, modules)?.driving_audio === true && linedDialogueShots(job.dialogue_lines).length > 0;
+  // driving_audio means the door cannot render a shot without audio. Whether any shot
+  // has a line is a different question; zero lined shots still need silence (core#342).
+  return motionUsageForJob(job, modules)?.driving_audio === true;
 }
 
 function dialogueAudioKey(project: string, shotId: string): string {
@@ -356,9 +358,10 @@ function speechChainAlreadyDone(job: FilmJob): boolean {
   return shots.every((ss) => ss.status !== "pending");
 }
 
-/** Internal: after keyframes, either stop (preview), submit pre-clip TTS, or hand off to clips.
- *  Driving-audio doors SUBMIT TTS on this tick and return; they must not await TTS, must not
- *  call advanceToClips, and must not reuse enterDialogueOrFinish (those helpers next to finish). */
+/** Internal: after keyframes, either stop (preview), submit pre-clip dialogue, or hand off to clips.
+ *  A driving-audio door WITH lined shots SUBMITS TTS on this tick and returns; it must not await
+ *  TTS, must not call advanceToClips, and must not reuse enterDialogueOrFinish (those helpers sit
+ *  next to finish). Zero lined shots skip the provider and mint silence in the same tick. */
 async function afterKeyframeOutput(env: Env, job: FilmJob, kfOut: KeyframeOutput, preModules?: RegisteredModule[]): Promise<void> {
   let confined: KeyframeOutput;
   try {
@@ -756,6 +759,12 @@ async function mintSilenceForShot(env: Env, job: FilmJob, shotId: string): Promi
 
 async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
   const lines = linedDialogueShots(job.dialogue_lines);
+  // Nothing to synthesize. Do not call the dialogue provider. finalize's existing
+  // loop mints silence (or a native-audio neighborhood mark) for every unlined shot.
+  if (lines.length === 0) {
+    await finalizePreClipDialogue(env, job, preModules);
+    return;
+  }
   const envRec = env as unknown as Record<string, unknown>;
   const dialogueModule = servingForHook(preModules, "dialogue")[0];
   const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
