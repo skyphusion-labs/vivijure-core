@@ -3,9 +3,60 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.25.1
+## [1.26.0] -- 2026-10-19
 
-Cycle opened so the changelog fragment has a version to land under. 1.25.0 is already tagged. The work on this branch is a film fix, so the version stays on the 1.25 line. No tag is cut here.
+**MINOR, raised from the 1.25.1 this cycle was opened at.** The commit that opened the cycle called
+the work a film fix on the 1.25 line. It is more than that in two ways, and both have to be read
+before a pin moves.
+
+**Renders that previously reported success can now FAIL, and that is the intent.** A dead concat door
+used to mark the film done and hand back the loose clips. The phase is now FAILED, `film_key` stays
+unset, and `finish_unavailable` names the retained clips instead of reporting them as delivered. A
+staged song that beat-sync cannot read now fails the film, with an error beginning "beats were not
+read"; a 502 carrying an error page previously threw past the attempt counter, so the cap never
+engaged on that shape. This is fail-closed and honest, and it is the reason the cycle is not a PATCH:
+a PATCH tells a consumer there is nothing here to read, and a repinner who got failing renders off a
+PATCH would have been misled by the version number.
+
+**Three symbols left the public type surface.** v1.25.0 was raised to a MINOR because it ADDED
+consumer surface; removing surface is at least as visible, so the same rule decides this cycle.
+
+- `HOSTED_FINISH_POLL_BOXES` is GONE. It was importable from
+  `@skyphusion-labs/vivijure-core/video-finish-assemble` and named three decommissioned fleet hosts.
+  Extra poll origins stay on `VIDEO_FINISH_POLL_URLS`. No code in the estate imported it; the
+  remaining references are documentation (fleet-chezmoi#2397).
+- `FilmJob.assemble_attempts` and `FilmJob.mux_attempts` are GONE from the exported interface.
+- `ScatterJob.assemble_attempts` is GONE from the exported interface.
+
+The attempt fields went because the cap they implied never existed: nothing read the counters, so a
+consumer asserting against that cap was asserting against a comment. Destructuring either field stops
+typechecking. A test that sets one to force exhaustion will no longer exhaust, and where the value
+reaches a widened parameter the type system will **not** flag it, so that failure arrives as a
+behavioural assertion rather than a compile error (vivijure-cf#1027 is the known instance).
+
+**Consumers do not auto-receive this.** `vivijure-cf` pins `^1.25.0` but its lockfile resolves
+`1.25.0` exactly and its CI runs `npm ci`, which respects the lock; `vivijure-local` pins exact. Every
+repin is deliberate. See the v1.15.0 ledger row in `RELEASES.md` for the same mechanic.
+
+### fix(film): drop the false assemble-attempt cap (core#328)
+
+Comments said re-concat stops after a max attempt count. There is no such cap. The counters were never read. The claims and the fields are gone. Re-concat is unchanged.
+
+### fix(video-finish): stop polling decommissioned fleet boxes (core#329)
+
+`HOSTED_FINISH_POLL_BOXES` named fleet hosts that are gone. Extra poll origins stay on `VIDEO_FINISH_POLL_URLS`.
+
+### fix(film): a driving-audio door with zero lined shots still gets silence (core#342)
+
+`wantsPreClipDialogue` required `driving_audio === true` and at least one lined shot. A door that cannot render without audio then skipped the phase, left `dialogue_audio` empty, and failed every shot. The gate is now the driving-audio declaration alone. An empty lined set does not call the dialogue provider; `finalizePreClipDialogue` mints silence for each unlined shot.
+
+### fix(film): a missed join or an unread song fails the film (cf#985)
+
+A dead concat door used to mark the film done and hand back the loose clips. The clips stay in R2. finish_unavailable names them as retained, not as delivered, and the phase is failed. film_key stays unset.
+
+A staged song is read by beat-sync before assemble and before mux, under the film's own job id. A transient miss stays in phase and retries up to the finish cap. A permanent miss, or a transient miss that has used that cap, fails the film and the error starts with "beats were not read". Both beat-sync doors classify their own miss: the module door reports the invoke result, and the direct AUDIO_BEAT_SYNC_URL door separates transport from content, so a non-2xx, an unreadable body and a rejected fetch retry while an unset door and an answered 200 that is not a plan stay permanent. A 502 carrying an error page used to throw past the attempt counter, so the cap never engaged on that shape. A job that already has beats_read set is left alone. A film with no song still finishes on the silent cut when the mux tier is absent. A staged song whose mux door misses fails. The silent cut stays in R2, the notice is render.failed, and that cut is not stored as film_key.
+
+Publishing this package, and moving the studio pin, are separate from this commit.
 
 ## [1.25.0] -- 2026-09-27
 
