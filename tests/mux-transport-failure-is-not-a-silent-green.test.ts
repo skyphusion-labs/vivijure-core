@@ -1,25 +1,21 @@
 import { describe, it, expect } from "vitest";
 import { installVfFetch } from "./install-vf-fetch.js";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
+import { _resetModuleDiscoveryCache } from "../src/modules/registry.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
 // cf#746(a): a TRANSPORT failure at mux must not ship a silent film as COMPLETED.
 //
-// Two legs of one pipeline treat the identical `tick.kind === "failed"` in opposite ways, ten lines
-// apart in film-orchestrator.ts: assemble sets phase="failed", mux calls degradeMuxUnavailable and
-// transitions to DONE with the silent film. So which outcome a user gets depends on where the render
-// happened to die, and the mux outcome is terminal: the job reads COMPLETED, and the audio they asked
-// for is never coming.
+// submitAsync returns failed on the FIRST attempt with no retry (video-finish-assemble.ts), so a
+// single blip at mux used to convert a film-with-audio into a silent film marked COMPLETED.
+// A staged song whose mux door misses now fails the film. The silent cut stays in R2.
+// A film with no song can still finish on that silent cut when the mux tier is absent.
 //
-// It is not a dead-host-only edge case. submitAsync returns failed on the FIRST attempt with no retry
-// (video-finish-assemble.ts:195-197), so a single transient blip at mux permanently converts a
-// film-with-audio into a silent film marked COMPLETED.
+// hasAudio:false with a staged song is the same class (mux-silent-bed-honesty.test.ts): the bed
+// was not attached, so the film fails. hasAudio absent stays a success.
 //
-// WHAT STAYS. Two mux degrades are legitimate and must remain green here, because retrying cannot help:
-//   * VIDEO_FINISH_URL unset -- the tier is not installed at all (#519, by design).
-//   * hasAudio:false -- the container ran and reported the bed unusable (#245/#249/#77,
-//     covered by mux-silent-bed-honesty.test.ts, which must stay green alongside this file).
-// The distinction this file encodes: DEGRADE when a retry cannot help, FAIL when it can.
+// A staged song whose beats were not read fails before mux. Fixtures that are about mux set
+// beats_read so this file still measures the mux door.
 
 const FILM = "film-mux-transport";
 const SILENT = `renders/${FILM}/film-silent.mp4`;
@@ -81,6 +77,7 @@ const muxJob = (over: object = {}) => ({
   silent_film_key: SILENT,
   audio_key: `renders/${FILM}/bed.wav`,
   mux_output_key: OUT,
+  beats_read: true,
   created_at: 0,
   ...over,
 });
@@ -108,51 +105,167 @@ describe("cf#746(a): a transport failure at mux FAILS, it does not ship a silent
   it("the silent film is still in R2, so failing loses nothing a degrade would have kept", async () => {
     const { env, read } = envFor(muxJob(), submitThrows);
     await advanceFilmJob(env, FILM);
-    // silent_film_key is untouched: a resubmit can remux it. That is why failing is safe here and
-    // why the degrade was never buying the user anything a retry could not.
+    // silent_film_key is untouched: a resubmit can remux it.
+    expect(read().silent_film_key).toBe(SILENT);
+  });
+
+  it("a staged song whose beats were not read fails before mux", async () => {
+    const { env, read } = envFor(muxJob({ beats_read: false }), submitThrows);
+    const r = await advanceFilmJob(env, FILM);
+    expect(r?.job.phase).toBe("failed");
+    expect(r?.job.error).toMatch(/beats were not read: AUDIO_BEAT_SYNC_URL unset/);
+    expect(read().phase).toBe("failed");
     expect(read().silent_film_key).toBe(SILENT);
   });
 });
 
 describe("cf#746(a) inverse controls: the degrades that SHOULD survive", () => {
-  it("VIDEO_FINISH_URL unset -> still degrades to done with the silent film (#519, by design)", async () => {
-    const { env, read } = envFor(muxJob(), submitThrows);
+  it("VIDEO_FINISH_URL unset with a staged song fails the film; the song is not dropped", async () => {
+    const { env, read } = envFor(muxJob({ beats_read: true }), submitThrows);
     (env as unknown as Record<string, unknown>).VIDEO_FINISH_URL = "";
     const r = await advanceFilmJob(env, FILM);
-    expect(r?.job.phase).toBe("done");
+    expect(r?.job.phase).toBe("failed");
     expect(r?.job.finish_unavailable?.at).toBe("mux");
-    expect(r?.job.finish_unavailable?.delivered).toBe("silent_film");
-    expect(r?.job.film_key).toBe(SILENT);
-    expect(read().finish_unavailable?.at).toBe("mux");
+    expect(r?.job.finish_unavailable?.retained).toBe("silent_film");
+    expect(r?.job.finish_unavailable?.delivered).toBeUndefined();
+    expect(r?.job.film_key).toBeUndefined();
+    expect(r?.job.error).toMatch(/video-finish tier not installed/i);
+    expect(r?.job.error).not.toMatch(/shipped silent film/);
+    expect(read().silent_film_key).toBe(SILENT);
+  });
+
+  it("a staged song whose mux tier is absent notifies render.failed and does not set film_key", async () => {
+    _resetModuleDiscoveryCache();
+    const invokes: Array<Record<string, unknown>> = [];
+    const { env } = envFor(muxJob({ beats_read: true }), submitThrows);
+    const rec = env as unknown as Record<string, unknown>;
+    rec.VIDEO_FINISH_URL = "";
+    rec.MODULE_NOTIFY = {
+      fetch: async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/module.json")) {
+          return json({
+            name: "notify-stub",
+            version: "1.0.0",
+            api: "vivijure-module/2",
+            hooks: ["notify"],
+            config_schema: {},
+          }, 200);
+        }
+        if (u.endsWith("/invoke")) {
+          const body = JSON.parse(String(init?.body)) as { input?: Record<string, unknown> };
+          invokes.push(body.input ?? {});
+          return json({ ok: true, output: { delivered: ["stub"] } }, 200);
+        }
+        return json({ ok: false }, 404);
+      },
+    };
+    const r = await advanceFilmJob(env, FILM);
+    expect(r?.job.phase).toBe("failed");
+    expect(r?.job.film_key).toBeUndefined();
+    expect(r?.job.finish_unavailable?.retained).toBe("silent_film");
+    expect(invokes).toEqual([{
+      event: "render.failed",
+      film_id: FILM,
+      project: "p",
+      download_url: `https://presigned/${SILENT}`,
+    }]);
+  });
+
+  it("a 502 from the URL beat door retries instead of destroying a paid film", async () => {
+    // The module door was already fixed. This is the NO-MODULE door: analyzeViaUrl. The fixture
+    // router in installVfFetch keys on the substring "video-finish", so the beat door is given a
+    // host under the same fake origin to route through the handler below.
+    _resetModuleDiscoveryCache();
+    let analyzeCalls = 0;
+    const { env, read } = envFor(muxJob({ beats_read: false }), async (u) => {
+      if (u.includes("/analyze")) {
+        analyzeCalls += 1;
+        // An edge error page, the shape that used to throw out of resp.json().
+        return new Response("<html><body>502 Bad Gateway</body></html>", { status: 502 });
+      }
+      throw new TypeError("fetch failed");
+    });
+    (env as unknown as Record<string, unknown>).AUDIO_BEAT_SYNC_URL = "https://beats.video-finish.test";
+
+    const first = await advanceFilmJob(env, FILM);
+    expect(first?.job.phase).toBe("mux");
+    expect(first?.job.error).toBe(
+      "beats read transient (attempt 1/3), retrying: beat-sync container returned HTTP 502",
+    );
+    // Persisted, so the counter survives the tick boundary and the cap is real.
+    expect(read().beat_attempts).toBe(1);
+    expect(read().phase).toBe("mux");
+
+    const second = await advanceFilmJob(env, FILM);
+    expect(second?.job.phase).toBe("mux");
+    expect(read().beat_attempts).toBe(2);
+
+    const third = await advanceFilmJob(env, FILM);
+    expect(third?.job.phase).toBe("failed");
+    expect(third?.job.error).toMatch(/beats were not read: beat-sync container returned HTTP 502/);
+    expect(read().beat_attempts).toBe(3);
+    // Three real reads, so the retry is a retry and not a replayed result.
+    expect(analyzeCalls).toBe(3);
+    // Conrad ruling, held through the beat leg too: nothing is discarded and nothing is linked.
+    expect(read().silent_film_key).toBe(SILENT);
+    expect(read().film_key).toBeUndefined();
+  });
+
+  it("a transient beat read stays in phase, then fails once the finish cap is used", async () => {
+    _resetModuleDiscoveryCache();
+    const calls: Array<{ job_id?: string; project?: string; film_key?: string }> = [];
+    const { env, read } = envFor(muxJob({ beats_read: false }), submitThrows);
+    (env as unknown as Record<string, unknown>).MODULE_BEAT = {
+      fetch: async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith("/module.json")) {
+          return json({
+            name: "audio-beat-sync",
+            version: "1.0.0",
+            api: "vivijure-module/2",
+            hooks: ["score"],
+            config_schema: { clip_seconds: { type: "float", default: 8 } },
+          }, 200);
+        }
+        if (u.endsWith("/invoke")) {
+          const body = JSON.parse(String(init?.body)) as {
+            input?: { film_key?: string };
+            context?: { job_id?: string; project?: string };
+          };
+          calls.push({
+            job_id: body.context?.job_id,
+            project: body.context?.project,
+            film_key: body.input?.film_key,
+          });
+          return json({ ok: false, error: "cold" }, 200);
+        }
+        return json({ ok: false }, 404);
+      },
+    };
+
+    const first = await advanceFilmJob(env, FILM);
+    expect(first?.job.phase).toBe("mux");
+    expect(first?.job.error).toBe("beats read transient (attempt 1/3), retrying: cold");
+    expect(first?.job.beat_attempts).toBe(1);
+    expect(read().beats_read).toBe(false);
+    expect(calls[0]).toEqual({ job_id: FILM, project: "p", film_key: `beat-analyze/${FILM}` });
+
+    const second = await advanceFilmJob(env, FILM);
+    expect(second?.job.phase).toBe("mux");
+    expect(second?.job.beat_attempts).toBe(2);
+
+    const third = await advanceFilmJob(env, FILM);
+    expect(third?.job.phase).toBe("failed");
+    expect(third?.job.error).toBe("beats were not read: cold");
+    expect(third?.job.beat_attempts).toBe(3);
   });
 });
 
-// core#327 NARROWS the parity case that used to live here. It is not a reversal of cf#746(a): the
-// three mux cases above are untouched and stay green. What is retired is the assertion that the two
-// legs must produce the same PHASE on a dead origin.
-//
-// WHY THE OLD ASSERTION WAS WRONG, stated here so the next reader finds the argument instead of
-// re-deriving it or re-flipping it. cf#746(a)'s rationale is written in this file, four lines above:
-// "the silent film is still in R2, so failing loses nothing a degrade would have kept". That is TRUE
-// AT MUX and FALSE AT ASSEMBLE.
-//
-//   mux      the silent film survives in R2, so failing costs the user nothing they would have had.
-//   assemble failing loses the clips. Measured, not assumed: FILM_SUBMIT_IDEMPOTENCY_WINDOW_SECONDS
-//            is 60, a double-click guard and not a resume, so a resubmit minutes later is a new
-//            film_id, new clip keys, and re-paid keyframes and i2v on RunPod.
-//
-// Both outcomes are terminal and both need a re-spend to get a film; the degrade additionally hands
-// over clips that were already paid for. The parity assertion generalised a mux-specific reason to a
-// leg where the reason is false.
-//
-// AND THE OFFENCE WAS NEVER PARTIAL DELIVERY, IT WAS MISLABELLING. Conrad's words on the original
-// defect: the studio was "partially assembling the movies and CALLING THEM 'complete'". A silent
-// film presented as complete is a lie about content. Per-shot clips declared through
-// finish_unavailable delivered:"clips" are a real partial deliverable, labelled partial -- and that
-// declaration is visible to a user as of cf#836 (the payload keys) and cf#833 (filmDeliverableExpected
-// exempts the clips shape from the deliverable gate). A degrade nobody can see is the defect; a
-// degrade the panel renders is a product decision.
-describe("core#327: both legs answer an unreachable tier by the same RULE, and deliver what exists", () => {
+// A dead concat door used to mark the film done and hand back the loose clips. The clips stay
+// named on finish_unavailable, and they stay in R2, but the phase is failed. A skipped join is
+// a failed film. The mux leg fails too when a song was staged: a silent cut is not that film.
+describe("core#327: both legs answer an unreachable tier by failing, and they name what is in R2", () => {
   const assembleJob = () => ({
     film_id: FILM,
     project: "p",
@@ -168,11 +281,12 @@ describe("core#327: both legs answer an unreachable tier by the same RULE, and d
     const m = envFor(muxJob(), submitThrows);
     const rm = await advanceFilmJob(m.env, FILM);
 
-    // ASSEMBLE: the clips exist, so they are delivered, and the render says so rather than reading
-    // green. This is #519's sentence: "you can at least get your clips if you close your laptop".
-    expect(ra?.job.phase).toBe("done");
+    // ASSEMBLE: the clips stay in R2, and the reason is on the job, but the film is failed.
+    // A skipped join is not a finished film.
+    expect(ra?.job.phase).toBe("failed");
     expect(ra?.job.finish_unavailable?.at).toBe("assemble");
-    expect(ra?.job.finish_unavailable?.delivered).toBe("clips");
+    expect(ra?.job.finish_unavailable?.retained).toBe("clips");
+    expect(ra?.job.finish_unavailable?.delivered).toBeUndefined();
     expect(ra?.job.finish_unavailable?.reason).toMatch(/unreachable/i);
     expect(ra?.job.finish_unavailable?.clips?.map((c) => c.clip_key)).toEqual([CLIP]);
     // NOT a silent green: the film key is absent, so nothing claims a film was produced.
@@ -210,8 +324,9 @@ describe("core#327: both legs answer an unreachable tier by the same RULE, and d
       u.includes("/async/finish") ? new Response("bad gateway", { status: 502 }) : json({ ok: false }, 404);
     const a = envFor(assembleJob(), gateway);
     const r = await advanceFilmJob(a.env, FILM);
-    expect(r?.job.phase).toBe("done");
-    expect(r?.job.finish_unavailable?.delivered).toBe("clips");
+    expect(r?.job.phase).toBe("failed");
+    expect(r?.job.finish_unavailable?.retained).toBe("clips");
+    expect(r?.job.finish_unavailable?.delivered).toBeUndefined();
   });
 
   it("a container that RAN and reported a failed job still fails loud", async () => {

@@ -68,11 +68,23 @@ function userConfigFromRequest(req: AudioAnalyzeRequest): Record<string, unknown
   return out;
 }
 
+/** Transport outcome first, content second.
+ *
+ * The caller (failIfSongBeatsUnread) FAILS a paid film on a permanent miss, so this door has to
+ * say which kind of miss it had. A door that is unset, or set with no bearer, is host
+ * configuration and never improves by retrying: permanent. A non-2xx status, a body that will not
+ * parse, and a fetch that rejects are all the container being down, restarting, overloaded or
+ * behind an edge error page: transient. Only a 200 whose body parses and is not a plan is the
+ * analyzer ANSWERING with something unusable, which is permanent (the #245/#249 distinction).
+ *
+ * The two shapes this corrects: a 502 carrying a JSON body read as an unrecognized plan, and a
+ * 502 carrying an HTML body THREW out of resp.json() and past the caller attempt counter
+ * entirely, so the cap never engaged on that shape at all. Both retry now. */
 async function analyzeViaUrl(
   env: Env,
   audioUrl: string,
   req: AudioAnalyzeRequest,
-): Promise<{ ok: true; plan: AudioBeatPlan } | { ok: false; error: string }> {
+): Promise<{ ok: true; plan: AudioBeatPlan } | { ok: false; error: string; transient: boolean }> {
   let resp: Response | null;
   try {
     resp = await mediaDoorFetch(env, "AUDIO_BEAT_SYNC_URL", "/analyze", {
@@ -89,34 +101,50 @@ async function analyzeViaUrl(
       }),
     });
   } catch (e) {
-    if (isMediaFinishAuthError(e)) return { ok: false, error: e.message };
-    throw e;
+    if (isMediaFinishAuthError(e)) return { ok: false, error: e.message, transient: false };
+    // A rejected fetch is the dead-origin shape (NXDOMAIN, connection reset). It is REPORTED, not
+    // rethrown: the caller counts attempts off the return value, and a throw skips that counter.
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: "beat-sync door unreachable: " + msg.slice(0, 200), transient: true };
   }
-  if (!resp) return { ok: false, error: "AUDIO_BEAT_SYNC_URL unset" };
-  const plan = parseAudioBeatPlan(await resp.json());
-  if (!plan) return { ok: false, error: "beat-sync container returned an unrecognized plan" };
+  if (!resp) return { ok: false, error: "AUDIO_BEAT_SYNC_URL unset", transient: false };
+  if (!resp.ok) return { ok: false, error: `beat-sync container returned HTTP ${resp.status}`, transient: true };
+  let body: unknown;
+  try {
+    body = await resp.json();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      ok: false,
+      error: "beat-sync container returned an unreadable body: " + msg.slice(0, 200),
+      transient: true,
+    };
+  }
+  const plan = parseAudioBeatPlan(body);
+  if (!plan) return { ok: false, error: "beat-sync container returned an unrecognized plan", transient: false };
   return { ok: true, plan };
 }
 
 export type BeatAnalyzeResult =
   | { ok: true; plan: AudioBeatPlan; module: string }
-  | { ok: false; error: string };
+  | { ok: false; error: string; transient: boolean };
 
 export async function analyzeAudioBeats(
   env: Env,
   req: AudioAnalyzeRequest,
   moduleName?: string,
   preModules?: RegisteredModule[],
+  context?: { job_id: string; project: string },
 ): Promise<BeatAnalyzeResult> {
   const audioKey = req.audioKey?.trim();
-  if (!audioKey) return { ok: false, error: "audioKey required" };
+  if (!audioKey) return { ok: false, error: "audioKey required", transient: false };
 
   let audioUrl: string;
   try {
     audioUrl = await presignR2Get(env, audioKey, 300);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: "could not presign audio: " + msg.slice(0, 200) };
+    return { ok: false, error: "could not presign audio: " + msg.slice(0, 200), transient: true };
   }
 
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
@@ -125,7 +153,11 @@ export async function analyzeAudioBeats(
   if (mod) {
     const fetcher = fetcherForModule(env, mod);
     if (!fetcher) {
-      return { ok: false, error: `beat-sync module "${mod.name}" binding ${mod.binding} is not reachable` };
+      return {
+        ok: false,
+        error: `beat-sync module "${mod.name}" binding ${mod.binding} is not reachable`,
+        transient: false,
+      };
     }
 
     const config = {
@@ -134,23 +166,32 @@ export async function analyzeAudioBeats(
       audio_key: audioKey,
     };
 
+    // A film passes its own ids. The planner sentinel stays only when no film context is given,
+    // so a film's beat read is not accounted as a planner job.
+    const accounted = context
+      ? { job_id: context.job_id, project: context.project }
+      : { job_id: crypto.randomUUID(), project: "planner" };
+    const filmKey = context ? `beat-analyze/${context.job_id}` : "beat-analyze/planner";
+
     const r = await invokeModule<ScoreInput, BeatSyncModuleOutput>(fetcher, {
       hook: "score",
-      input: { film_key: "beat-analyze/planner", seconds: 0 },
+      input: { film_key: filmKey, seconds: 0 },
       config,
-      context: { job_id: crypto.randomUUID(), project: "planner" },
+      context: accounted,
     });
 
-    if (!r.ok) return { ok: false, error: r.error || `${mod.name} invoke failed` };
+    // transient is the invoke result, not a substring of r.error. A module error string
+    // does not have to contain "invoke failed".
+    if (!r.ok) return { ok: false, error: r.error || `${mod.name} invoke failed`, transient: true };
     if (!("output" in r)) {
-      return { ok: false, error: `${mod.name} returned async poll (beat analysis is synchronous)` };
+      return { ok: false, error: `${mod.name} returned async poll (beat analysis is synchronous)`, transient: false };
     }
     const plan = beatPlanFromModuleOutput(r.output);
-    if (!plan) return { ok: false, error: `${mod.name} finished but returned no beat plan` };
+    if (!plan) return { ok: false, error: `${mod.name} finished but returned no beat plan`, transient: false };
     return { ok: true, plan, module: mod.name };
   }
 
   const direct = await analyzeViaUrl(env, audioUrl, req);
-  if (!direct.ok) return direct;
+  if (!direct.ok) return { ok: false, error: direct.error, transient: direct.transient };
   return { ok: true, plan: direct.plan, module: "core-url" };
 }

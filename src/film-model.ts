@@ -318,6 +318,12 @@ export interface FilmJob {
   actual_clip_durations?: Record<string, number>;
   audio_key?: string; // staged R2_RENDERS audio bed to mux after assemble (the `master` chain polishes
                       // THIS key in place: each master step rewrites it to the mastered bed before mux)
+  // Set once beat-sync has read that song from R2. Absent on a job that has an audio_key means the
+  // beats were not read. A permanent miss fails the film. A transient miss retries.
+  beats_read?: boolean;
+  // Failed beat reads on this film. A transient miss stays in phase while this is below
+  // FINISH_STEP_MAX_ATTEMPTS. A permanent miss fails on the first read.
+  beat_attempts?: number;
   // Film-level audio mastering (the `master` chain): polish the assembled film's audio BED -- music
   // upscale (soxr) + LUFS loudness -- AFTER the mix is built (assemble) and BEFORE the final mux. Set
   // only when there IS an audio_key AND a master module is installed; absent => the bed is muxed as-is.
@@ -416,8 +422,11 @@ export interface FilmJob {
   finish_unavailable?: {
     at: "assemble" | "mux";      // which delegated step could not run
     reason: string;              // the honest cause (VIDEO_FINISH_URL unset, or unreachable-after-retry)
-    delivered: "clips" | "silent_film"; // what shipped instead of the finished film
-    clips?: { shot_id: string; clip_key: string }[]; // per-shot clips (assemble degrade), the deliverable
+    // Set only when that stand-in was the delivery (a film with no song, silent cut, phase done).
+    delivered?: "clips" | "silent_film";
+    // Artifacts kept after a failed finish. Not a delivery, and not a film_key.
+    retained?: "clips" | "silent_film";
+    clips?: { shot_id: string; clip_key: string }[]; // per-shot clips kept when assemble did not join
   };
   // Loud, structured degrade when the keyframe stall recovery hit the phase ceiling with only a
   // PARTIAL keyframe set in R2 (#619): keyframes upload progressively, so a stall mid-batch leaves

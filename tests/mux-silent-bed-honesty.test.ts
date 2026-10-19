@@ -3,12 +3,12 @@ import { installVfFetch, vfAsyncFinish } from "./install-vf-fetch.js";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
-// F2: audio-master (or any long/ballooned bed) can push the mux bed over the video-finish container audio
-// cap, so the container "finishes silent" -- it returns ok:true but writes a track-less MP4 and reports
-// hasAudio:false. The mux MUST NOT mark that a silent green (phase=done with the bed silently dropped and
-// no signal in the poll). It must surface an OBSERVABLE mux degrade (finish_unavailable at mux) and ship
-// the silent film honestly (#245 / #249 / #77). hasAudio:undefined (an older container that omits the
-// field) is unknown, not false, so the prior success behavior must hold.
+// F2: audio-master (or any long bed) can push the mux bed over the video-finish container audio
+// cap. The container returns ok:true, writes a track-less MP4, and reports hasAudio:false.
+// A staged song in that state fails the film. The silent cut stays in R2, and finish_unavailable
+// names the mux miss (#245 / #249 / #77). hasAudio absent (an older container that omits the
+// field) is unknown, so the prior success behavior must hold. The fixtures set beats_read because
+// this file measures the mux result, not the beat door.
 
 function muxEnv(job: object, containerBody: unknown) {
   const filmId = (job as { film_id: string }).film_id;
@@ -48,20 +48,21 @@ const muxJob = (over: object = {}) => ({
 });
 
 describe("mux honesty: a dropped bed is an OBSERVABLE degrade, never a silent green (F2)", () => {
-  it("hasAudio:false -> finish_unavailable at mux, ships the silent film, phase done", async () => {
-    const { env, read } = muxEnv(muxJob(), { ok: true, key: OUT, hasAudio: false });
+  it("hasAudio:false with a staged song fails the film; the silent cut is not called done", async () => {
+    const { env, read } = muxEnv(muxJob({ beats_read: true }), { ok: true, key: OUT, hasAudio: false });
     const r = await advanceFilmJob(env, "film-mux-honesty");
-    expect(r?.job.phase).toBe("done");
+    expect(r?.job.phase).toBe("failed");
     expect(r?.job.finish_unavailable?.at).toBe("mux");
-    expect(r?.job.finish_unavailable?.delivered).toBe("silent_film");
     expect(r?.job.finish_unavailable?.reason).toMatch(/could not attach the audio bed/i);
-    // the honest silent film (the assembled silent key), NOT the track-less muxed key dressed up as done
-    expect(r?.job.film_key).toBe(SILENT);
-    expect(read().finish_unavailable?.at).toBe("mux"); // persisted
+    expect(r?.job.finish_unavailable?.retained).toBe("silent_film");
+    expect(r?.job.finish_unavailable?.delivered).toBeUndefined();
+    expect(r?.job.film_key).toBeUndefined();
+    expect(read().silent_film_key).toBe(SILENT);
+    expect(read().phase).toBe("failed");
   });
 
   it("hasAudio:true -> normal green with the muxed film, no degrade", async () => {
-    const { env } = muxEnv(muxJob(), { ok: true, key: OUT, hasAudio: true });
+    const { env } = muxEnv(muxJob({ beats_read: true }), { ok: true, key: OUT, hasAudio: true });
     const r = await advanceFilmJob(env, "film-mux-honesty");
     expect(r?.job.phase).toBe("done");
     expect(r?.job.finish_unavailable).toBeUndefined();
@@ -69,7 +70,7 @@ describe("mux honesty: a dropped bed is an OBSERVABLE degrade, never a silent gr
   });
 
   it("hasAudio absent (older container build) -> back-compat: normal green, no false degrade", async () => {
-    const { env } = muxEnv(muxJob(), { ok: true, key: OUT });
+    const { env } = muxEnv(muxJob({ beats_read: true }), { ok: true, key: OUT });
     const r = await advanceFilmJob(env, "film-mux-honesty");
     expect(r?.job.phase).toBe("done");
     expect(r?.job.finish_unavailable).toBeUndefined();

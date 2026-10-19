@@ -148,6 +148,7 @@ describe("cf#835: 'completed' with no result body is a FAILURE, not a synthesize
       phase: "mux" as const,
       silent_film_key: SILENT,
       audio_key: `renders/${FILM}/bed.wav`,
+      beats_read: true,
       mux_output_key: `renders/${FILM}/film-audio.mp4`,
       created_at: 0,
     };
