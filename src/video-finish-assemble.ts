@@ -7,8 +7,8 @@
  * because the caller IS a Worker. POST /async/finish returns 202 + jobId
  * immediately; we poll /async/status across ticks.
  *
- * Jobs live in-process on one replica. Submit goes to VIDEO_FINISH_URL (the
- * LB). Poll hits that origin plus per-box poll URLs so a 404 from a peer
+ * Jobs live in-process on one replica. Submit goes to VIDEO_FINISH_URL.
+ * Poll hits that origin plus VIDEO_FINISH_POLL_URLS so a 404 from a peer
  * is not "job gone".
  */
 import type { Env } from "./platform/orchestrator-context.js";
@@ -21,7 +21,6 @@ import {
 } from "./media-finish-auth.js";
 import { presignR2Get, presignR2Put } from "./presign.js";
 
-export const HOSTED_FINISH_POLL_BOXES = ["jello", "descendents", "badbrains"] as const;
 export const ASSEMBLE_NOTFOUND_STREAK = 12;
 
 export type FinishPayload = {
@@ -239,24 +238,13 @@ export function decodeAssemblePoll(raw: string | undefined | null): AssemblePoll
   }
 }
 
-/** Submit origin plus per-box poll origins. Hosted fleet is 3 replicas. */
+/** Submit origin plus any extra poll origins from VIDEO_FINISH_POLL_URLS. */
 export function videoFinishPollUrls(env: Env): string[] {
   const base = videoFinishUrl(env);
   if (!base) return [];
   const extra = typeof env.VIDEO_FINISH_POLL_URLS === "string" ? env.VIDEO_FINISH_POLL_URLS : "";
   const listed = extra.split(/[,\s]+/).map((s) => s.replace(/\/$/, "")).filter(Boolean);
-  const out = [base, ...listed];
-  try {
-    const u = new URL(base);
-    if (u.hostname === "video-finish.skyphusion.org") {
-      for (const box of HOSTED_FINISH_POLL_BOXES) {
-        out.push(`${u.protocol}//video-finish-${box}.skyphusion.org`);
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return [...new Set(out)];
+  return [...new Set([base, ...listed])];
 }
 
 /** Why a submit did not produce a job id. core#327: the caller has to tell "the door never answered"
