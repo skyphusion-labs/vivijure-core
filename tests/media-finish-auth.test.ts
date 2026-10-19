@@ -391,4 +391,78 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
       globalThis.fetch = prev;
     }
   });
+
+  // THE DOOR HAS TO SAY WHICH KIND OF MISS IT HAD.
+  //
+  // failIfSongBeatsUnread fails a film that has already paid for keyframes, i2v and finish, so a
+  // blanket transient:false on this leg converted every container hiccup into a destroyed film.
+  // The split asserted below is transport versus content: a non-2xx, an unreadable body and a
+  // rejected fetch retry; an answered 200 that is not a plan does not.
+  const urlDoorEnv = () =>
+    envWith({
+      AUDIO_BEAT_SYNC_URL: "https://audio-beat-sync.test",
+      MEDIA_FINISH_TOKEN: "beat-tok",
+      PRESIGNER: { presignGet: async () => "https://r2.test/audio.wav" },
+    });
+
+  async function viaUrl(resp: () => Response | Promise<Response>) {
+    const prev = globalThis.fetch;
+    globalThis.fetch = (async () => resp()) as unknown as typeof globalThis.fetch;
+    try {
+      return await analyzeAudioBeats(urlDoorEnv(), { audioKey: "audio.wav" });
+    } finally {
+      globalThis.fetch = prev;
+    }
+  }
+
+  it("a non-2xx from the url door is TRANSIENT, not a reason to destroy the film", async () => {
+    const r = await viaUrl(() => new Response(JSON.stringify({ ok: false, error: "bad gateway" }), { status: 502 }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.transient).toBe(true);
+      expect(r.error).toMatch(/HTTP 502/);
+    }
+  });
+
+  it("a 502 carrying HTML is reported, not THROWN past the caller attempt counter", async () => {
+    // The measured shape: resp.json() on an edge error page used to throw out of analyzeAudioBeats
+    // entirely, so beat_attempts was never written and the retry cap never engaged.
+    const r = await viaUrl(() => new Response("<html><body>502 Bad Gateway</body></html>", { status: 502 }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.transient).toBe(true);
+      expect(r.error).toMatch(/HTTP 502/);
+    }
+  });
+
+  it("a 200 whose body will not parse is TRANSIENT", async () => {
+    const r = await viaUrl(() => new Response("<html>proxy splash</html>", { status: 200 }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.transient).toBe(true);
+      expect(r.error).toMatch(/unreadable body/);
+    }
+  });
+
+  it("a rejected fetch on the url door is TRANSIENT, not rethrown", async () => {
+    const r = await viaUrl(() => {
+      throw new TypeError("fetch failed");
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.transient).toBe(true);
+      expect(r.error).toMatch(/door unreachable: fetch failed/);
+    }
+  });
+
+  it("THE OTHER SIDE: an answered 200 that is not a plan stays PERMANENT", async () => {
+    // The container ran and gave an answer we cannot use. That is the #245/#249 distinction, and
+    // retrying it three times only delays the same verdict.
+    const r = await viaUrl(() => new Response(JSON.stringify({ mode: "polka" }), { status: 200 }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.transient).toBe(false);
+      expect(r.error).toMatch(/unrecognized plan/);
+    }
+  });
 });

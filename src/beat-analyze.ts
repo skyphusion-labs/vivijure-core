@@ -68,11 +68,23 @@ function userConfigFromRequest(req: AudioAnalyzeRequest): Record<string, unknown
   return out;
 }
 
+/** Transport outcome first, content second.
+ *
+ * The caller (failIfSongBeatsUnread) FAILS a paid film on a permanent miss, so this door has to
+ * say which kind of miss it had. A door that is unset, or set with no bearer, is host
+ * configuration and never improves by retrying: permanent. A non-2xx status, a body that will not
+ * parse, and a fetch that rejects are all the container being down, restarting, overloaded or
+ * behind an edge error page: transient. Only a 200 whose body parses and is not a plan is the
+ * analyzer ANSWERING with something unusable, which is permanent (the #245/#249 distinction).
+ *
+ * The two shapes this corrects: a 502 carrying a JSON body read as an unrecognized plan, and a
+ * 502 carrying an HTML body THREW out of resp.json() and past the caller attempt counter
+ * entirely, so the cap never engaged on that shape at all. Both retry now. */
 async function analyzeViaUrl(
   env: Env,
   audioUrl: string,
   req: AudioAnalyzeRequest,
-): Promise<{ ok: true; plan: AudioBeatPlan } | { ok: false; error: string }> {
+): Promise<{ ok: true; plan: AudioBeatPlan } | { ok: false; error: string; transient: boolean }> {
   let resp: Response | null;
   try {
     resp = await mediaDoorFetch(env, "AUDIO_BEAT_SYNC_URL", "/analyze", {
@@ -89,12 +101,27 @@ async function analyzeViaUrl(
       }),
     });
   } catch (e) {
-    if (isMediaFinishAuthError(e)) return { ok: false, error: e.message };
-    throw e;
+    if (isMediaFinishAuthError(e)) return { ok: false, error: e.message, transient: false };
+    // A rejected fetch is the dead-origin shape (NXDOMAIN, connection reset). It is REPORTED, not
+    // rethrown: the caller counts attempts off the return value, and a throw skips that counter.
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: "beat-sync door unreachable: " + msg.slice(0, 200), transient: true };
   }
-  if (!resp) return { ok: false, error: "AUDIO_BEAT_SYNC_URL unset" };
-  const plan = parseAudioBeatPlan(await resp.json());
-  if (!plan) return { ok: false, error: "beat-sync container returned an unrecognized plan" };
+  if (!resp) return { ok: false, error: "AUDIO_BEAT_SYNC_URL unset", transient: false };
+  if (!resp.ok) return { ok: false, error: `beat-sync container returned HTTP ${resp.status}`, transient: true };
+  let body: unknown;
+  try {
+    body = await resp.json();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      ok: false,
+      error: "beat-sync container returned an unreadable body: " + msg.slice(0, 200),
+      transient: true,
+    };
+  }
+  const plan = parseAudioBeatPlan(body);
+  if (!plan) return { ok: false, error: "beat-sync container returned an unrecognized plan", transient: false };
   return { ok: true, plan };
 }
 
@@ -165,6 +192,6 @@ export async function analyzeAudioBeats(
   }
 
   const direct = await analyzeViaUrl(env, audioUrl, req);
-  if (!direct.ok) return { ok: false, error: direct.error, transient: false };
+  if (!direct.ok) return { ok: false, error: direct.error, transient: direct.transient };
   return { ok: true, plan: direct.plan, module: "core-url" };
 }

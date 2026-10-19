@@ -172,6 +172,46 @@ describe("cf#746(a) inverse controls: the degrades that SHOULD survive", () => {
     }]);
   });
 
+  it("a 502 from the URL beat door retries instead of destroying a paid film", async () => {
+    // The module door was already fixed. This is the NO-MODULE door: analyzeViaUrl. The fixture
+    // router in installVfFetch keys on the substring "video-finish", so the beat door is given a
+    // host under the same fake origin to route through the handler below.
+    _resetModuleDiscoveryCache();
+    let analyzeCalls = 0;
+    const { env, read } = envFor(muxJob({ beats_read: false }), async (u) => {
+      if (u.includes("/analyze")) {
+        analyzeCalls += 1;
+        // An edge error page, the shape that used to throw out of resp.json().
+        return new Response("<html><body>502 Bad Gateway</body></html>", { status: 502 });
+      }
+      throw new TypeError("fetch failed");
+    });
+    (env as unknown as Record<string, unknown>).AUDIO_BEAT_SYNC_URL = "https://beats.video-finish.test";
+
+    const first = await advanceFilmJob(env, FILM);
+    expect(first?.job.phase).toBe("mux");
+    expect(first?.job.error).toBe(
+      "beats read transient (attempt 1/3), retrying: beat-sync container returned HTTP 502",
+    );
+    // Persisted, so the counter survives the tick boundary and the cap is real.
+    expect(read().beat_attempts).toBe(1);
+    expect(read().phase).toBe("mux");
+
+    const second = await advanceFilmJob(env, FILM);
+    expect(second?.job.phase).toBe("mux");
+    expect(read().beat_attempts).toBe(2);
+
+    const third = await advanceFilmJob(env, FILM);
+    expect(third?.job.phase).toBe("failed");
+    expect(third?.job.error).toMatch(/beats were not read: beat-sync container returned HTTP 502/);
+    expect(read().beat_attempts).toBe(3);
+    // Three real reads, so the retry is a retry and not a replayed result.
+    expect(analyzeCalls).toBe(3);
+    // Conrad ruling, held through the beat leg too: nothing is discarded and nothing is linked.
+    expect(read().silent_film_key).toBe(SILENT);
+    expect(read().film_key).toBeUndefined();
+  });
+
   it("a transient beat read stays in phase, then fails once the finish cap is used", async () => {
     _resetModuleDiscoveryCache();
     const calls: Array<{ job_id?: string; project?: string; film_key?: string }> = [];
