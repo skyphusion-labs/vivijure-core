@@ -1,7 +1,7 @@
 // core#379: a film's finish steps write under that film, so one render cannot replace a clip another
 // render has recorded. Same class as the still collision in vivijure-backend#535.
 import { describe, expect, it, vi } from "vitest";
-import { FINISH_REUSE_COPIES_PER_TICK, FINISH_REUSE_LOOKUPS_PER_TICK, advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
+import { FINISH_REUSE_COPIES_PER_TICK, FINISH_REUSE_LOOKUPS_PER_TICK, advanceFilmJob, filmJobDocKey, retryFilmFinish, type FilmJob } from "../src/film-orchestrator.js";
 import { finishClipScope, finishStepIsShotNamed, finishStepOutputKey, finishStepPointerKey, type FinishShot } from "../src/film-model.js";
 import type { RegisteredModule } from "../src/modules/types.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
@@ -286,6 +286,48 @@ describe("a real tick", () => {
     }
     expect(phase).toBe("done");
     expect(copied()).toBe(ids.length);
+  });
+
+  // Driven by review: a copy that cannot succeed spent the budget on the same shots every tick, so a later
+  // shot read as out of copies for ever and the film sat until the stall ceiling.
+  it.each([
+    ["every copy fails", (k: string) => k.includes("/clips/film-a/"), false],
+    ["the film's key is already taken", undefined, true],
+  ])("failed shots past the copy limit reach an end when %s", async (_name, failPut, taken) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const hash = await import("../src/finish-hash.js");
+    const good = await hash.finishStepInputHash(null, null, {});
+    const ids = Array.from({ length: FINISH_REUSE_COPIES_PER_TICK + 3 }, (_, i) => `s${i + 1}`);
+    const stored: Record<string, string> = {};
+    for (const id of ids) {
+      const other = `renders/p/clips/film-b/${id}_finished.mp4`;
+      stored[other] = "clip";
+      stored[`${other}.hash`] = good;
+      stored[`renders/p/clips/${id}_finished.latest.json`] = JSON.stringify({ key: other });
+      if (taken) stored[`renders/p/clips/film-a/${id}_finished.mp4`] = "mine, no hash yet";
+    }
+    const shots = ids.map((id) => shot({ shot_id: id, clip_key: `renders/p/clips/${id}.mp4`, status: "failed", error: "x" } as never));
+    const w = world({ finish_shots: shots as never }, () => ({ ok: true }), stored, failPut as never);
+    let phase: string | undefined = "finish";
+    let ticks = 0;
+    while (phase === "finish" && ticks < ids.length + 2) {
+      phase = (await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.phase;
+      ticks += 1;
+    }
+    expect(phase).toBe("failed");
+    if (taken) for (const id of ids) expect(w.store[`renders/p/clips/film-a/${id}_finished.mp4`]).toBe("mine, no hash yet");
+  });
+
+  it("a retry gives a step whose copy failed another try", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const entry = { stage: "finish", step: "MODULE_R", shot_id: "s1", code: "x", kept: "k", at: 1 };
+    const w = world({ phase: "done", film_key: "renders/film-a/film.mp4", finish_reuse_failed: ["s1:0"], finish_incomplete: [entry], finish_shots: [shot({ status: "done", idx: 1 })] as never } as never, () => ({}));
+    const stmt = () => ({ bind: () => stmt(), run: async () => ({ success: true, meta: { changes: 1 } }), first: async () => null, all: async () => ({ results: [] }) });
+    (w.e as unknown as { DB: unknown }).DB = { prepare: () => stmt() };
+    const r = await retryFilmFinish(w.e, "film-a");
+    expect(r?.retried).toHaveLength(1);
+    expect(r?.job.finish_reuse_failed).toBeUndefined();
   });
 
   it("a failed shot with nothing to reuse still fails the film once its turn has passed", async () => {

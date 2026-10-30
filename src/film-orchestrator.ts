@@ -1196,7 +1196,7 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: RecoverableFini
   // film-scoped key still writes, and where a film already in flight at the upgrade wrote.
   // Between them, the pointer: the newest film's clip for this shot, which is how a resubmit reuses work.
   const own = finishStepOutputKey(job.project, fs, modules, finishClipScope(job));
-  const waiting = finishStepPointerKey(job.project, fs, modules) !== null && !reuse.window.has(fs.shot_id);
+  const waiting = reusableThroughPointer(job, fs, modules) && !reuse.window.has(fs.shot_id);
   const pointed = await lookUpFinishPointer(env, job.project, fs, modules, reuse);
   const candidates = [own, pointed, finishStepOutputKey(job.project, fs, modules)];
   for (const expected of new Set(candidates)) {
@@ -1206,7 +1206,7 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: RecoverableFini
     // a missing/mismatched sidecar (legacy artifact, or a resubmit with changed inputs) re-runs the step.
     if (!(await finishArtifactHashMatches(env, job, fs, expected))) continue;
     if (expected === pointed && expected !== own && reuse.copies <= 0) return "deferred";
-    const key = await ownedClipKey(env, expected, pointed, own, reuse);
+    const key = await ownedClipKey(env, job, fs, expected, pointed, own, reuse);
     if (!key) continue;
     // #583: an R2-adopted step is REUSED, not run -- record the marker in `adopted`, never a fake `applied`-run tag.
     adoptFinishStepOutput(fs, key, finishStepAppliedTag(fs, modules));
@@ -1231,10 +1231,15 @@ interface ReuseBudget {
   copies: number;
 }
 
+/** True while a step could still reuse a clip through its pointer: it has one, and its one copy has not failed. */
+function reusableThroughPointer(job: FilmJob, fs: FinishShot, modules: RegisteredModule[] | undefined): boolean {
+  return finishStepPointerKey(job.project, fs, modules) !== null && !job.finish_reuse_failed?.includes(`${fs.shot_id}:${fs.idx}`);
+}
+
 /** This tick's budget. The window moves on each tick, so the bound reaches every shot and never starves
  *  the later ones. */
 function reuseBudgetForTick(job: FilmJob, modules: RegisteredModule[] | undefined): ReuseBudget {
-  const shots = (job.finish_shots ?? []).filter((fs) => (fs.status === "pending" || fs.status === "failed") && finishStepPointerKey(job.project, fs, modules) !== null);
+  const shots = (job.finish_shots ?? []).filter((fs) => (fs.status === "pending" || fs.status === "failed") && reusableThroughPointer(job, fs, modules));
   const start = shots.length ? (job.finish_reuse_cursor ?? 0) % shots.length : 0;
   const window = [...shots.slice(start), ...shots.slice(0, start)].slice(0, FINISH_REUSE_LOOKUPS_PER_TICK);
   if (shots.length) job.finish_reuse_cursor = (start + window.length) % shots.length;
@@ -1251,11 +1256,13 @@ async function lookUpFinishPointer(env: Env, project: string, fs: FinishShot, mo
  *  deleting that film sweeps its folder, so this film copies it and records the copy. Null when the copy
  *  fails, or its key is already taken, or this tick has spent its copies: the shot then keeps waiting on
  *  its own job, and the film never records a clip it does not own. */
-async function ownedClipKey(env: Env, key: string, pointed: string | null, own: string | null, reuse: ReuseBudget): Promise<string | null> {
+async function ownedClipKey(env: Env, job: FilmJob, fs: FinishShot, key: string, pointed: string | null, own: string | null, reuse: ReuseBudget): Promise<string | null> {
   if (key !== pointed || key === own) return key;
   if (!own || reuse.copies <= 0) return null;
   reuse.copies -= 1;
-  return (await copyClipWithSidecar(env.R2_RENDERS, key, own)) ? own : null;
+  if (await copyClipWithSidecar(env.R2_RENDERS, key, own)) return own;
+  (job.finish_reuse_failed ??= []).push(`${fs.shot_id}:${fs.idx}`);
+  return null;
 }
 
 // cf#312: satellite finish/speech jobs queue + cold-start + GPU work. Same 30min envelope as
@@ -1610,7 +1617,7 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     const verified = new Map<string, string>();
     for (const fs of finishShots) {
       if (!finishShotAdoptableFromR2(fs)) continue;
-      const notItsTurn = finishStepPointerKey(job.project, fs, preModules) !== null && !reuse.window.has(fs.shot_id);
+      const notItsTurn = reusableThroughPointer(job, fs, preModules) && !reuse.window.has(fs.shot_id);
       const pointed = await lookUpFinishPointer(env, job.project, fs, preModules, reuse);
       const ownKey = finishStepOutputKey(job.project, fs, preModules, finishClipScope(job));
       let outOfCopies = false;
@@ -1618,7 +1625,7 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
         if (!key || (await env.R2_RENDERS.head(key)) === null) continue; // a pointer can outlive its target
         if (!(await finishArtifactHashMatches(env, job, fs, key))) continue;
         if (key === pointed && key !== ownKey && reuse.copies <= 0) outOfCopies = true;
-        const owned = await ownedClipKey(env, key, pointed, ownKey, reuse);
+        const owned = await ownedClipKey(env, job, fs, key, pointed, ownKey, reuse);
         if (owned) { verified.set(fs.shot_id, owned); break; }
       }
       // A failed shot that may yet be reused must not fail the film for this tick's bound.
@@ -3666,6 +3673,7 @@ async function retryFilmFinishLocked(
   job.film_finish_dispatched = {};
   job.film_finish_attempts = {};
   job.film_finish_prepend = {};
+  job.finish_reuse_failed = undefined;
   job.finish_unavailable = undefined;
   job.assemble_poll = undefined;
   job.assemble_wait = undefined;
