@@ -376,6 +376,89 @@ describe("retryFilmFinish", () => {
     expect(deleted).not.toContain(delivered);
   });
 
+  describe("a retry that assembles again", () => {
+    const CUT = "renders/film-1/film.mp4";
+    const NEW = "renders/film-1/film-r1.mp4";
+    const job = () => baseJob({
+      film_key: CUT, silent_film_key: CUT, film_finish_base_key: CUT, actual_clip_durations: { s1: 4 },
+      scenes: [{ shot_id: "s1", prompt: "p", seconds: 4 }] as never,
+      finish_shots: [{ shot_id: "s1", clip_key: "renders/p1/clips/s1.mp4", chain: ["MODULE_U"], configs: [{}], idx: 1, status: "done", applied: [] }] as never,
+      finish_incomplete: [{ stage: "assemble", step: "assemble", code: "unavailable", kept: "the per-shot clips", at: 1 }],
+    });
+    const door = (status: Record<string, unknown>, stored: () => Record<string, string>) => {
+      const bodies: { outputKey?: string }[] = [];
+      return {
+        bodies,
+        fetch: async (url: string, init: RequestInit = {}) => {
+          if (new URL(url).pathname === "/async/finish") {
+            bodies.push(JSON.parse(String(init.body)));
+            return Response.json({ ok: true, jobId: "j" }, { status: 202 });
+          }
+          if (status.status === "completed") stored()[NEW] = "the new cut";
+          return Response.json(status);
+        },
+      };
+    };
+    const run = async (status: Record<string, unknown>) => {
+      let box: Record<string, string> = {};
+      const d = door(status, () => box);
+      const made = env(
+        { DB: rowDb().DB, MEDIA_FINISH_TOKEN: "t", VIDEO_FINISH_URL: "http://vf", MEDIA_DOOR_FETCHERS: { VIDEO_FINISH_URL: d } },
+        { [filmJobDocKey("film-1")]: JSON.stringify(job()), [CUT]: "the delivered film" },
+      );
+      box = made.stored;
+      await retryFilmFinish(made.e, "film-1");
+      const r = await advanceFilmJob(made.e, "film-1", []);
+      return { ...made, d, r };
+    };
+
+    it("writes its own key, and a concat that fails leaves the delivered film as it was", async () => {
+      quiet();
+      const { d, r, stored, deleted } = await run({ status: "failed", error: "ffmpeg exploded" });
+      expect(d.bodies[0].outputKey).toBe(NEW);
+      expect(r?.job).toMatchObject({ phase: "done", film_key: CUT, silent_film_key: CUT, actual_clip_durations: { s1: 4 } });
+      expect(r?.job.finish_retry_failed?.reason).toContain("ffmpeg exploded");
+      expect(stored[CUT]).toBe("the delivered film");
+      expect(deleted).not.toContain(CUT);
+    });
+
+    it("when it is whole the new key is the film, and only then does the old one go", async () => {
+      quiet();
+      const { d, r, deleted } = await run({ status: "completed", result: { ok: true, durationSeconds: 8 } });
+      expect(d.bodies[0].outputKey).toBe(NEW);
+      expect(r?.job).toMatchObject({ phase: "done", film_key: NEW, silent_film_key: NEW });
+      expect(deleted).toContain(CUT);
+      expect(summarizeFilm(r!.job, null).assemble_ms).toBe(8000);
+    });
+  });
+
+  it("a film that fails through a throw while retrying is restored, and stays retryable", async () => {
+    quiet();
+    const delivered = "renders/p1/film-ff0.mp4";
+    const job = baseJob({
+      film_key: delivered, film_finish_base_key: FILM,
+      scenes: [{ shot_id: "s1", prompt: "p", seconds: 4 }] as never,
+      finish_shots: [{ shot_id: "s1", clip_key: "renders/p1/clips/s1.mp4", chain: ["MODULE_U"], configs: [{}], idx: 1, status: "done", applied: [] }] as never,
+      finish_incomplete: [{ stage: "assemble", step: "assemble", code: "unavailable", kept: "the per-shot clips", at: 1 }],
+    });
+    const db = rowDb();
+    const { e, stored, deleted } = env(
+      { DB: db.DB, MEDIA_FINISH_TOKEN: "t", VIDEO_FINISH_URL: "http://vf", MEDIA_DOOR_FETCHERS: { VIDEO_FINISH_URL: { fetch: vi.fn() } } },
+      { [filmJobDocKey("film-1")]: JSON.stringify(job), [delivered]: "the film" },
+    );
+    await retryFilmFinish(e, "film-1");
+    (e as unknown as { PRESIGNER: unknown }).PRESIGNER = { presignGet: async () => { throw new Error("presign exploded"); }, presignPut: async () => { throw new Error("presign exploded"); } };
+    const r = await advanceFilmJob(e, "film-1", []);
+    const after = JSON.parse(stored[filmJobDocKey("film-1")]) as FilmJob;
+    expect(r?.job.phase).toBe("done");
+    expect(after).toMatchObject({ phase: "done", film_key: delivered });
+    expect(after.finish_retry_failed?.reason).toContain("presign exploded");
+    expect(after.finish_incomplete).toHaveLength(1);
+    expect(deleted).not.toContain(delivered);
+    expect(db.sql.some((q) => q.includes("status = 'COMPLETED'"))).toBe(true);
+    expect((await retryFilmFinish(e, "film-1"))?.retried).toHaveLength(1);
+  });
+
   it("cancelling a retry cancels the retry, not the film", async () => {
     quiet();
     const delivered = "renders/p1/film-ff0.mp4";
@@ -561,6 +644,30 @@ describe("a hold against the stall ceiling", () => {
     expect(holdStep(fs, job, "x", FINISH_STEP_HOLD_MAX_SECONDS, 0)).toBe(true);
     acceptHeldStep(fs, job, 59 * MIN);
     expect(holdStep(fs, job, "poll failed", undefined, 60 * MIN)).toBe(true);
+  });
+
+  it("in master, accepting after a hold moves the phase clock, so the 15 minute stall check does not kill the run", async () => {
+    quiet();
+    const M = mod("audio-master", "MODULE_M", "master");
+    const before = Date.now() - 40 * MIN;
+    const job = baseJob({
+      phase: "master", film_key: undefined, silent_film_key: "s", audio_key: "renders/p1/bed.wav", beats_read: true,
+      phase_started_at: before,
+      master: { chain: ["MODULE_M"], idx: 0, applied: [], degraded: [], configs: [{}], wait: { firstAt: before, attempts: 3, nextAt: before, detail: "d" }, hold_cycles: 1 },
+    } as Partial<FilmJob>);
+    const door = { fetch: async (input: string | Request) => {
+      const url = typeof input === "string" ? input : input.url;
+      return url.endsWith("/module.json") ? Response.json(M) : Response.json({ ok: true, pending: true, poll: "tok" });
+    } };
+    const { e, stored } = env({ MODULE_M: door }, { [filmJobDocKey("film-1")]: JSON.stringify(job) });
+    await advanceFilmJob(e, "film-1", [M]);
+    const first = JSON.parse(stored[filmJobDocKey("film-1")]) as FilmJob;
+    expect(first.master?.wait).toBeUndefined();
+    expect(first.phase_started_at).toBeGreaterThan(before + 39 * MIN);
+    // The next tick polls a step still running, and it is not degraded as stalled.
+    await advanceFilmJob(e, "film-1", [M]);
+    const second = JSON.parse(stored[filmJobDocKey("film-1")]) as FilmJob;
+    expect(second.master?.degraded).toEqual([]);
   });
 
   it("a real film stamps the clock when a held step is accepted", async () => {

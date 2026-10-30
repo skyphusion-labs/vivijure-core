@@ -10,7 +10,7 @@ import { validateConfig } from "./modules/registry.js";
 import { summarizeJob, type ClipJob, type JobSummary } from "./clip-job-model.js";
 import { classifyTransientFailure } from "./render-orchestrator.js";
 import { coerceShotId } from "./storyboard-ids.js";
-import { defaultFilmOutputKey } from "./film-output-key.js";
+import { assembleOutputKey } from "./film-output-key.js";
 import { voiceLockHint } from "./voices.js";
 import { assertProjectKey } from "./key-safety.js";
 
@@ -867,7 +867,7 @@ export function filmFinishWaiting(job: FilmJob): FinishWaitingView | undefined {
 
 export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummary {
   const durations = job.film_output_seconds;
-  const assembleKey = defaultFilmOutputKey(job.film_id);
+  const assembleKey = assembleOutputKey(job);
   // Assemble stage: the deterministic concat key. Delivered: whatever film_key points at after
   // film.finish (may equal assembleKey when no cards ran). Both read the same map; absent keys stay
   // off the summary rather than zero (NULL = not measured).

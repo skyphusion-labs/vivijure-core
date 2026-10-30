@@ -177,6 +177,7 @@ import { filmDonePayload } from "./render-output-payload.js";
 import { validateFilmArtifact } from "./clip-validate.js";
 import {
   adoptFilmOutputKeyFromStore,
+  assembleOutputKey,
   defaultFilmOutputKey,
   filmDeliverableExpected,
   resolveFilmOutputKey,
@@ -2994,7 +2995,7 @@ async function enterAssemblePhase(
   // there is no loud degrade on a counter exhausting. The re-concat stops when the concat
   // succeeds or the finish tier is unreachable. That preserves #122's anti-loop property
   // without the honesty hole.
-  const outputKey = defaultFilmOutputKey(job.film_id);
+  const outputKey = assembleOutputKey(job);
   const durationsGated = !!job.actual_clip_durations && Object.keys(job.actual_clip_durations).length > 0;
   if (durationsGated && (await r2ObjectExists(env, outputKey))) {
     await finishAssembledFilm(env, job, outputKey, preModules);
@@ -3635,6 +3636,7 @@ async function settleFinishRetry(env: Env, job: FilmJob, preModules?: Registered
       env,
       [
         prior.film_key,
+        prior.silent_film_key,
         prior.mux_output_key,
         prior.mix_audio_key,
         ...(prior.film_finish_base_key ? filmFinishArtifactKeys(prior.film_finish_base_key, priorSuffix, stepCount) : []),
@@ -3651,6 +3653,7 @@ async function settleFinishRetry(env: Env, job: FilmJob, preModules?: Registered
   await deleteArtifacts(
     env,
     [
+      job.silent_film_key,
       job.mux_output_key,
       job.mix_audio_key,
       ...(job.film_finish_base_key && job.finish_retry_gen ? filmFinishArtifactKeys(job.film_finish_base_key, `-r${job.finish_retry_gen}`, stepCount) : []),
