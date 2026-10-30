@@ -49,7 +49,7 @@ describe("the key", () => {
   });
 });
 
-function world(job: Partial<FilmJob>, moduleBody: (input: Record<string, unknown>, path: string) => unknown, stored: Record<string, string> = {}) {
+function world(job: Partial<FilmJob>, moduleBody: (input: Record<string, unknown>, path: string) => unknown, stored: Record<string, string> = {}, failPut?: (k: string) => boolean) {
   const inputs: Record<string, unknown>[] = [];
   const store: Record<string, string> = { ...stored };
   const doc = { film_id: "film-a", project: "p", phase: "finish", created_at: Date.now() - 1000, phase_started_at: Date.now(), scenes: [], bundle_key: "b", ...job };
@@ -57,8 +57,8 @@ function world(job: Partial<FilmJob>, moduleBody: (input: Record<string, unknown
   const e = {
     R2_RENDERS: {
       head: async (k: string) => (k in store ? { size: 4096, etag: "e" } : null),
-      get: async (k: string) => (k in store ? { text: async () => store[k], arrayBuffer: async () => new ArrayBuffer(0) } : null),
-      put: async (k: string, b: string) => { store[k] = b; },
+      get: async (k: string) => (k in store ? { body: store[k], text: async () => store[k], arrayBuffer: async () => { throw new Error("buffered a whole clip"); } } : null),
+      put: async (k: string, b: string) => { if (failPut?.(k)) throw new Error("put refused"); store[k] = b; },
       delete: async (k: string) => { delete store[k]; },
       list: async ({ prefix }: { prefix: string }) => ({ objects: Object.keys(store).filter((k) => k.startsWith(prefix)).map((key) => ({ key, uploaded: new Date() })), truncated: false }),
     },
@@ -128,7 +128,55 @@ describe("a real tick", () => {
     expect((await advanceFilmJob(stale.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).not.toBe(other);
 
     const ok = world({ finish_shots: [running] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: good, [pointer]: JSON.stringify({ key: other }) });
-    expect((await advanceFilmJob(ok.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).toBe(other);
+    const own = "renders/p/clips/film-a/s1_finished.mp4";
+    expect((await advanceFilmJob(ok.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).toBe(own);
+    expect(ok.store[own]).toBe("clip");
+    expect(ok.store[`${own}.hash`]).toBe(good);
+    expect(ok.store[other]).toBe("clip"); // the other film keeps its own
+  });
+
+  it("a film that reuses a clip survives the other film being gone: it holds no reference to it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const other = "renders/p/clips/film-b/s1_finished.mp4";
+    const hash = await import("../src/finish-hash.js");
+    const good = await hash.finishStepInputHash(null, null, {});
+    const w = world({ finish_shots: [running] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: good, "renders/p/clips/s1_finished.latest.json": JSON.stringify({ key: other }) });
+    const r = await advanceFilmJob(w.e, "film-a", [RIFE]);
+    expect(JSON.stringify(r?.job)).not.toContain("film-b");
+  });
+
+  it("a copy that fails means the step runs, and records nothing it does not own", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const other = "renders/p/clips/film-b/s1_finished.mp4";
+    const own = "renders/p/clips/film-a/s1_finished.mp4";
+    const hash = await import("../src/finish-hash.js");
+    const good = await hash.finishStepInputHash(null, null, {});
+    for (const refused of [own, `${own}.hash`]) {
+      const w = world({ finish_shots: [running] as never }, lostPoll,
+        { [other]: "clip", [`${other}.hash`]: good, "renders/p/clips/s1_finished.latest.json": JSON.stringify({ key: other }) },
+        (k) => k === refused);
+      const s = (await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.finish_shots![0];
+      expect(s?.clip_key).toBe(running.clip_key);
+      expect(s?.idx).toBe(0);
+      expect(w.store[own]).toBeUndefined();
+      expect(w.store[`${own}.hash`]).toBeUndefined();
+    }
+  });
+
+  it("a pointer whose target is gone means the step runs", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const w = world({ finish_shots: [running] as never }, lostPoll,
+      { "renders/p/clips/s1_finished.latest.json": JSON.stringify({ key: "renders/p/clips/film-b/s1_finished.mp4" }) });
+    const s = (await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.finish_shots![0];
+    expect(s?.clip_key).toBe(running.clip_key);
+    expect(s?.idx).toBe(0);
+  });
+
+  it("the copy does not buffer the clip: the fake throws if anything calls arrayBuffer", async () => {
+    const { copyClipWithSidecar } = await import("../src/r2-copy.js");
+    const a = "renders/p/clips/film-b/s1.mp4", b = "renders/p/clips/film-a/s1.mp4";
+    const w = world({}, () => ({}), { [a]: "clip", [`${a}.hash`]: "h" });
+    await expect(copyClipWithSidecar((w.e as unknown as { R2_RENDERS: never }).R2_RENDERS, a, b)).resolves.toBe(true);
   });
 
   it.each([

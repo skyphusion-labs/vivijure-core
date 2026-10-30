@@ -187,6 +187,7 @@ import {
 } from "./film-output-key.js";
 import { finishStepInputHash } from "./finish-hash.js";
 import { presignR2Get, presignR2Put, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
+import { copyClipWithSidecar } from "./r2-copy.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
 import { readBundleStoryboardYaml } from "./bundle-storyboard.js";
 import { contentValidateDoneClips, contentValidationView } from "./clip-content-validate.js";
@@ -1194,22 +1195,31 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: RecoverableFini
   // core#379: this film's own key first. The shared key is where a backend or module that predates the
   // film-scoped key still writes, and where a film already in flight at the upgrade wrote.
   // Between them, the pointer: the newest film's clip for this shot, which is how a resubmit reuses work.
-  const candidates = [
-    finishStepOutputKey(job.project, fs, modules, finishClipScope(job)),
-    await readFinishPointer(env, job.project, fs, modules),
-    finishStepOutputKey(job.project, fs, modules),
-  ];
+  const own = finishStepOutputKey(job.project, fs, modules, finishClipScope(job));
+  const pointed = await readFinishPointer(env, job.project, fs, modules);
+  const candidates = [own, pointed, finishStepOutputKey(job.project, fs, modules)];
   for (const expected of new Set(candidates)) {
     if (!expected) continue;
     if ((await env.R2_RENDERS.head(expected)) === null) continue;
     // #583 gate: a present artifact is adopted only if its provenance sidecar matches this step's inputs;
     // a missing/mismatched sidecar (legacy artifact, or a resubmit with changed inputs) re-runs the step.
     if (!(await finishArtifactHashMatches(env, job, fs, expected))) continue;
+    const key = await ownedClipKey(env, expected, pointed, own);
+    if (!key) continue;
     // #583: an R2-adopted step is REUSED, not run -- record the marker in `adopted`, never a fake `applied`-run tag.
-    adoptFinishStepOutput(fs, expected, finishStepAppliedTag(fs, modules));
+    adoptFinishStepOutput(fs, key, finishStepAppliedTag(fs, modules));
     return true;
   }
   return false;
+}
+
+/** The key to record for an adopted clip. A clip reached through the pointer belongs to another film, and
+ *  deleting that film sweeps its folder, so this film copies it and records the copy. Null when the copy
+ *  fails: the step then runs, and the film never records a clip it does not own. */
+async function ownedClipKey(env: Env, key: string, pointed: string | null, own: string | null): Promise<string | null> {
+  if (key !== pointed || key === own) return key;
+  if (!own) return null;
+  return (await copyClipWithSidecar(env.R2_RENDERS, key, own)) ? own : null;
 }
 
 // cf#312: satellite finish/speech jobs queue + cold-start + GPU work. Same 30min envelope as
@@ -1559,8 +1569,13 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     const verified = new Map<string, string>();
     for (const fs of finishShots) {
       if (!finishShotAdoptableFromR2(fs)) continue;
-      for (const key of [own.get(fs.shot_id), await readFinishPointer(env, job.project, fs, preModules), present.get(fs.shot_id)]) {
-        if (key && await finishArtifactHashMatches(env, job, fs, key)) { verified.set(fs.shot_id, key); break; }
+      const pointed = await readFinishPointer(env, job.project, fs, preModules);
+      const ownKey = finishStepOutputKey(job.project, fs, preModules, finishClipScope(job));
+      for (const key of [own.get(fs.shot_id), pointed, present.get(fs.shot_id)]) {
+        if (!key || (await env.R2_RENDERS.head(key)) === null) continue; // a pointer can outlive its target
+        if (!(await finishArtifactHashMatches(env, job, fs, key))) continue;
+        const owned = await ownedClipKey(env, key, pointed, ownKey);
+        if (owned) { verified.set(fs.shot_id, owned); break; }
       }
     }
     reclaimFinishShotsFromR2(finishShots, verified, preModules); // #583: thread modules so the reused marker reconstructs into `adopted`
