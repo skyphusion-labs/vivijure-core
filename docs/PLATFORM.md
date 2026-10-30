@@ -60,3 +60,17 @@ host-side env bridge module.
 3. Update `tests/platform-contract.test.ts` in this repo.
 4. Land in `vivijure-core`, then bump the dependency in both hosts before either ships a release
    that depends on the new shape.
+
+## Finish queue (optional)
+
+`FINISH_QUEUE` on the orchestrator env gives films first-in-first-out admission to the video-finish
+tier. It is not part of `Platform` and does not change `PLATFORM_ICD_VERSION`: a host that does not bind
+it keeps retry with backoff. To opt in, apply `FINISH_QUEUE_SCHEMA` as a migration and bind
+`sqlFinishQueue(db, { slots })`. A host may bind its own implementation of the `FinishQueue` interface
+instead. See `src/finish-queue.ts`.
+
+`slots` is an estimate of what the door can run, and the door stays authoritative: a 429 after a grant
+returns the slot, keeps the film's place, and lowers a temporary cap to what is really running.
+`perKeyCap` optionally limits the slots one opaque key can hold, so a batch or a heavy project cannot
+take every slot while others wait. Core passes the project as the key. With no cap the key has no
+effect, and order within a key is always first come, first served.

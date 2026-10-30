@@ -20,6 +20,7 @@ import {
   videoFinishUrl,
 } from "./media-finish-auth.js";
 import { presignR2Get, presignR2Put } from "./presign.js";
+import type { FinishQueue, FinishQueueAnswer } from "./finish-queue.js";
 
 export const ASSEMBLE_NOTFOUND_STREAK = 12;
 
@@ -217,6 +218,12 @@ export type AssemblePollState = {
  * Waiting costs one submit per backoff step and no compute, because nothing has started.
  */
 export const ASSEMBLE_CAPACITY_MAX_WAIT_SECONDS = ASSEMBLE_MAX_JOB_SECONDS;
+/**
+ * How long any finish step may hold on a failure that is not capacity: unreachable, a 5xx, a bad body.
+ * Much shorter than a capacity wait, because a door that cannot be reached may be a misconfiguration
+ * that will never clear, and the user is better told soon, with the step named.
+ */
+export const FINISH_TRANSPORT_HOLD_MAX_SECONDS = 15 * 60;
 export const ASSEMBLE_CAPACITY_BACKOFF_BASE_SECONDS = 30;
 export const ASSEMBLE_CAPACITY_BACKOFF_MAX_SECONDS = 300;
 
@@ -238,7 +245,18 @@ export type AssembleCapacityWait = {
   attempts: number;
   nextAt: number;
   detail: string;
+  /** The film holds a place in a FIFO queue. Absent means plain retry with backoff. */
+  queued?: boolean;
+  /** 1 means next to be served. Absent until the queue has answered. */
+  position?: number;
+  /** Films waiting in the queue, this one included. */
+  depth?: number;
+  /** The finish step that is waiting, for example "assemble" or "subtitle". */
+  step?: string;
 };
+
+/** How soon a queued film asks again. Short because the ask is cheap and the answer is its place. */
+export const FINISH_QUEUE_RECHECK_SECONDS = 30;
 
 export function encodeAssembleWait(w: AssembleCapacityWait): string {
   return JSON.stringify(w);
@@ -254,6 +272,10 @@ export function decodeAssembleWait(raw: string | undefined | null): AssembleCapa
       nextAt: w.nextAt,
       attempts: typeof w.attempts === "number" && w.attempts > 0 ? Math.floor(w.attempts) : 0,
       detail: typeof w.detail === "string" ? w.detail : "",
+      ...(w.queued === true ? { queued: true } : {}),
+      ...(typeof w.position === "number" ? { position: w.position } : {}),
+      ...(typeof w.depth === "number" ? { depth: w.depth } : {}),
+      ...(typeof w.step === "string" ? { step: w.step } : {}),
     };
   } catch {
     return null;
@@ -264,6 +286,96 @@ export function decodeAssembleWait(raw: string | undefined | null): AssembleCapa
 export function assembleWaitHolding(raw: string | undefined | null, now: number = Date.now()): boolean {
   const w = decodeAssembleWait(raw);
   return !!w && now < w.nextAt;
+}
+
+/** The queue a host bound, or null. Duck-typed, like the door fetchers. */
+export function finishQueueOf(env: Env): FinishQueue | null {
+  const q = (env as { FINISH_QUEUE?: FinishQueue }).FINISH_QUEUE;
+  return q && typeof q.acquire === "function" ? q : null;
+}
+
+/**
+ * Run one queue call. A queue that fails must not stop a film: the door still refuses what it cannot
+ * run, so the film falls back to retry with backoff. The event says so, and the caller gets null.
+ */
+export async function finishQueueCall<T>(
+  env: Env,
+  holder: string,
+  op: string,
+  call: (q: FinishQueue) => Promise<T>,
+): Promise<T | null> {
+  const q = finishQueueOf(env);
+  if (!q) return null;
+  try {
+    return await call(q);
+  } catch (e) {
+    console.warn(JSON.stringify({
+      ev: "finish_queue.unavailable",
+      op,
+      holder,
+      detail: e instanceof Error ? e.message : String(e),
+    }));
+    return null;
+  }
+}
+
+export type FinishSlotGate = { kind: "go" } | { kind: "waiting"; wait: string; detail: string };
+
+/**
+ * Before a film mints URLs or calls a finish step: may it go now?
+ *
+ * Inside the wait window it holds with no calls at all. With no queue bound, or with a queue that
+ * failed, it goes, and the door decides, which is the retry path core#367 shipped. Past the wait bound
+ * it also goes: the door then accepts, or refuses and the caller's bound fails the film by name, so
+ * there is one way to run out of time and not two.
+ */
+export async function finishSlotGate(
+  env: Env,
+  holder: string,
+  rawWait: string | undefined,
+  ask: { step: string; fairnessKey?: string },
+  now: number = Date.now(),
+): Promise<FinishSlotGate> {
+  const { step } = ask;
+  const prior = decodeAssembleWait(rawWait);
+  if (prior && now < prior.nextAt) {
+    return { kind: "waiting", wait: encodeAssembleWait(prior), detail: prior.detail };
+  }
+  const answer: FinishQueueAnswer | null = await finishQueueCall(env, holder, "acquire", (q) => q.acquire(holder, ask));
+  if (!answer) return { kind: "go" };
+  if (answer.granted) {
+    console.log(JSON.stringify({
+      ev: "finish_queue.granted",
+      holder,
+      step,
+      running: answer.running,
+      waited_ms: prior ? now - prior.firstAt : 0,
+    }));
+    return { kind: "go" };
+  }
+  const firstAt = prior?.firstAt ?? now;
+  if (now - firstAt >= ASSEMBLE_CAPACITY_MAX_WAIT_SECONDS * 1000) return { kind: "go" };
+  const detail = `waiting for a finish slot, position ${answer.position} of ${answer.depth}`;
+  const wait: AssembleCapacityWait = {
+    firstAt,
+    attempts: (prior?.attempts ?? 0) + 1,
+    nextAt: now + FINISH_QUEUE_RECHECK_SECONDS * 1000,
+    detail,
+    queued: true,
+    position: answer.position,
+    depth: answer.depth,
+    step,
+  };
+  console.log(JSON.stringify({
+    ev: "finish_queue.waiting",
+    holder,
+    step,
+    position: answer.position,
+    depth: answer.depth,
+    running: answer.running,
+    waited_ms: now - firstAt,
+  }));
+  return { kind: "waiting", wait: encodeAssembleWait(wait), detail };
 }
 
 /** Backoff before attempt `attempts + 1`: 30s, 60s, 120s, 240s, then 300s. */
@@ -485,7 +597,7 @@ export async function pollVideoFinishAsync(env: Env, jobId: string): Promise<Sta
 export type AssembleTickOptions = {
   /** The caller's stored AssembleCapacityWait, if the film is waiting for a slot. */
   wait?: string;
-  /** Film id, sent as FINISH_AFFINITY_HEADER on a submit. */
+  /** Film id, sent as FINISH_AFFINITY_HEADER on a submit. Also the film's ticket in a bound queue. */
   affinity?: string;
 };
 
@@ -499,10 +611,21 @@ export async function tickVideoFinishAssemble(
   pollRaw: string | undefined,
   opts: AssembleTickOptions = {},
 ): Promise<AssembleTick> {
+  const holder = opts.affinity;
   try {
-    return await tickVideoFinishAssembleInner(env, payload, pollRaw, opts);
+    const tick = await tickVideoFinishAssembleInner(env, payload, pollRaw, opts);
+    if (holder) {
+      // A running job holds its slot for as long as it is polled. A job that ended gives it back and
+      // keeps the film's place. A crash reaches neither line, and the lease expires instead.
+      if (tick.kind === "pending") await finishQueueCall(env, holder, "renew", (q) => q.renew(holder));
+      else if (tick.kind === "done" || tick.kind === "failed") await finishQueueCall(env, holder, "release", (q) => q.release(holder));
+    }
+    return tick;
   } catch (e) {
-    if (isMediaFinishAuthError(e)) return { kind: "failed", error: e.message };
+    if (isMediaFinishAuthError(e)) {
+      if (holder) await finishQueueCall(env, holder, "release", (q) => q.release(holder));
+      return { kind: "failed", error: e.message };
+    }
     throw e;
   }
 }
@@ -537,11 +660,16 @@ async function tickVideoFinishAssembleInner(
           capacity: true,
         };
       }
+      // The film was granted a slot and the door refused it: give the slot back and keep the place.
+      const holder = opts.affinity;
+      const queued = !!holder && finishQueueOf(env) !== null;
+      if (holder) await finishQueueCall(env, holder, "yield", (q) => q.yield(holder));
       const next: AssembleCapacityWait = {
         firstAt,
         attempts,
-        nextAt: now + assembleCapacityBackoffSeconds(attempts) * 1000,
+        nextAt: now + (queued ? FINISH_QUEUE_RECHECK_SECONDS : assembleCapacityBackoffSeconds(attempts)) * 1000,
         detail: submitted.detail,
+        ...(queued ? { queued: true } : {}),
       };
       console.warn(JSON.stringify({
         ev: "assemble.capacity_wait",
@@ -553,6 +681,21 @@ async function tickVideoFinishAssembleInner(
       return { kind: "waiting", wait: encodeAssembleWait(next), detail: submitted.detail };
     }
     if (submitted.kind === "unreachable") {
+      // core#377: hold through a blip when the caller can keep a wait, for the short transport bound.
+      const holder = opts.affinity;
+      const firstAt = wait?.firstAt ?? now;
+      if (holder && now - firstAt < FINISH_TRANSPORT_HOLD_MAX_SECONDS * 1000) {
+        await finishQueueCall(env, holder, "release", (q) => q.release(holder));
+        const attempts = (wait?.attempts ?? 0) + 1;
+        const next: AssembleCapacityWait = {
+          firstAt,
+          attempts,
+          nextAt: now + assembleCapacityBackoffSeconds(attempts) * 1000,
+          detail: submitted.detail,
+        };
+        console.warn(JSON.stringify({ ev: "assemble.transport_wait", attempts, waited_ms: now - firstAt, detail: submitted.detail }));
+        return { kind: "waiting", wait: encodeAssembleWait(next), detail: submitted.detail };
+      }
       return {
         kind: "failed",
         error: `video-finish async submit failed (${submitted.detail})`,

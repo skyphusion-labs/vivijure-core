@@ -108,7 +108,12 @@ export function stallSignal(job: FilmJob, now: number = Date.now()): Record<stri
 function phaseProgress(job: FilmJob, clipJob: ClipJob | null, keyframeDone?: number): Record<string, unknown> {
   const total = job.scenes.length;
   const summary = summarizeFilm(job, clipJob);
-  const base = { scene_total: total, project: job.project, ...stallSignal(job) };
+  const base = {
+    scene_total: total,
+    project: job.project,
+    ...stallSignal(job),
+    ...(summary.finish_waiting ? { finish_waiting: summary.finish_waiting } : {}),
+  };
 
   switch (job.phase) {
     case "keyframe": {
@@ -160,6 +165,8 @@ export function filmJobToPollView(job: FilmJob, clipJob: ClipJob | null, keyfram
     output = filmDonePayload(job, clipJob);
   } else if (job.phase === "failed") {
     status = "FAILED";
+    // A film that failed at assemble or mux still names the step and what is kept, so it can be retried.
+    if (job.finish_incomplete?.length) output = { finish_incomplete: job.finish_incomplete };
   } else {
     // cf#307: when the keyframe module reports wait=accepted (queue / cold start), surface IN_QUEUE
     // so the panel can distinguish spinning-up from sampling. Only when the module actually sent

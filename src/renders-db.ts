@@ -735,6 +735,20 @@ export async function markFinishDone(
   );
 }
 
+/** core#377: a retry puts a terminal film back in flight, so the sweep drives it and it can finish
+ *  and notify again. `output_ms` stays until the new finish replaces it. */
+export async function reopenRenderForFinishRetry(env: Env, jobId: string): Promise<void> {
+  const now = nowSeconds();
+  await withD1Retry(() =>
+    env.DB.prepare(
+      `UPDATE renders SET status = 'IN_PROGRESS', finish_state = NULL, completed_at = NULL,
+       notified_at = NULL, error = NULL, updated_at = ?, submitted_at = ? WHERE job_id = ?`,
+    )
+      .bind(now, now, jobId)
+      .run(),
+  );
+}
+
 // v0.139.0: atomically claim the render-done email for a job (once-only). Flips
 // notified_at NULL -> now in a single conditional UPDATE for a TERMINAL row, so
 // concurrent pollers and the cron sweep can never double-send. Keyframe previews

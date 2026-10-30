@@ -4,8 +4,8 @@
 // master-chain state helpers, and the stall math. The orchestrator (film-orchestrator.ts) owns
 // every await; it re-exports this module, so importers and tests keep their one entry point.
 
-import { decodeAssembleWait } from "./video-finish-assemble.js";
-import type { ConfigSchema, DialogueLine, FinishOutput, HookSelection, MasterOutput, RegisteredModule, SpeechOutput } from "./modules/types.js";
+import { FINISH_TRANSPORT_HOLD_MAX_SECONDS, assembleCapacityBackoffSeconds, decodeAssembleWait } from "./video-finish-assemble.js";
+import type { ConfigSchema, DialogueLine, FinishOutput, HookSelection, MasterOutput, RegisteredModule, SpeechOutput, StepFailure } from "./modules/types.js";
 import { validateConfig } from "./modules/registry.js";
 import { summarizeJob, type ClipJob, type JobSummary } from "./clip-job-model.js";
 import { classifyTransientFailure } from "./render-orchestrator.js";
@@ -147,6 +147,92 @@ export function applyVoiceSeed(
  *  artifact (#583) rather than run this pass. The ordered list of these reconciles 1:1 to the shot chain. */
 export interface FinishStepRecord { binding: string; tags: string[]; reused: boolean; }
 
+/** A chain step holding for a transient failure. Same shape and backoff as a capacity wait. */
+export interface StepWait {
+  firstAt: number;
+  attempts: number;
+  nextAt: number;
+  detail: string;
+}
+
+/**
+ * How long a per-shot, speech or master step may hold before it is recorded as not done.
+ *
+ * Shorter than the capacity wait on purpose, and it must stay below PHASE_HARD_DEADLINE_SECONDS: a
+ * hold moves no progress marker, so a longer one would be killed by the stall ceiling and read as a
+ * wedged render instead of naming the step. These steps call GPU doors and audio doors, which have no
+ * slots to queue for, so a door that is still down after an hour is an outage.
+ */
+export const FINISH_STEP_HOLD_MAX_SECONDS = 3600;
+
+export { FINISH_TRANSPORT_HOLD_MAX_SECONDS };
+
+/** The next wait for a step that failed transiently, or null once the bound has passed. */
+export function nextStepWait(
+  prior: StepWait | undefined,
+  detail: string,
+  maxSeconds: number = FINISH_TRANSPORT_HOLD_MAX_SECONDS,
+  now: number = Date.now(),
+): StepWait | null {
+  const firstAt = prior?.firstAt ?? now;
+  if (now - firstAt >= maxSeconds * 1000) return null;
+  const attempts = (prior?.attempts ?? 0) + 1;
+  return { firstAt, attempts, nextAt: now + assembleCapacityBackoffSeconds(attempts) * 1000, detail };
+}
+
+/** True while a held step must not be called again. */
+export function stepWaitHolding(wait: StepWait | undefined, now: number = Date.now()): boolean {
+  return !!wait && now < wait.nextAt;
+}
+
+/**
+ * Read a step's failure from its output. Absent means the step did its work or chose a no-op.
+ *
+ * A passthrough with no `failure` field is PERMANENT, not clean: an older module reports a missed step
+ * only through `degraded` or a `passthrough:` tag, and that must not read as a finished film.
+ */
+export function stepFailureOf(out: { failure?: unknown; degraded?: unknown; applied?: unknown }): StepFailure | null {
+  const f = out.failure as Partial<StepFailure> | null | undefined;
+  if (f && (f.kind === "transient" || f.kind === "permanent")) {
+    return {
+      kind: f.kind,
+      code: typeof f.code === "string" && f.code.length > 0 ? f.code : "unclassified",
+      ...(typeof f.detail === "string" ? { detail: f.detail } : typeof out.degraded === "string" ? { detail: out.degraded } : {}),
+    };
+  }
+  if (typeof out.degraded === "string" && out.degraded.length > 0) {
+    return { kind: "permanent", code: "unclassified", detail: out.degraded };
+  }
+  const tag = Array.isArray(out.applied) ? out.applied.find((a) => typeof a === "string" && a.startsWith("passthrough:")) : undefined;
+  return typeof tag === "string" ? { kind: "permanent", code: "unclassified", detail: tag } : null;
+}
+
+/** One finish step that did not run on a film that otherwise stands. See retryFilmFinish. */
+export interface FinishIncompleteStep {
+  stage: "speech" | "finish" | "assemble" | "master" | "mix" | "mux" | "film.finish";
+  step: string;        // module binding or name, or the stage itself for assemble / mix / mux
+  code: string;        // from the module's StepFailure, or "wait_exhausted" / "step_failed"
+  detail?: string;
+  kept: string;        // what the user still has, in words
+  shot_id?: string;    // per-shot stages only
+  step_index?: number; // film.finish only: position in the chain
+  at: number;
+}
+
+/** Record a step as not done, once. A step that is recorded again replaces its earlier record. */
+export function noteFinishIncomplete(
+  job: { finish_incomplete?: FinishIncompleteStep[] },
+  entry: Omit<FinishIncompleteStep, "at"> & { at?: number },
+): void {
+  const list = (job.finish_incomplete ??= []);
+  const same = (e: FinishIncompleteStep): boolean =>
+    e.stage === entry.stage && e.step === entry.step && e.shot_id === entry.shot_id;
+  const at = entry.at ?? Date.now();
+  const i = list.findIndex(same);
+  if (i >= 0) list[i] = { ...entry, at };
+  else list.push({ ...entry, at });
+}
+
 export interface FinishShot {
   shot_id: string;
   clip_key: string;   // current clip key (updated as each finish module completes)
@@ -186,6 +272,7 @@ export interface FinishShot {
   // generic `passthrough:backend-soft-degrade`; this is the field that tells "no face" from
   // "door timed out". Optional: job docs written before #226 have only the tag.
   degraded?: string[];
+  wait?: StepWait; // core#377: holding for a transient failure, status stays pending
 }
 
 /** One shot's dialogue audio moving through the `speech` chain (post-dialogue, pre-finish). `chain` is
@@ -205,6 +292,7 @@ export interface SpeechShot {
   degraded?: string;   // last soft-degrade reason on this shot (honest, never a fake applied tag)
   error?: string;
   attempts?: number;   // transient-retry counter for the current step (reset on advance)
+  wait?: StepWait;     // core#377: holding for a transient failure, status stays pending
 }
 
 export interface FilmKeyframeRef {
@@ -340,6 +428,7 @@ export interface FilmJob {
     applied: string[];   // accumulated applied tags across the chain (e.g. ["music-upscale:soxr48k"])
     degraded: string[];  // per-step soft-degrade reasons ("<binding>: <reason>"); a passthrough is never silent
     configs?: Record<string, unknown>[]; // per-step clamped planner config, aligned to `chain` order (enterMasterOrMux)
+    wait?: StepWait;     // core#377: holding for a transient failure
   };
   // Opening title + end-credit text for the film.finish chain (title / credit cards). Absent -> no
   // cards; the film.finish module passes the film through unchanged. (#190)
@@ -458,6 +547,20 @@ export interface FilmJob {
   // Waiting for a finish slot (encoded AssembleCapacityWait). Never stored in assemble_poll, because
   // every caller reads an empty assemble_poll as "mint URLs and submit".
   assemble_wait?: string;
+  // core#377: finish steps that did not run. Absent or empty is what a clean finish looks like.
+  finish_incomplete?: FinishIncompleteStep[];
+  // film.finish steps recorded as not done, by deterministic step key, so a later tick does not run
+  // them again while a later step is still encoding. Cleared by a retry.
+  film_finish_skipped?: Record<string, FinishIncompleteStep>;
+  // The film the film.finish chain started from, so a retry can run the chain again from there.
+  film_finish_base_key?: string;
+  // A retry asked for the film.finish chain alone: mux re-entry goes straight to it.
+  film_finish_resume?: boolean;
+  // core#377: the mixed bed, once made, so a wait for a slot does not mix again on each attempt.
+  mix_done_key?: string;
+  // The mix could not run and the film moves on with the bare bed. Cleared by a retry.
+  mix_skipped?: boolean;
+  mix_wait?: StepWait;
   // Wall-clock the job entered its CURRENT phase (issue #129). advanceFilmJob stamps this on every
   // phase transition; the stall recovery measures how long a pollable phase has been stuck against it.
   // Absent on pre-#129 jobs -> recovery falls back to created_at (still bounded, just more generous).
@@ -596,7 +699,10 @@ export interface FilmSummary {
   finish_unavailable?: FilmJob["finish_unavailable"];
   // The film is waiting for a finish slot and has not failed. Absent otherwise. It says why the
   // phase is not moving, so a wait does not read as a hung render.
-  finish_waiting?: { since: number; attempts: number; next_at: number; detail: string };
+  finish_waiting?: FinishWaitingView;
+  // core#377: finish steps that did not run. Absent on a clean finish. A `done` film with this set is
+  // not a clean done: it names each step and what is kept, and the steps can be retried.
+  finish_incomplete?: FinishIncompleteStep[];
   // #619: keyframe recovery hit the ceiling with a partial set; the film delivered only the scenes
   // that rendered. Absent on a normal render. Lets the API/UI show "N of M scenes, dropped [...]".
   keyframes_incomplete?: FilmJob["keyframes_incomplete"];
@@ -659,9 +765,45 @@ export function summarizeFinish(shots: FinishShot[]): FinishSummary {
     reasons: uniqueFirstSeen(perShot.flat()),
   };
 }
-function finishWaitingView(raw: string | undefined): FilmSummary["finish_waiting"] {
+/** What a poll says while a film waits. `position` is present only when a queue has answered. */
+export interface FinishWaitingView {
+  since: number;
+  attempts: number;
+  next_at: number;
+  detail: string;
+  queued?: boolean;
+  position?: number;
+  depth?: number;
+  step?: string;
+}
+
+export function finishWaitingView(raw: string | undefined): FinishWaitingView | undefined {
   const w = decodeAssembleWait(raw);
-  return w ? { since: w.firstAt, attempts: w.attempts, next_at: w.nextAt, detail: w.detail } : undefined;
+  if (!w) return undefined;
+  return {
+    since: w.firstAt,
+    attempts: w.attempts,
+    next_at: w.nextAt,
+    detail: w.detail,
+    ...(w.queued ? { queued: true } : {}),
+    ...(w.position !== undefined ? { position: w.position } : {}),
+    ...(w.depth !== undefined ? { depth: w.depth } : {}),
+    ...(w.step !== undefined ? { step: w.step } : {}),
+  };
+}
+
+/** The wait a film is in now: the slot queue first, then the first chain step holding. */
+export function filmFinishWaiting(job: FilmJob): FinishWaitingView | undefined {
+  const queued = finishWaitingView(job.assemble_wait);
+  if (queued) return queued;
+  const view = (w: StepWait, step: string | undefined): FinishWaitingView => ({
+    since: w.firstAt, attempts: w.attempts, next_at: w.nextAt, detail: w.detail, ...(step ? { step } : {}),
+  });
+  if (job.mix_wait) return view(job.mix_wait, "mix");
+  if (job.master?.wait) return view(job.master.wait, job.master.chain[job.master.idx]);
+  for (const s of job.speech_shots ?? []) if (s.wait) return view(s.wait, s.chain[s.idx]);
+  for (const s of job.finish_shots ?? []) if (s.status === "pending" && s.wait) return view(s.wait, s.chain[s.idx]);
+  return undefined;
 }
 
 export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummary {
@@ -682,7 +824,8 @@ export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummar
     film_key: job.film_key,
     film_finish: job.film_finish,
     finish_unavailable: job.finish_unavailable,
-    finish_waiting: finishWaitingView(job.assemble_wait),
+    finish_waiting: filmFinishWaiting(job),
+    finish_incomplete: job.finish_incomplete?.length ? job.finish_incomplete : undefined,
     keyframes_incomplete: job.keyframes_incomplete,
     assemble_ms,
     output_ms,

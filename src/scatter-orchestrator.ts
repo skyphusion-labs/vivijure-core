@@ -7,7 +7,8 @@ import {
   deletePartialPool,
   encodeAssemblePoll,
   mintPartialUrlPool,
-  assembleWaitHolding,
+  finishQueueCall,
+  finishSlotGate,
   tickVideoFinishAssemble,
   type FinishPayload,
 } from "./video-finish-assemble.js";
@@ -30,7 +31,7 @@ import {
   type FilmJob,
   type FilmScene,
 } from "./film-orchestrator.js";
-import { applyVoiceSeed, voiceLockFromCast } from "./film-model.js";
+import { applyVoiceSeed, finishWaitingView, voiceLockFromCast, type FinishIncompleteStep } from "./film-model.js";
 import { generateAudioOn, motionScatterAllowed, usageOf } from "./motion-usage.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
 import { filmJobToPollView, filterScenesByShotIds, orderScenesByShotIds, mapRenderOverridesToModuleConfigs } from "./film-render-bridge.js";
@@ -67,6 +68,7 @@ import {
   runPreparedWrites,
 } from "./renders-db.js";
 import type { PreparedRenderUpdate } from "./renders-db.js";
+import { reopenRenderForFinishRetry } from "./renders-db.js";
 import { resolveCastLoras, untrainedCastMessage } from "./cast-loras.js";
 import { fireNotifyForScatter } from "./scatter-notify.js";
 import { isTransientD1Error, withD1Retry, d1ErrorCode } from "./d1-retry.js";
@@ -367,6 +369,8 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
     remuxAudioOnly: true,
   };
   if (!job.assemble_poll) {
+    const gate = await finishSlotGate(env, job.scatter_id, job.assemble_wait, { step: "mux", fairnessKey: job.project });
+    if (gate.kind === "waiting") { job.assemble_wait = gate.wait; job.phase = "mux"; job.error = undefined; return; }
     payload = {
       ...payload,
       clips: [{ url: await presignR2Get(env, silentKey, 1800) }],
@@ -444,6 +448,8 @@ async function runScatterFilmFinish(
   preModules?: RegisteredModule[],
 ): Promise<boolean> {
   if (job.film_finish || !job.film_key) return true; // already run (or nothing to card) -> complete
+  job.film_finish_base_key ??= job.film_key;
+  job.film_finish_skipped ??= {};
   job.film_finish_dispatched ??= {};
   job.film_finish_polls ??= {};
   job.film_finish_attempts ??= {};
@@ -492,6 +498,11 @@ async function runScatterFilmFinish(
     persistDuration: async (key, seconds) => { job.film_output_seconds![key] = seconds; await saveScatterJob(env, job); },
     // cf#268: sum module-forwarded container elapsed onto the scatter job for finalize.
     persistElapsed: async (ms) => { accumulateFinishElapsed(job, ms); await saveScatterJob(env, job); },
+    wait: {
+      get: () => job.assemble_wait,
+      set: async (raw) => { job.assemble_wait = raw; await saveScatterJob(env, job); },
+    },
+    skipped: job.film_finish_skipped,
   });
   if (!r.ran) { job.film_finish = { applied: [], errors: [] }; return true; } // no film.finish module -> mark + skip -> complete
   if (r.errors.length > 0) console.warn(`scatter film.finish errors for ${job.scatter_id}: ${r.errors.join("; ")}`);
@@ -499,6 +510,9 @@ async function runScatterFilmFinish(
   if (!r.complete) { await saveScatterJob(env, job); return false; } // #600 in-flight: leave film_finish UNSET so the next gather tick resumes; dispatched map already persisted. NOT complete -> caller parks in "finishing" and skips finalize (#23)
   job.film_finish = { applied: r.applied, adopted: r.adopted, errors: r.errors, steps: r.steps, degraded: r.degraded, sidecar_key: r.sidecar_key };
   job.film_key = r.film_key;
+  job.finish_incomplete = r.incomplete.length ? r.incomplete : undefined;
+  job.assemble_wait = undefined;
+  await finishQueueCall(env, job.scatter_id, "forget", (q) => q.forget(job.scatter_id));
   await saveScatterJob(env, job); // persist carded key + outcome before finalize records it
   return true;
 }
@@ -520,8 +534,9 @@ async function assembleScatterClips(
     outputKey,
     keepClipAudio: true,
   };
-  if (assembleWaitHolding(job.assemble_wait)) { job.phase = "gather"; job.error = undefined; return; }
   if (!job.assemble_poll) {
+    const gate = await finishSlotGate(env, job.scatter_id, job.assemble_wait, { step: "assemble", fairnessKey: job.project });
+    if (gate.kind === "waiting") { job.assemble_wait = gate.wait; job.phase = "gather"; job.error = undefined; return; }
     // ASSEMBLE_PRESIGN_TTL_SECONDS, not the old hardcoded 1800. Under chunked assemble batch N
     // downloads its clips only after batch N-1 has finished encoding, and the final pass reads
     // the FIRST partial at the very END of the job, so every URL here has to cover the whole
@@ -922,6 +937,41 @@ export async function advanceScatterJob(
   return view;
 }
 
+/**
+ * core#377: run again the film.finish steps a gathered film names as not done. Only film.finish is
+ * recorded on a scatter job, since per-shot steps belong to the shard films.
+ */
+export async function retryScatterFilmFinish(
+  env: Env,
+  scatterId: string,
+): Promise<{ job: ScatterJob; retried: FinishIncompleteStep[] } | null> {
+  const job = await loadScatterJob(env, scatterId);
+  if (!job) return null;
+  const entries = job.finish_incomplete ?? [];
+  if (job.cancelled || entries.length === 0 || job.phase !== "done" || !job.film_finish_base_key) {
+    return { job, retried: [] };
+  }
+  const first = entries.reduce((min, e) => Math.min(min, e.step_index ?? 0), Number.POSITIVE_INFINITY);
+  const base = job.film_finish_base_key.replace(/\.mp4$/i, "");
+  // Later steps were built from the film without the missing step, so they run again too.
+  for (let n = first; Number.isFinite(n) && n < first + 16; n++) {
+    await env.R2_RENDERS.delete(`${base}-ff${n}.mp4`).catch(() => undefined);
+  }
+  job.film_key = job.film_finish_base_key;
+  job.film_finish = undefined;
+  job.film_finish_skipped = {};
+  job.film_finish_polls = {};
+  job.film_finish_dispatched = {};
+  job.film_finish_attempts = {};
+  job.finish_incomplete = undefined;
+  job.assemble_wait = undefined;
+  job.phase = "finishing";
+  await finishQueueCall(env, scatterId, "forget", (q) => q.forget(scatterId));
+  await saveScatterJob(env, job);
+  await reopenRenderForFinishRetry(env, scatterId);
+  return { job, retried: entries };
+}
+
 export function scatterJobToPollView(job: ScatterJob): RunpodJobView {
   let status: RunpodStatus;
   let output: Record<string, unknown> | undefined;
@@ -941,6 +991,7 @@ export function scatterJobToPollView(job: ScatterJob): RunpodJobView {
       project: job.project,
       shards: job.shard_film_ids.length,
       scene_total: job.expected_shot_ids.length,
+      ...(finishWaitingView(job.assemble_wait) ? { finish_waiting: finishWaitingView(job.assemble_wait) } : {}),
     };
   }
 
