@@ -1134,10 +1134,11 @@ export interface FilmFinishInput {
   // them, so the modules' `??` arms become unreachable rather than silently load-bearing. A
   // structural guarantee, not a convention a later edit can drop.
   //
-  // A DECISION, not a measurement. Sourced from FilmJob.delivery_width/height via
-  // resolveDeliveryResolution, which falls back to ONE estate default and reports whether the
-  // value was decided or defaulted. Never the clips' own dimensions: assembling at the clips' size
-  // ships whatever the upscale produced instead of the delivery resolution.
+  // An operator delivery_width and delivery_height win. When the job has neither, the
+  // seed uses the measured assemble geometry (resolveMeasuredDelivery), the same frame
+  // the concat was built at. The 1920x1080 default is only the unmeasured case. Seeding
+  // that default over a vertical assemble pillarboxes the film and draws the title card
+  // in a landscape frame (core#374).
   width?: number;
   height?: number;
   fps?: number;

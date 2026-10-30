@@ -1641,6 +1641,22 @@ export function resolveDeliveryResolution(
   };
 }
 
+/** The frame a finish step should deliver at.
+ *
+ *  An operator `delivery_width` and `delivery_height` win. Otherwise the geometry
+ *  is the one `selectDeliveryFromMeasured` picks from the clips, which is the
+ *  frame assemble already builds. The 1920x1080 default is only the case where
+ *  nothing was measured. Finish used to call `resolveDeliveryResolution` alone,
+ *  so a 720x1280 assemble was later padded into a landscape frame (core#374). */
+export function resolveMeasuredDelivery(
+  job: { delivery_width?: unknown; delivery_height?: unknown },
+  measured: ReadonlyArray<{ width: number; height: number }>,
+): DeliveryResolution {
+  const explicit = resolveDeliveryResolution(job);
+  if (explicit.decided) return explicit;
+  return selectDeliveryFromMeasured(measured);
+}
+
 /** Default fan-out for keyframe invokes when KEYFRAME_PARALLEL is unset. */
 export const DEFAULT_KEYFRAME_PARALLEL = 4;
 
