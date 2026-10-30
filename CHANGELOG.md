@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.28.2
+
 ## [1.28.1] -- 2026-10-30
 
 ### fix(finish): a film that cannot deliver does not reopen on a retry (#384)

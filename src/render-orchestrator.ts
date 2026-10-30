@@ -28,7 +28,7 @@ import { emitStructuredEvent } from "./structured-events.js";
 const CLIP_TAKE_RE = /_take\d+/;
 
 /** Reroll must not destroy the last take. Copy live clip objects aside before overwrite. */
-async function archiveExistingClipTakes(env: Env, project: string, shot: ClipShot): Promise<void> {
+export async function archiveExistingClipTakes(env: Env, project: string, shot: ClipShot): Promise<void> {
   const prefix = `renders/${project}/clips/${shot.shot_id}`;
   const listed = await env.R2_RENDERS.list({ prefix, limit: 20 });
   const now = Date.now();
@@ -39,7 +39,8 @@ async function archiveExistingClipTakes(env: Env, project: string, shot: ClipSho
     const takeKey = obj.key.replace(/(\.[a-z0-9]+)$/i, `_take${now}$1`);
     const body = await env.R2_RENDERS.get(obj.key);
     if (!body) continue;
-    await env.R2_RENDERS.put(takeKey, await body.arrayBuffer());
+    // The stream, not arrayBuffer(): a clip can be 256 MB and a Worker isolate has 128 MB (core#379).
+    await env.R2_RENDERS.put(takeKey, body.body);
     takes.push({ key: takeKey, at: now });
   }
   if (takes.length) shot.takes = takes;

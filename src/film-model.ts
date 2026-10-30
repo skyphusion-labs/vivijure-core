@@ -1216,7 +1216,34 @@ export function finishShotLedgerReconciles(fs: FinishShot): boolean {
  *  upscale -> `_up`; see vivijure-upscale handler.py). Returns null for a module whose
  *  convention we do not model (e.g. text-overlay), so an unmodeled step gets NO R2 shortcut and can never
  *  be advanced off a sibling step's artifact -- the mid-chain phantom-adopt the silent-render bug warned of. */
-export function finishStepOutputKey(project: string, fs: FinishShot, modules?: RegisteredModule[]): string | null {
+export function finishStepOutputKey(project: string, fs: FinishShot, modules?: RegisteredModule[], scope?: string): string | null {
+  const key = unscopedFinishStepOutputKey(project, fs, modules);
+  if (!key || !scope || !finishStepIsShotNamed(fs, modules)) return key;
+  return `renders/${project}/clips/${scope}/${key.slice(key.lastIndexOf("/") + 1)}`;
+}
+
+/**
+ * core#379: true when this step's output is named off the shot, so every film of a project shares one
+ * object. Only these are film-scoped. An `append_suffix` step (upscale `_up`, blender `_bl`, lip-sync
+ * `_ls`) derives its key from its input clip and stays beside it, so two films whose input is the same
+ * shared clip still share its output. That exposure is known and not fixed here.
+ */
+export function finishStepIsShotNamed(fs: FinishShot, modules?: RegisteredModule[]): boolean {
+  const binding = fs.chain[fs.idx] ?? "";
+  const decl = moduleByBinding(modules, binding)?.finish_artifacts;
+  return decl ? decl.output_key.kind === "shot_named" : /RIFE/i.test(binding);
+}
+
+/**
+ * core#379: the folder under `clips/` this film's shot-named finish steps write to, so one film cannot
+ * replace a clip another film has recorded. A retry gets its own folder too, so a retry that fails leaves the clips
+ * of the film that stands as they were. Reclaiming a render sweeps `clips/<film_id>/`.
+ */
+export function finishClipScope(job: { film_id: string; finish_retry_gen?: number }): string {
+  return job.finish_retry_gen ? `${job.film_id}/r${job.finish_retry_gen}` : job.film_id;
+}
+
+function unscopedFinishStepOutputKey(project: string, fs: FinishShot, modules?: RegisteredModule[]): string | null {
   const binding = fs.chain[fs.idx] ?? "";
   // Contract-carried convention first (finish_artifacts, S6): the module DECLARES how it names its
   // output, so the core stops reverse-engineering module internals from the binding name.
