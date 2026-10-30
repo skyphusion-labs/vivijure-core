@@ -3588,6 +3588,16 @@ async function retryFilmFinishLocked(
   if (job.cancelled || entries.length === 0 || (job.phase !== "done" && job.phase !== "failed")) {
     return { job, retried: [] };
   }
+  // core#384: a shot the retry will not run again would fail the finish phase again, after the other
+  // shots' steps had called their doors. So a refused shot, or a failed shot with no named step, keeps
+  // the film closed, and no paid step starts for a film that cannot deliver.
+  const stuck = finishPhaseBlockers(job.finish_shots ?? []).filter(
+    (fs) => fs.status === "refused" || !entries.some((e) => e.stage === "finish" && e.shot_id === fs.shot_id),
+  );
+  if (stuck.length) {
+    emitStructuredEvent({ ev: "film.finish_retry_blocked", film_id: job.film_id, project: job.project, shots: stuck.map((fs) => fs.shot_id) });
+    return { job, retried: [] };
+  }
   const has = (stage: FinishIncompleteStep["stage"]): boolean => entries.some((e) => e.stage === stage);
   const modules = await discoverModules(env as unknown as Record<string, unknown>);
   const baseKey = job.film_finish_base_key;
