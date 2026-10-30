@@ -126,6 +126,8 @@ import {
   resolvePlannedSeconds,
   findClipDurationShortfalls,
   captionDurations,
+  finishTargetFrame,
+  predictScaledFrame,
   resolveDeliveryResolution,
   resolveMeasuredDelivery,
   DEFAULT_DELIVERY_FPS,
@@ -176,7 +178,7 @@ import {
 } from "./render-orchestrator.js";
 import { markFinishDone, markRenderFailedByJobId, markRenderRetryRestored, renderCompletedAt, reopenRenderForFinishRetry } from "./renders-db.js";
 import { filmDonePayload } from "./render-output-payload.js";
-import { validateFilmArtifact } from "./clip-validate.js";
+import { validateClipArtifact, validateFilmArtifact } from "./clip-validate.js";
 import {
   adoptFilmOutputKeyFromStore,
   assembleOutputKey,
@@ -1348,8 +1350,52 @@ export async function measuredClipDimensions(
 export async function resolveAssembleDelivery(env: Env, job: FilmJob): Promise<DeliveryResolution> {
   const explicit = resolveDeliveryResolution(job);
   if (explicit.decided) return explicit;
+  // core#389: the frame assemble built, when it has run. That is what a film.finish step draws on.
+  if (job.assemble_frame) return resolveMeasuredDelivery(job, [job.assemble_frame]);
   const dims = await measuredClipDimensions(env, job);
   return resolveMeasuredDelivery(job, [...dims.values()]);
+}
+
+/**
+ * core#389: the frame to assemble at, from the clips as they are AFTER finish.
+ *
+ * The clip doc holds sizes from before finish. Assembling at those paid for a 2688x1536 clip and then
+ * scaled it back to 1344x768, with nothing to say so. So a shot whose chain did work is measured from
+ * its finished clip, and the largest-area rule then keeps the upscale.
+ *
+ * Each outcome the upscale did not reach the film is written to the shot's `degraded`, which is what
+ * the finish summary reads: an operator target below the clip, and a finished clip that could not be
+ * measured. Recorded once on the job, so later ticks pay no R2 reads and film.finish reads the same.
+ */
+export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<DeliveryResolution> {
+  const explicit = resolveDeliveryResolution(job);
+  if (job.assemble_frame && !explicit.decided) return resolveMeasuredDelivery(job, [job.assemble_frame]);
+  if (job.assemble_frame) return explicit;
+  const dims = await measuredClipDimensions(env, job);
+  const note = (fs: FinishShot, reason: string): void => {
+    fs.degraded ??= [];
+    if (!fs.degraded.includes(reason)) fs.degraded.push(reason);
+  };
+  const worked = (job.finish_shots ?? []).filter((fs) =>
+    fs.status === "done" &&
+    [...(fs.applied ?? []), ...(fs.adopted ?? [])].some((t) => !t.startsWith("noop:") && !t.startsWith("passthrough:")));
+  const measured = await Promise.all(worked.map(async (fs) => {
+    const r = await validateClipArtifact(env, fs.clip_key, 0).catch(() => null);
+    const w = Number(r?.checks.width), h = Number(r?.checks.height);
+    return w > 0 && h > 0 ? { fs, width: w - (w % 2), height: h - (h % 2) } : { fs };
+  }));
+  for (const m of measured) {
+    if (m.width && m.height) dims.set(m.fs.shot_id, { width: m.width, height: m.height });
+    else note(m.fs, "finished clip could not be measured, so the film may be smaller than the clip");
+  }
+  const delivery = resolveMeasuredDelivery(job, [...dims.values()]);
+  for (const m of measured) {
+    if (m.width && m.height && m.width * m.height > delivery.width * delivery.height) {
+      note(m.fs, `finished clip is ${m.width}x${m.height}, delivered at ${delivery.width}x${delivery.height}`);
+    }
+  }
+  if (delivery.decided) job.assemble_frame = { width: delivery.width, height: delivery.height };
+  return delivery;
 }
 
 /**
@@ -1391,10 +1437,29 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
   const envRec = env as unknown as Record<string, unknown>;
   // Read once per pass, not per shot: one GET serves every shot in this dispatch.
   const clipDims = await measuredClipDimensions(env, job);
-  // NOT the measured frame, unlike film.finish. finish-upscale sends this as `target_height`, so a target
-  // equal to the source would make every upscale pay for a GPU job that changes nothing. A vertical clip
-  // and this landscape default is a known gap, tracked on core#374.
-  const delivery = resolveDeliveryResolution(job);
+  // core#389: read once per pass, and only when a step in this pass would change the frame.
+  let budgetSeconds: ReturnType<typeof resolveAssembleSeconds> | undefined;
+  const assembleBudgetRefusal = async (fs: FinishShot, config: Record<string, unknown> | undefined): Promise<string | null> => {
+    const source = clipDims.get(fs.shot_id);
+    const explicit = resolveDeliveryResolution(job);
+    const frame = explicit.decided ? explicit : predictScaledFrame(source, finishTargetFrame(job, source), config);
+    if (!budgetSeconds) {
+      const [measuredSecs, bundleDurations] = await Promise.all([
+        measuredClipSeconds(env, job),
+        readShotDurationsFromBundle(env, job.bundle_key),
+      ]);
+      budgetSeconds = resolveAssembleSeconds(job.finish_shots ?? [], measuredSecs, resolvePlannedSeconds(job.scenes, bundleDurations));
+    }
+    const admission = admitAssemble({
+      clipCount: (job.finish_shots ?? []).length,
+      width: frame.width,
+      height: frame.height,
+      fps: DEFAULT_DELIVERY_FPS,
+      basis: budgetSeconds,
+    });
+    if (admission.admitted) return null;
+    return `a ${Math.round(budgetSeconds.seconds)}s film at ${frame.width}x${frame.height} cannot fit the assemble budget, which allows ${admission.allowedSeconds}s at that frame`;
+  };
   const modules = preModules ?? await discoverModules(envRec);
   const finishModByBinding = new Map(modules.filter((m) => m.hooks.includes("finish")).map((m) => [m.binding, m]));
   // A transient invocation/poll blip re-dispatches the step (status stays `pending`) up to the cap
@@ -1457,8 +1522,26 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       }, job.project);
       continue;
     }
+    // core#389: an upscale the film could not then assemble is refused here, before it spends. The shot
+    // keeps its clip and the film still finishes, with the step named.
+    if (stepMod?.finish_scales_frame && !fs.poll) {
+      const refusal = await assembleBudgetRefusal(fs, fs.configs?.[fs.idx] as Record<string, unknown> | undefined);
+      if (refusal) {
+        foldFinish(fs, {
+          shot_id: fs.shot_id,
+          clip_key: fs.clip_key,
+          out_fps: 24,
+          frames: 0,
+          applied: ["passthrough:assemble-budget"],
+          degraded: refusal,
+          failure: { kind: "permanent", code: "assemble_budget", detail: refusal },
+        });
+        continue;
+      }
+    }
     const fetcher = resolveFetcher(envRec, binding);
     if (!fetcher) { fs.status = "failed"; fs.error = `finish module ${binding} not bound`; continue; }
+    const target = finishTargetFrame(job, clipDims.get(fs.shot_id));
     const req = {
       hook: "finish" as const,
       input: {
@@ -1469,8 +1552,8 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
         ...(clipDims.get(fs.shot_id) ?? {}),
         // The DELIVERY TARGET, always supplied: the module compares the source against it to pick
         // a scale that does not undershoot.
-        delivery_width: delivery.width,
-        delivery_height: delivery.height,
+        delivery_width: target.width,
+        delivery_height: target.height,
       } as FinishInput,
       config: fs.configs?.[fs.idx] ?? {}, // validated per-module config (issue #75); {} only for legacy jobs
       context: { project: job.project, job_id: job.film_id },
@@ -1932,6 +2015,8 @@ export interface RunFilmFinishInput {
   delivery_width?: number;
   delivery_height?: number;
   delivery_fps?: number;
+  // core#389: the frame assemble built, which beats re-reading the pre-finish clip doc.
+  assemble_frame?: { width: number; height: number };
   // The clip doc assemble already measured. Absent (scatter, a caller with no clip
   // job) leaves the seed on the operator target or the unmeasured default.
   clip_job_id?: string;
@@ -2015,6 +2100,7 @@ async function filmFinishSeed(
     delivery_width: input.delivery_width,
     delivery_height: input.delivery_height,
     clip_job_id: input.clip_job_id,
+    assemble_frame: input.assemble_frame,
   } as FilmJob);
   return {
     width: delivery.width,
@@ -2556,6 +2642,7 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
     delivery_width: job.delivery_width,
     delivery_height: job.delivery_height,
     delivery_fps: job.delivery_fps,
+    assemble_frame: job.assemble_frame,
     clip_job_id: job.clip_job_id,
     film_key: job.film_key,
     scenes: job.scenes,
@@ -3043,7 +3130,7 @@ async function enterAssemblePhase(
   // three ways the number was arrived at, because the admission gate below sizes a byte budget
   // against it and a budget built on a default is a different claim from one built on a
   // measurement.
-  const delivery = await resolveAssembleDelivery(env, job);
+  const delivery = await resolveFilmFrame(env, job);
   let payload: FinishPayload = {
     clips: [],
     outputUrl: "https://invalid.invalid/assemble",
@@ -3600,6 +3687,7 @@ async function retryFilmFinishLocked(
   if (reassembles) {
     // Clearing the measured durations is what makes assemble concat again and not adopt the old film.
     job.actual_clip_durations = undefined;
+    job.assemble_frame = undefined;
     job.silent_film_key = undefined;
   }
 
