@@ -696,6 +696,66 @@ describe("retryFilmFinish", () => {
     expect((JSON.parse(stored[filmJobDocKey("film-1")]) as FilmJob).finish_shots![0].status).toBe("refused");
   });
 
+  // core#384: a film that cannot deliver does not reopen, so no paid step starts for it.
+  describe("a film the finish phase would fail again", () => {
+    const U = mod("upscale", "MODULE_U", "finish");
+    const shot = (id: string, status: string, error?: string) => ({ shot_id: id, clip_key: `c/${id}.mp4`, chain: ["MODULE_U"], configs: [{}], idx: status === "done" ? 1 : 0, status, applied: [], ...(error ? { error } : {}) });
+    const named = (id: string) => ({ stage: "finish" as const, step: "MODULE_U", shot_id: id, code: "refused", kept: "the clip without this step", at: 1 });
+    const attempt = async (job: FilmJob) => {
+      quiet();
+      const door = fetcher(U, () => ({ clip_key: "c/new.mp4", applied: ["upscale"] }));
+      const { e, stored } = env({ DB: rowDb().DB, MODULE_U: door }, { [filmJobDocKey("film-1")]: JSON.stringify(job) });
+      const before = stored[filmJobDocKey("film-1")];
+      const r = await retryFilmFinish(e, "film-1");
+      const unchanged = stored[filmJobDocKey("film-1")] === before;
+      await advanceFilmJob(e, "film-1", [U]);
+      return { r, unchanged, invokes: door.calls.invoke };
+    };
+
+    it("a refused shot: another shot's named step does not reopen the film, and no door is called", async () => {
+      const { r, unchanged, invokes } = await attempt(baseJob({
+        phase: "failed", error: "finish failed", film_key: undefined,
+        finish_shots: [shot("s1", "refused", "csam refusal"), shot("s2", "failed", "x")] as never,
+        finish_incomplete: [named("s2")],
+      }));
+      expect(invokes).toBe(0);
+      expect(r?.retried).toEqual([]);
+      expect(unchanged).toBe(true);
+    });
+
+    it("a refused shot with a named step of its own: the refusal still keeps the film closed", async () => {
+      const { r, unchanged, invokes } = await attempt(baseJob({
+        phase: "failed", error: "finish failed", film_key: undefined,
+        finish_shots: [shot("s1", "refused", "csam refusal"), shot("s2", "failed", "x")] as never,
+        finish_incomplete: [named("s1"), named("s2")],
+      }));
+      expect(invokes).toBe(0);
+      expect(r?.retried).toEqual([]);
+      expect(unchanged).toBe(true);
+    });
+
+    it("a failed shot with no named step: the retry cannot run it, so the film does not reopen", async () => {
+      const { r, unchanged, invokes } = await attempt(baseJob({
+        phase: "failed", error: "finish failed", film_key: undefined,
+        finish_shots: [shot("s1", "failed", "no entry"), shot("s2", "failed", "x")] as never,
+        finish_incomplete: [named("s2")],
+      }));
+      expect(invokes).toBe(0);
+      expect(r?.retried).toEqual([]);
+      expect(unchanged).toBe(true);
+    });
+
+    it("every blocking shot has a named step: the film still retries", async () => {
+      const { r, invokes } = await attempt(baseJob({
+        phase: "failed", error: "finish failed", film_key: undefined,
+        finish_shots: [shot("s1", "done"), shot("s2", "failed", "x")] as never,
+        finish_incomplete: [named("s2")],
+      }));
+      expect(r?.retried).toHaveLength(1);
+      expect(invokes).toBe(1);
+    });
+  });
+
   it("a clean film has nothing to retry, and is left alone", async () => {
     const { e, stored } = env({}, { [filmJobDocKey("film-1")]: JSON.stringify(baseJob()) });
     const before = stored[filmJobDocKey("film-1")];
