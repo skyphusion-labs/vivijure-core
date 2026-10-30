@@ -21,9 +21,8 @@ import type { Env } from "../src/platform/orchestrator-context.js";
 const PROJECT = "neon";
 const CLIP = "renders/neon/clips/shot_01.mp4";
 const AUDIO = "renders/neon/dialogue/shot_01.wav";
-// Legacy UPSCALE convention (finishStepOutputKey: no finish_artifacts decl -> `_up` before the ext),
-// under this film's folder (core#379).
-const OUT = "renders/neon/clips/f1/shot_01_up.mp4";
+// Legacy UPSCALE convention (finishStepOutputKey: no finish_artifacts decl -> `_up` before the ext).
+const OUT = "renders/neon/clips/shot_01_up.mp4";
 
 const JOB = { film_id: "f1", project: PROJECT } as unknown as FilmJob;
 
@@ -115,7 +114,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     expect(gets).toContain(AUDIO);
 
     // CLAIM 1, the harm itself: nothing is assigned. A sequential shape leaves video_url + output_url
-    // set with audio_url absent, which is the body such a satellite hard-fails on.
+    // + output_key set with audio_url absent, which is the body such a satellite hard-fails on.
     expect({
       video_url: input.video_url,
       output_url: input.output_url,
@@ -125,7 +124,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     }).toEqual({
       video_url: undefined,
       output_url: undefined,
-      output_key: OUT, // core#379: where to write, which is true with or without a URL to write through
+      output_key: undefined,
       audio_url: undefined,
       hash_url: undefined,
     });

@@ -2,7 +2,7 @@
 // render has recorded. Same class as the still collision in vivijure-backend#535.
 import { describe, expect, it, vi } from "vitest";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
-import { finishClipScope, finishStepOutputKey, type FinishShot } from "../src/film-model.js";
+import { finishClipScope, finishStepIsShotNamed, finishStepOutputKey, finishStepPointerKey, type FinishShot } from "../src/film-model.js";
 import type { RegisteredModule } from "../src/modules/types.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
@@ -26,11 +26,18 @@ describe("the key", () => {
     expect(finishClipScope({ film_id: "film-a", finish_retry_gen: 2 })).toBe("film-a/r2");
   });
 
-  it("a suffix step moves a shared input under the film, and stays there for the next step", () => {
-    const first = finishStepOutputKey("p", shot({ chain: ["MODULE_U"] }), [UP], "film-a");
-    expect(first).toBe("renders/p/clips/film-a/s1_own-gpu_up.mp4");
-    const next = finishStepOutputKey("p", shot({ chain: ["MODULE_U"], clip_key: "renders/p/clips/film-a/s1_finished.mp4" }), [UP], "film-a");
-    expect(next).toBe("renders/p/clips/film-a/s1_finished_up.mp4");
+  it("a suffix step is not scoped, and its shape is recorded rather than changed", () => {
+    expect(finishStepOutputKey("p", shot({ chain: ["MODULE_U"] }), [UP], "film-a")).toBe("renders/p/clips/s1_own-gpu_up.mp4");
+    expect(finishStepIsShotNamed(shot({ chain: ["MODULE_U"] }), [UP])).toBe(false);
+  });
+
+  it("a legacy RIFE binding with no declaration is shot-named too", () => {
+    expect(finishStepOutputKey("p", shot({ chain: ["MODULE_RIFE"] }), [], "film-a")).toBe("renders/p/clips/film-a/s1_finished.mp4");
+  });
+
+  it("names the pointer beside the shared key, and only for a shot-named step", () => {
+    expect(finishStepPointerKey("p", shot(), [RIFE])).toBe("renders/p/clips/s1_finished.latest.json");
+    expect(finishStepPointerKey("p", shot({ chain: ["MODULE_U"] }), [UP])).toBeNull();
   });
 
   it("no scope still gives the shared key, which adoption reads as the fallback", () => {
@@ -107,13 +114,39 @@ describe("a real tick", () => {
     expect(r?.job.finish_shots![0].clip_key).toBe(flat);
   });
 
-  it("never adopts another film's clip, even with a matching hash", async () => {
+  it("reuses another film's clip only through the pointer, and only with a matching hash", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const other = "renders/p/clips/film-b/s1_finished.mp4";
-    const { e, store } = world({ finish_shots: [shot({ poll: "tok" })] as never }, lostPoll, { [other]: "clip" });
+    const pointer = "renders/p/clips/s1_finished.latest.json";
     const hash = await import("../src/finish-hash.js");
-    store[`${other}.hash`] = await hash.finishStepInputHash(null, null, {});
-    const r = await advanceFilmJob(e, "film-a", [RIFE]);
-    expect(r?.job.finish_shots![0].clip_key).not.toBe(other);
+    const good = await hash.finishStepInputHash(null, null, {});
+
+    const noPointer = world({ finish_shots: [shot({ poll: "tok" })] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: good });
+    expect((await advanceFilmJob(noPointer.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).not.toBe(other);
+
+    const stale = world({ finish_shots: [running] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: "different", [pointer]: JSON.stringify({ key: other }) });
+    expect((await advanceFilmJob(stale.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).not.toBe(other);
+
+    const ok = world({ finish_shots: [running] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: good, [pointer]: JSON.stringify({ key: other }) });
+    expect((await advanceFilmJob(ok.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).toBe(other);
+  });
+
+  it.each([
+    ["another project", "renders/q/clips/film-b/s1_finished.mp4"],
+    ["not a clip", "renders/p/keyframes/s1.mp4"],
+    ["not a video", "renders/p/clips/film-b/s1.json"],
+    ["traversal", "renders/p/clips/../../q/s1.mp4"],
+  ])("refuses a pointer naming %s", async (_name, key) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const hash = await import("../src/finish-hash.js");
+    const good = await hash.finishStepInputHash(null, null, {});
+    const w = world({ finish_shots: [running] as never }, lostPoll, { [key]: "clip", [`${key}.hash`]: good, "renders/p/clips/s1_finished.latest.json": JSON.stringify({ key }) });
+    expect((await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).not.toBe(key);
+  });
+
+  it("a corrupt pointer only means the step is not reused", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const w = world({ finish_shots: [running] as never }, lostPoll, { "renders/p/clips/s1_finished.latest.json": "{not json" });
+    expect((await advanceFilmJob(w.e, "film-a", [RIFE]))?.job).toBeTruthy();
   });
 });

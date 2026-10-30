@@ -1218,14 +1218,34 @@ export function finishShotLedgerReconciles(fs: FinishShot): boolean {
  *  be advanced off a sibling step's artifact -- the mid-chain phantom-adopt the silent-render bug warned of. */
 export function finishStepOutputKey(project: string, fs: FinishShot, modules?: RegisteredModule[], scope?: string): string | null {
   const key = unscopedFinishStepOutputKey(project, fs, modules);
-  if (!key || !scope) return key;
-  const dir = `renders/${project}/clips/${scope}/`;
-  return key.startsWith(dir) ? key : dir + key.slice(key.lastIndexOf("/") + 1);
+  if (!key || !scope || !finishStepIsShotNamed(fs, modules)) return key;
+  return `renders/${project}/clips/${scope}/${key.slice(key.lastIndexOf("/") + 1)}`;
 }
 
 /**
- * core#379: the folder under `clips/` this film's finish steps write to, so one film cannot replace a
- * clip another film has recorded. A retry gets its own folder too, so a retry that fails leaves the clips
+ * core#379: true when this step's output is named off the shot, so every film of a project shares one
+ * object. Only these are film-scoped. An `append_suffix` step (upscale `_up`, blender `_bl`, lip-sync
+ * `_ls`) derives its key from its input clip and stays beside it, so two films whose input is the same
+ * shared clip still share its output. That exposure is known and not fixed here.
+ */
+export function finishStepIsShotNamed(fs: FinishShot, modules?: RegisteredModule[]): boolean {
+  const binding = fs.chain[fs.idx] ?? "";
+  const decl = moduleByBinding(modules, binding)?.finish_artifacts;
+  return decl ? decl.output_key.kind === "shot_named" : /RIFE/i.test(binding);
+}
+
+/** The reuse pointer for a shot-named step: one JSON object naming the newest film-scoped clip and its
+ *  hash. The producer writes it after the clip and its sidecar. Same shape as the keyframe pointer in
+ *  vivijure-backend#535. Null for a step with no shared name. */
+export function finishStepPointerKey(project: string, fs: FinishShot, modules?: RegisteredModule[]): string | null {
+  if (!finishStepIsShotNamed(fs, modules)) return null;
+  const key = unscopedFinishStepOutputKey(project, fs, modules);
+  return key ? key.replace(/\.mp4$/i, ".latest.json") : null;
+}
+
+/**
+ * core#379: the folder under `clips/` this film's shot-named finish steps write to, so one film cannot
+ * replace a clip another film has recorded. A retry gets its own folder too, so a retry that fails leaves the clips
  * of the film that stands as they were. Reclaiming a render sweeps `clips/<film_id>/`.
  */
 export function finishClipScope(job: { film_id: string; finish_retry_gen?: number }): string {

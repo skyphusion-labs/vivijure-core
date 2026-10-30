@@ -11,7 +11,7 @@ import type { StepFailure } from "./modules/types.js";
 import type { Env } from "./platform/orchestrator-context.js";
 import type { FetcherLike } from "./platform/types.js";
 import { isMediaFinishAuthError, mediaDoorFetch, mediaDoorReachable, mediaFinishHeaders, videoFinishFetch, videoFinishReachable } from "./media-finish-auth.js";
-import { assertBankedLoraKey, assertProjectKey } from "./key-safety.js";
+import { assertBankedLoraKey, assertProjectKey, isProjectKey } from "./key-safety.js";
 import {
   ASSEMBLE_PRESIGN_TTL_SECONDS,
   deletePartialPool,
@@ -100,6 +100,8 @@ import {
   reclaimFinishShotsFromR2,
   finishStepOutputKey,
   finishClipScope,
+  finishStepIsShotNamed,
+  finishStepPointerKey,
   finishStepAppliedTag,
   finishShotLedgerReconciles,
   MASTER_STEP_MAX_ATTEMPTS,
@@ -1161,6 +1163,24 @@ async function finishArtifactHashMatches(env: Env, job: FilmJob, fs: FinishShot,
   return stored === expected;
 }
 
+/** The clip a shot's reuse pointer names, or null. The pointer is data read back from the bucket, so it
+ *  stays inside this project's clips, and a caller still gates the clip on its #583 hash. Never throws:
+ *  a missing or unreadable pointer only means the step runs. */
+async function readFinishPointer(env: Env, project: string, fs: FinishShot, modules?: RegisteredModule[]): Promise<string | null> {
+  const pointerKey = finishStepPointerKey(project, fs, modules);
+  if (!pointerKey) return null;
+  try {
+    const obj = await env.R2_RENDERS.get(pointerKey);
+    if (!obj) return null;
+    const key = (JSON.parse(await obj.text()) as { key?: unknown }).key;
+    return typeof key === "string" && key.endsWith(".mp4") && isProjectKey(project, key) && key.startsWith(`renders/${project}/clips/`)
+      ? key
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** R2-authoritative recovery for a finish step whose RunPod job is GONE (poll 404s, GC'd-after-complete)
  *  or FROZEN (envelope stuck IN_PROGRESS so /poll pends forever, #166) MID-chain: if THIS step's expected
  *  output (finishStepOutputKey) is already in R2, fold it in and advance idx so the next module dispatches
@@ -1173,7 +1193,12 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: RecoverableFini
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   // core#379: this film's own key first. The shared key is where a backend or module that predates the
   // film-scoped key still writes, and where a film already in flight at the upgrade wrote.
-  const candidates = [finishStepOutputKey(job.project, fs, modules, finishClipScope(job)), finishStepOutputKey(job.project, fs, modules)];
+  // Between them, the pointer: the newest film's clip for this shot, which is how a resubmit reuses work.
+  const candidates = [
+    finishStepOutputKey(job.project, fs, modules, finishClipScope(job)),
+    await readFinishPointer(env, job.project, fs, modules),
+    finishStepOutputKey(job.project, fs, modules),
+  ];
   for (const expected of new Set(candidates)) {
     if (!expected) continue;
     if ((await env.R2_RENDERS.head(expected)) === null) continue;
@@ -1215,8 +1240,9 @@ export async function attachFinishPresigns(
 ): Promise<void> {
   const outKey = finishStepOutputKey(job.project, fs, modules, finishClipScope(job));
   if (!outKey) return;
-  // core#379: set with or without presigned URLs, because a module on the credentialed path needs it too.
-  input.output_key = outKey;
+  // core#379: a shot-named step is told its film's key with or without presigned URLs, because a module
+  // on the credentialed path writes there too.
+  if (finishStepIsShotNamed(fs, modules)) input.output_key = outKey;
   try {
     // `<output_key>.hash`, NOT `<output_key minus .mp4>.hash`. ONE key, three call sites that must
     // agree: the #583 adoption gate reads `${artifactKey}.hash` (finishArtifactHashMatches), the
@@ -1243,6 +1269,7 @@ export async function attachFinishPresigns(
     if (!videoUrl || !outputUrl || (input.audio_key && !audioUrl)) return;
     input.video_url = videoUrl;
     input.output_url = outputUrl;
+    input.output_key = outKey;
     if (audioUrl) input.audio_url = audioUrl;
     if (hashUrl) input.hash_url = hashUrl;
     // Keep clip_key / audio_key. Own-iron finish (RIFE on our RunPod) reads R2 by
@@ -1532,7 +1559,7 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     const verified = new Map<string, string>();
     for (const fs of finishShots) {
       if (!finishShotAdoptableFromR2(fs)) continue;
-      for (const key of [own.get(fs.shot_id), present.get(fs.shot_id)]) {
+      for (const key of [own.get(fs.shot_id), await readFinishPointer(env, job.project, fs, preModules), present.get(fs.shot_id)]) {
         if (key && await finishArtifactHashMatches(env, job, fs, key)) { verified.set(fs.shot_id, key); break; }
       }
     }
