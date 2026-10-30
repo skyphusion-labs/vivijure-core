@@ -43,6 +43,13 @@ async function stamp(
 }
 
 describe("#767 keyframe-adoption provenance", () => {
+  it("never adopts another job's job-scoped keyframe, even with a matching sidecar (cf#1059)", async () => {
+    const { env, seed } = memR2();
+    await stamp(seed, "renders/proj/keyframes/other-job/shot_01.png", { quality_tier: "final" });
+    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" }, BUNDLE_A);
+    expect(kfs).toEqual([]);
+  });
+
   it("does NOT adopt a keyframe a different-keyframe-config render wrote", async () => {
     const { env, seed } = memR2();
     await stamp(seed, KF, { quality_tier: "draft" });

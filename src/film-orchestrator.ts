@@ -3200,6 +3200,8 @@ export async function listProjectKeyframes(
       // (backend #112, reuse-vs-regen). Without this filter the sidecar shares the shot_id, sorts
       // before .png, and the first-seen dedupe below adopts the 16-byte hash as the keyframe (#578).
       if (!/\.(png|jpe?g|webp)$/i.test(file)) continue;
+      // A job-scoped key (keyframes/<job>/<shot>.png, cf#1059) reads as "<job>/<shot>", which no scene wants,
+      // so another job's stills are never adopted here. Only flat, project-shared keys can be reused.
       const shot_id = file.replace(/\.[^.]+$/, ""); // drop the extension (.png)
       if (!shot_id || !wanted.has(shot_id)) continue;
       // #767: refuse a keyframe a DIFFERENT-config render wrote (mismatched provenance). Absent/match keep.

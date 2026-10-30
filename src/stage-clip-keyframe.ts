@@ -8,7 +8,9 @@ import { presignR2Get } from "./presign.js";
 /** Motion backends that read keyframe_key from R2 (not a presigned URL image field). */
 export const BUCKET_KEYFRAME_MOTION_BACKENDS = new Set(["own-gpu", "local-gpu"]);
 
-const RENDERS_KEYFRAME_RE = /^renders\/[^/]+\/keyframes\/[^/]+\.(png|jpe?g)$/i;
+// One optional job segment: a module may scope its stills to a job so concurrent renders of one project
+// cannot overwrite each other (cf#1059). Refusing it here would copy it back to the shared canonical key.
+const RENDERS_KEYFRAME_RE = /^renders\/[^/]+\/keyframes\/(?:[^/]+\/)?[^/]+\.(png|jpe?g)$/i;
 
 export function canonicalClipKeyframeKey(project: string, shotId: string): string {
   const safeProject = project.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120) || "project";
