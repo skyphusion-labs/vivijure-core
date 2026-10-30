@@ -5,6 +5,8 @@ import { summarizeFilm, stepFailureOf, FINISH_TRANSPORT_HOLD_MAX_SECONDS } from 
 import { ASSEMBLE_CAPACITY_MAX_WAIT_SECONDS, decodeAssembleWait, encodeAssembleWait } from "../src/video-finish-assemble.js";
 import { sweepUnresolvedJobs } from "../src/render-sweep.js";
 import type { FinishQueue } from "../src/finish-queue.js";
+import { markFinishDone, reopenRenderForFinishRetry } from "../src/renders-db.js";
+import { openTestD1 } from "./helpers/d1-sqlite.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 import type { RegisteredModule } from "../src/modules/types.js";
 
@@ -362,6 +364,80 @@ describe("retryFilmFinish", () => {
   it("a film in flight cannot be retried", async () => {
     const { e } = env({}, { [filmJobDocKey("film-1")]: JSON.stringify(baseJob({ phase: "mux", finish_incomplete: [ENTRY] })) });
     expect((await retryFilmFinish(e, "film-1"))?.retried).toEqual([]);
+  });
+});
+
+describe("a film that completes, retries and completes again", () => {
+  function row() {
+    const d1 = openTestD1();
+    d1.raw.prepare("INSERT INTO renders (job_id, status, submitted_at) VALUES ('film-1', 'IN_PROGRESS', 1000)").run();
+    const read = () => d1.raw.prepare("SELECT * FROM renders WHERE job_id = 'film-1'").get() as Record<string, unknown>;
+    return { d1, read, e: { DB: d1.DB } as unknown as Env };
+  }
+
+  it("has one row, bills the last length and never the sum, and keeps when it was asked for", async () => {
+    const { d1, read, e } = row();
+    try {
+      await markFinishDone(e, "film-1", "k1", "{}", 5000, 100);
+      expect(read()).toMatchObject({ status: "COMPLETED", output_ms: 5000, finish_elapsed_ms: 100, submitted_at: 1000 });
+      await reopenRenderForFinishRetry(e, "film-1");
+      expect(read()).toMatchObject({ status: "IN_PROGRESS", output_ms: null, output_key: null, completed_at: null, finish_state: null, submitted_at: 1000 });
+      await markFinishDone(e, "film-1", "k2", "{}", 8000, 250);
+      expect(read()).toMatchObject({ status: "COMPLETED", output_ms: 8000, output_key: "k2", finish_elapsed_ms: 250, submitted_at: 1000 });
+      const n = d1.raw.prepare("SELECT COUNT(*) AS n FROM renders").get() as { n: number };
+      expect(n.n).toBe(1);
+    } finally {
+      d1.close();
+    }
+  });
+
+  it("a retry that fails leaves nothing billable behind", async () => {
+    const { d1, read, e } = row();
+    try {
+      await markFinishDone(e, "film-1", "k1", "{}", 5000, 100);
+      await reopenRenderForFinishRetry(e, "film-1");
+      expect(read().output_ms).toBeNull();
+    } finally {
+      d1.close();
+    }
+  });
+
+  it("the reopened row is one the stranded pass can reach", async () => {
+    const { d1, read, e } = row();
+    try {
+      await reopenRenderForFinishRetry(e, "film-1");
+      expect(String(read().output_json)).toContain('"phase":"finish"');
+    } finally {
+      d1.close();
+    }
+  });
+
+  it("deletes the old mux and mix, and forgets lengths of what will be rebuilt", async () => {
+    quiet();
+    const job = baseJob({
+      mux_output_key: "renders/p1/old-audio.mp4", mix_audio_key: "renders/p1/old-mix.mp3", silent_film_key: "renders/p1/film.mp4",
+      film_output_seconds: { "renders/p1/old-audio.mp4": 9 },
+      finish_incomplete: [{ stage: "mix", step: "mix", code: "refused", kept: "k", at: 1 }],
+    });
+    const { e, stored, deleted } = env({ DB: rowDb().DB }, { [filmJobDocKey("film-1")]: JSON.stringify(job) });
+    await retryFilmFinish(e, "film-1");
+    expect(deleted).toEqual(expect.arrayContaining(["renders/p1/old-audio.mp4", "renders/p1/old-mix.mp3"]));
+    expect((JSON.parse(stored[filmJobDocKey("film-1")]) as FilmJob).film_output_seconds).toEqual({});
+  });
+
+  it("a film.finish retry forgets only the lengths of the steps that run again", async () => {
+    quiet();
+    const job = baseJob({
+      film_finish_base_key: FILM,
+      film_output_seconds: { [FILM]: 5, "renders/p1/film-ff0.mp4": 6, "renders/p1/film-ff1.mp4": 7 },
+      finish_incomplete: [{ ...ENTRY, step_index: 1 }],
+    });
+    const { e, stored } = env(
+      { DB: rowDb().DB, MODULE_A: fetcher(TITLES, () => ({})), MODULE_B: fetcher(SUBTITLE, () => ({})) },
+      { [filmJobDocKey("film-1")]: JSON.stringify(job) },
+    );
+    await retryFilmFinish(e, "film-1");
+    expect((JSON.parse(stored[filmJobDocKey("film-1")]) as FilmJob).film_output_seconds).toEqual({ [FILM]: 5, "renders/p1/film-ff0.mp4": 6 });
   });
 });
 

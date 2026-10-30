@@ -3490,7 +3490,29 @@ export async function retryFilmFinish(
   job.assemble_wait = undefined;
   job.error = undefined;
 
+  // Steps that run again must not read the old lengths. Keyed by artifact, so these lookups would
+  // otherwise hand the billing column a number from a film that no longer exists.
+  if (remuxes) job.film_output_seconds = {};
+  else if (baseKey && job.film_output_seconds) {
+    const base = baseKey.replace(/\.mp4$/i, "");
+    for (let n = Number.isFinite(firstSkipped) ? firstSkipped : 0; n < stepCount; n++) {
+      delete job.film_output_seconds[`${base}-ff${n}.mp4`];
+      if (job.film_finish_prepend) delete job.film_finish_prepend[`${base}-ff${n}.mp4`];
+    }
+  }
+
   if (remuxes) {
+    // These keys are random per mux and per mix, so the rerun writes new objects. Left behind, the old
+    // ones would sit in R2 unreferenced and count against the user's storage forever.
+    for (const stale of [job.mux_output_key, job.mix_audio_key]) {
+      if (!stale) continue;
+      try {
+        await env.R2_RENDERS.delete(stale);
+      } catch (e) {
+        console.warn(`finish retry: could not delete ${stale}: ${(e as Error).message}`);
+      }
+    }
+    job.film_finish_prepend = {};
     job.film_key = undefined;
     job.film_finish_base_key = undefined;
     job.mux_output_key = undefined;

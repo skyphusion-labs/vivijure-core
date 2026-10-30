@@ -735,16 +735,28 @@ export async function markFinishDone(
   );
 }
 
-/** core#377: a retry puts a terminal film back in flight, so the sweep drives it and it can finish
- *  and notify again. `output_ms` stays until the new finish replaces it. */
+/**
+ * core#377: a retry puts a terminal film back in flight. One row per film, and this reopens that row, so
+ * a second completion REPLACES the first and nothing is added.
+ *
+ * `output_ms` goes to NULL, which means NOT MEASURED: the film it measured is being rebuilt, and if the
+ * retry fails nothing was delivered. The finish then writes the new length, last writer wins, the same as
+ * any later stage. `output_key` goes too, since the retry may delete the artifact it names.
+ * `submitted_at` is NOT touched: it is when the film was asked for, and moving it would move the film in
+ * history and in anything that windows by it. `finish_elapsed_ms` stays, because it is a running sum of
+ * real CPU time and the retry's CPU time is added to it. `output_json` carries a phase so the sweep's
+ * stranded pass reaches a film older than its first day. `notified_at` clears, so the new outcome is
+ * told once more.
+ */
 export async function reopenRenderForFinishRetry(env: Env, jobId: string): Promise<void> {
   const now = nowSeconds();
   await withD1Retry(() =>
     env.DB.prepare(
       `UPDATE renders SET status = 'IN_PROGRESS', finish_state = NULL, completed_at = NULL,
-       notified_at = NULL, error = NULL, updated_at = ?, submitted_at = ? WHERE job_id = ?`,
+       notified_at = NULL, error = NULL, output_ms = NULL, output_key = NULL,
+       output_json = '{"phase":"finish","retrying":true}', updated_at = ? WHERE job_id = ?`,
     )
-      .bind(now, now, jobId)
+      .bind(now, jobId)
       .run(),
   );
 }
