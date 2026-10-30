@@ -911,6 +911,9 @@ export interface KeyframeInput {
 export interface KeyframeShot {
   shot_id: string;
   keyframe_key: string; // R2 key of the PNG (renders/<project>/keyframes/[<job>/]<shot>.png)
+  /** True when this job drew nothing and returns a still already in the store. Optional and additive:
+   *  absent means drawn. The core stamps its config provenance only on a still drawn this run. */
+  reused?: boolean;
 }
 /** What a `keyframe` module returns: every keyframe it generated, by shot. The core presigns each
  *  key into a fetchable keyframe_url when it hands them on to the motion.backend orchestrator. */
