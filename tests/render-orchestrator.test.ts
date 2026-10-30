@@ -161,6 +161,13 @@ describe("applyPoll", () => {
 });
 
 describe("clipFileMatchesShot (#141/#143 shot-name matching)", () => {
+  it("an archived take is neither a motion clip nor a finish output", () => {
+    expect(clipFileMatchesShot("shot_01_seedance_take1793373122721.mp4", "shot_01")).toBe(false);
+    expect(finishedClipFileMatchesShot("shot_01_finished_take1793373122721.mp4", "shot_01")).toBe(false);
+    expect(clipFileMatchesShot("shot_01_seedance.mp4", "shot_01")).toBe(true); // the control
+    expect(finishedClipFileMatchesShot("shot_01_finished.mp4", "shot_01")).toBe(true);
+  });
+
   it("matches the motion clip at a digit boundary; excludes _finished; needs a video ext", () => {
     expect(clipFileMatchesShot("shot_09_i2v.mp4", "shot_09")).toBe(true);
     expect(clipFileMatchesShot("shot_10_seedance.mov", "shot_10")).toBe(true);
