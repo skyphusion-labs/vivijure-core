@@ -23,7 +23,6 @@ import {
   decodeAssembleWait,
   encodeAssembleWait,
   finishQueueCall,
-  finishQueueOf,
   finishSlotGate,
   tickVideoFinishAssemble,
   type FinishPayload,
@@ -69,6 +68,8 @@ import {
   type FilmJob,
   type MasterState,
   type FinishIncompleteStep,
+  acceptHeldStep,
+  holdStep as holdChainStep,
   finishOutputIsCsamRefusal,
   FINISH_STEP_HOLD_MAX_SECONDS,
   FINISH_TRANSPORT_HOLD_MAX_SECONDS,
@@ -170,7 +171,7 @@ import {
   type ClipJob,
   type JobSummary,
 } from "./render-orchestrator.js";
-import { markFinishDone, markRenderFailedByJobId, reopenRenderForFinishRetry } from "./renders-db.js";
+import { markFinishDone, markRenderFailedByJobId, markRenderNotifiedNow, reopenRenderForFinishRetry } from "./renders-db.js";
 import { filmDonePayload } from "./render-output-payload.js";
 import { validateFilmArtifact } from "./clip-validate.js";
 import {
@@ -1060,9 +1061,7 @@ async function advanceSpeechPhase(env: Env, job: FilmJob, preModules?: Registere
     } else {
       // core#377: a transient failure holds. It is not a reason to ship the film without the step.
       if (classifyFinishFailure(error) === "transient") {
-        const w = nextStepWait(ss.wait, `speech ${ss.chain[ss.idx]}: ${error ?? "transient failure"}`);
-        if (w) {
-          ss.wait = w;
+        if (holdChainStep(ss, job, `speech ${ss.chain[ss.idx]}: ${error ?? "transient failure"}`)) {
           ss.attempts = 0;
           if (!keepPoll) ss.poll = undefined;
           return;
@@ -1076,12 +1075,12 @@ async function advanceSpeechPhase(env: Env, job: FilmJob, preModules?: Registere
   const foldSpeech = (ss: SpeechShot, out: SpeechOutput): void => {
     const f = stepFailureOf(out);
     if (f?.kind === "transient") {
-      const w = nextStepWait(ss.wait, `speech ${ss.chain[ss.idx]}: ${f.detail ?? f.code}`, f.code === "capacity" ? FINISH_STEP_HOLD_MAX_SECONDS : FINISH_TRANSPORT_HOLD_MAX_SECONDS);
-      if (w) { ss.wait = w; ss.poll = undefined; return; }
+      if (holdChainStep(ss, job, `speech ${ss.chain[ss.idx]}: ${f.detail ?? f.code}`, f.code === "capacity" ? FINISH_STEP_HOLD_MAX_SECONDS : FINISH_TRANSPORT_HOLD_MAX_SECONDS)) { ss.poll = undefined; return; }
       f.code = "wait_exhausted";
     }
     if (f) noteFinishIncomplete(job, { stage: "speech", step: ss.chain[ss.idx], shot_id: ss.shot_id, code: f.code, detail: f.detail, kept: "the shot's original audio" });
     ss.wait = undefined;
+    ss.hold_cycles = 0;
     applySpeechOutput(ss, out);
   };
   for (const ss of job.speech_shots || []) {
@@ -1100,7 +1099,7 @@ async function advanceSpeechPhase(env: Env, job: FilmJob, preModules?: Registere
       await attachSpeechPresigns(env, req.input as SpeechInput);
       const r = await invokeModule<SpeechInput, SpeechOutput>(fetcher, req);
       if (!r.ok) { blipOrDegrade(ss, r.error, false); }
-      else if ((r as { pending?: boolean }).pending) { ss.poll = (r as { poll: string }).poll; }
+      else if ((r as { pending?: boolean }).pending) { ss.poll = (r as { poll: string }).poll; acceptHeldStep(ss, job); }
       else if ("output" in r) { const v = hookOutputViolation(ss.chain[ss.idx], "speech", r.output); if (v) { degrade(ss, v); } else { foldSpeech(ss, r.output as SpeechOutput); } }
       else { degrade(ss, "speech module returned neither output nor a poll token"); }
     } else {
@@ -1393,9 +1392,7 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     } else {
       // core#377: a transient failure past the retry cap holds with backoff, then fails by name.
       if (classifyFinishFailure(error) === "transient") {
-        const w = nextStepWait(fs.wait, `finish ${fs.chain[fs.idx]}: ${error ?? "transient failure"}`);
-        if (w) {
-          fs.wait = w;
+        if (holdChainStep(fs, job, `finish ${fs.chain[fs.idx]}: ${error ?? "transient failure"}`)) {
           fs.attempts = 0;
           if (!keepPoll) fs.poll = undefined;
           return;
@@ -1403,6 +1400,8 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       }
       fs.status = "failed";
       fs.error = error;
+      // Named, so the film that fails here can be retried without re-rendering its clips.
+      noteFinishIncomplete(job, { stage: "finish", step: fs.chain[fs.idx], shot_id: fs.shot_id, code: "step_failed", detail: error, kept: "the rendered clips" });
     }
   };
   // core#377: read the module's own verdict before folding. A CSAM refusal never reaches this logic:
@@ -1411,13 +1410,13 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     if (!finishOutputIsCsamRefusal(out)) {
       const f = stepFailureOf(out);
       if (f?.kind === "transient") {
-        const w = nextStepWait(fs.wait, `finish ${fs.chain[fs.idx]}: ${f.detail ?? f.code}`, f.code === "capacity" ? FINISH_STEP_HOLD_MAX_SECONDS : FINISH_TRANSPORT_HOLD_MAX_SECONDS);
-        if (w) { fs.wait = w; fs.poll = undefined; return; }
+        if (holdChainStep(fs, job, `finish ${fs.chain[fs.idx]}: ${f.detail ?? f.code}`, f.code === "capacity" ? FINISH_STEP_HOLD_MAX_SECONDS : FINISH_TRANSPORT_HOLD_MAX_SECONDS)) { fs.poll = undefined; return; }
         f.code = "wait_exhausted";
       }
       if (f) noteFinishIncomplete(job, { stage: "finish", step: fs.chain[fs.idx], shot_id: fs.shot_id, code: f.code, detail: f.detail, kept: "the clip without this step" });
     }
     fs.wait = undefined;
+    fs.hold_cycles = 0;
     applyFinishOutputOrRefuse(fs, out, job.project);
   };
   for (const fs of job.finish_shots || []) {
@@ -1476,7 +1475,7 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       await attachFinishPresigns(env, job, fs, req.input as FinishInput, modules);
       const r = await invokeModule<FinishInput, FinishOutput>(fetcher, req);
       if (!r.ok) { failOrRetry(fs, r.error, false); }
-      else if ((r as { pending?: boolean }).pending) { fs.poll = (r as { poll: string }).poll; }
+      else if ((r as { pending?: boolean }).pending) { fs.poll = (r as { poll: string }).poll; acceptHeldStep(fs, job); }
       else if ("output" in r) { const v = hookOutputViolation(fs.chain[fs.idx], "finish", r.output); if (v) { fs.status = "failed"; fs.error = v; } else { foldFinish(fs, r.output as FinishOutput); } }
       else { fs.status = "failed"; fs.error = "finish module returned neither output nor a poll token"; }
     } else {
@@ -1737,6 +1736,8 @@ async function fireNotify(
   preModules?: RegisteredModule[],
   opts?: { event?: "render.complete" | "render.failed"; key?: string },
 ): Promise<void> {
+  // A retry in flight announces nothing: whether it counts is decided in settleFinishRetry.
+  if (job.finish_retry_prior) return;
   const event = opts?.event ?? "render.complete";
   const key = opts?.key ?? job.film_key;
   // A completion with no artifact has nothing to announce. A failure still announces,
@@ -1908,6 +1909,8 @@ export interface RunFilmFinishInput {
   delivery_width?: number;
   delivery_height?: number;
   delivery_fps?: number;
+  // core#377: a retry writes its steps under new keys, so the delivered film is untouched until it is done.
+  step_key_suffix?: string;
 }
 export interface RunFilmFinishResult {
   ran: boolean;      // false when no film.finish module is installed (caller leaves its state untouched)
@@ -2230,7 +2233,7 @@ export async function runFilmFinish(
   // delivered clip is shorter than its planned target (trailing cues otherwise point past EOF).
   const durations = captionDurations(bundleDurations, input.actual_durations);
   const captions = buildCaptionCues(input.scenes, input.dialogue_lines ?? [], durations);
-  const base = input.film_key.replace(/\.mp4$/i, "");
+  const base = input.film_key.replace(/\.mp4$/i, "") + (input.step_key_suffix ?? "");
   let curKey = input.film_key;
   const applied: string[] = [];
   const adopted: string[] = [];
@@ -2277,9 +2280,11 @@ export async function runFilmFinish(
     const bound = f.code === "capacity" ? ASSEMBLE_CAPACITY_MAX_WAIT_SECONDS : FINISH_TRANSPORT_HOLD_MAX_SECONDS;
     if (now - firstAt >= bound * 1000) return false;
     const attempts = (prior?.attempts ?? 0) + 1;
-    const queued = finishQueueOf(env) !== null;
-    await finishQueueCall(env, holder, f.code === "capacity" ? "yield" : "release", (q) =>
-      f.code === "capacity" ? q.yield(holder) : q.release(holder));
+    // `queued` means the queue answered. A queue that threw is no queue, so the step takes the backoff.
+    const queued = (await finishQueueCall(env, holder, f.code === "capacity" ? "yield" : "release", async (q) => {
+      await (f.code === "capacity" ? q.yield(holder) : q.release(holder));
+      return true;
+    })) === true;
     const detail = `${module.name}: ${f.detail ?? f.code}`;
     await opts.wait.set(encodeAssembleWait({
       firstAt,
@@ -2530,6 +2535,7 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
     project: job.project,
     job_id: job.film_id,
     actual_durations: job.actual_clip_durations,
+    step_key_suffix: job.finish_retry_gen ? `-r${job.finish_retry_gen}` : undefined,
   }, preModules, {
     dispatched: job.film_finish_dispatched,
     persistDispatch: async (key, ts) => { job.film_finish_dispatched![key] = ts; await putFilm(env, job); },
@@ -2855,9 +2861,7 @@ async function advanceMasterPhase(env: Env, job: FilmJob, preModules?: Registere
   // core#377: a transient failure holds. Absent a `now`, this reads the wall clock like every other wait.
   if (stepWaitHolding(m.wait)) return;
   const holdMaster = (detail: string, maxSeconds: number = FINISH_TRANSPORT_HOLD_MAX_SECONDS): boolean => {
-    const w = nextStepWait(m.wait, `master ${m.chain[m.idx]}: ${detail}`, maxSeconds);
-    if (!w) return false;
-    m.wait = w;
+    if (!holdChainStep(m, job, `master ${m.chain[m.idx]}: ${detail}`, maxSeconds)) return false;
     m.attempts = 0;
     return true;
   };
@@ -2866,6 +2870,7 @@ async function advanceMasterPhase(env: Env, job: FilmJob, preModules?: Registere
     const f = stepFailureOf(out);
     if (f?.kind === "transient" && holdMaster(f.detail ?? f.code, f.code === "capacity" ? FINISH_STEP_HOLD_MAX_SECONDS : FINISH_TRANSPORT_HOLD_MAX_SECONDS)) { m.poll = undefined; return true; }
     m.wait = undefined;
+    m.hold_cycles = 0;
     return false;
   };
   while (!masterChainDone(m)) {
@@ -2901,7 +2906,13 @@ async function advanceMasterPhase(env: Env, job: FilmJob, preModules?: Registere
         if (classifyFinishFailure(r.error) === "transient" && holdMaster(r.error ?? "invoke failed")) return;
         degradeMasterStep(m, `invoke failed: ${r.error}`); continue;     // terminal: passthrough + advance
       }
-      if ((r as { pending?: boolean }).pending) { m.poll = (r as { poll: string }).poll; m.attempts = 0; return; }
+      if ((r as { pending?: boolean }).pending) {
+        m.poll = (r as { poll: string }).poll;
+        m.attempts = 0;
+        // The stall check below measures from the phase start, so a long hold would kill the run it led to.
+        if (m.wait) { m.wait = undefined; job.phase_started_at = Date.now(); }
+        return;
+      }
       if ("output" in r) { const v = hookOutputViolation(m.chain[m.idx], "master", r.output); if (v) { degradeMasterStep(m, v); continue; } if (foldMaster(r.output as MasterOutput)) return; job.audio_key = applyMasterOutput(m, job.audio_key, r.output as MasterOutput); continue; }
       degradeMasterStep(m, "module returned neither output nor a poll token"); continue;
     }
@@ -3435,17 +3446,24 @@ export async function startFilmJob(
   return job;
 }
 
-/** Remove the film.finish artifacts from `from` on. Each is built from the one before, so a step
- *  that runs again makes the later ones stale, and they would otherwise be adopted as they stand. */
-async function deleteFilmFinishArtifacts(env: Env, baseKey: string, from: number, stepCount: number): Promise<void> {
-  const base = baseKey.replace(/\.mp4$/i, "");
-  for (let n = Math.max(0, from); n < stepCount; n++) {
-    for (const suffix of [".mp4", ".srt", ".meta.json"]) {
-      try {
-        await env.R2_RENDERS.delete(`${base}-ff${n}${suffix}`);
-      } catch (e) {
-        console.warn(`finish retry: could not delete ${base}-ff${n}${suffix}: ${(e as Error).message}`);
-      }
+/** Every film.finish artifact a chain could have written under `base`. */
+function filmFinishArtifactKeys(baseKey: string, suffix: string, stepCount: number): string[] {
+  const base = baseKey.replace(/\.mp4$/i, "") + suffix;
+  const keys: string[] = [];
+  for (let n = 0; n < stepCount; n++) keys.push(`${base}-ff${n}.mp4`, `${base}-ff${n}.srt`, `${base}-ff${n}.meta.json`);
+  return keys;
+}
+
+/** Best effort: a leftover object is a storage cost, never a reason to fail a film. Anything in `keep`
+ *  is still in use and is left alone. */
+async function deleteArtifacts(env: Env, keys: (string | undefined)[], keep: (string | undefined)[]): Promise<void> {
+  const held = new Set(keep.filter(Boolean));
+  for (const key of new Set(keys)) {
+    if (!key || held.has(key)) continue;
+    try {
+      await env.R2_RENDERS.delete(key);
+    } catch (e) {
+      console.warn(`finish retry: could not delete ${key}: ${(e as Error).message}`);
     }
   }
 }
@@ -3453,11 +3471,34 @@ async function deleteFilmFinishArtifacts(env: Env, baseKey: string, from: number
 /**
  * core#377: run again the finish steps a film names as not done, without rendering any clip again.
  *
- * Rewinds to the earliest stage that has a missing step and re-enters from there, so everything built
- * on it is rebuilt and everything before it is kept. A film with nothing to retry is returned
- * unchanged, with an empty `retried`. The film rejoins the finish queue at the back.
+ * A RETRY MUST NEVER COST THE USER THE FILM THEY HAVE. Nothing is deleted here. The whole job is kept in
+ * `finish_retry_prior`, new steps write new keys, and `settleFinishRetry` either swaps the new film in
+ * once it is whole, or restores the job exactly as it was, delivered, flagged and retryable.
+ *
+ * Rewinds to the earliest stage with a missing step. A film with nothing to retry is returned unchanged,
+ * with an empty `retried`. The film rejoins the finish queue at the back.
  */
 export async function retryFilmFinish(
+  env: Env,
+  filmId: string,
+): Promise<{ job: FilmJob; retried: FinishIncompleteStep[] } | null> {
+  const claim = await claimAdvanceOrFailOpen(env, filmId);
+  if (!claim.won) {
+    const live = await readFilmJobReadOnly(env, filmId);
+    return live ? { job: live.job, retried: [] } : null;
+  }
+  try {
+    return await retryFilmFinishLocked(env, filmId);
+  } finally {
+    if (claim.token !== undefined) {
+      await releaseFilmAdvance(env, filmId, claim.token).catch((e: Error) => {
+        console.warn(`film ${filmId}: advance lease release failed (${e.message}); it expires on its own`);
+      });
+    }
+  }
+}
+
+async function retryFilmFinishLocked(
   env: Env,
   filmId: string,
 ): Promise<{ job: FilmJob; retried: FinishIncompleteStep[] } | null> {
@@ -3470,52 +3511,33 @@ export async function retryFilmFinish(
   }
   const has = (stage: FinishIncompleteStep["stage"]): boolean => entries.some((e) => e.stage === stage);
   const modules = await discoverModules(env as unknown as Record<string, unknown>);
-  const stepCount = servingForHook(modules, "film.finish").length;
   const baseKey = job.film_finish_base_key;
 
   const reassembles = has("speech") || has("finish") || has("assemble");
   const remuxes = reassembles || has("master") || has("mix") || has("mux");
 
-  // The film.finish chain runs again from its first step whenever the film under it changes.
-  const firstSkipped = entries.reduce((min, e) => (e.stage === "film.finish" && e.step_index !== undefined ? Math.min(min, e.step_index) : min), Number.POSITIVE_INFINITY);
-  if (baseKey) await deleteFilmFinishArtifacts(env, baseKey, remuxes ? 0 : Number.isFinite(firstSkipped) ? firstSkipped : 0, stepCount);
+  // The snapshot holds no earlier one, since that retry ended when it settled.
+  job.finish_retry_failed = undefined;
+  job.finish_retry_prior = JSON.stringify(job);
+  job.finish_retry_gen = (job.finish_retry_gen ?? 0) + 1;
 
   job.film_finish = undefined;
   job.film_finish_skipped = {};
   job.film_finish_polls = {};
   job.film_finish_dispatched = {};
   job.film_finish_attempts = {};
+  job.film_finish_prepend = {};
   job.finish_unavailable = undefined;
   job.assemble_poll = undefined;
   job.assemble_wait = undefined;
   job.error = undefined;
-
-  // Steps that run again must not read the old lengths. Keyed by artifact, so these lookups would
-  // otherwise hand the billing column a number from a film that no longer exists.
-  if (remuxes) job.film_output_seconds = {};
-  else if (baseKey && job.film_output_seconds) {
-    const base = baseKey.replace(/\.mp4$/i, "");
-    for (let n = Number.isFinite(firstSkipped) ? firstSkipped : 0; n < stepCount; n++) {
-      delete job.film_output_seconds[`${base}-ff${n}.mp4`];
-      if (job.film_finish_prepend) delete job.film_finish_prepend[`${base}-ff${n}.mp4`];
-    }
-  }
+  // Lengths are keyed by artifact. The new keys get their own, and nothing stale can be looked up.
+  job.film_output_seconds = {};
 
   if (remuxes) {
-    // These keys are random per mux and per mix, so the rerun writes new objects. Left behind, the old
-    // ones would sit in R2 unreferenced and count against the user's storage forever.
-    for (const stale of [job.mux_output_key, job.mix_audio_key]) {
-      if (!stale) continue;
-      try {
-        await env.R2_RENDERS.delete(stale);
-      } catch (e) {
-        console.warn(`finish retry: could not delete ${stale}: ${(e as Error).message}`);
-      }
-    }
-    job.film_finish_prepend = {};
     job.film_key = undefined;
     job.film_finish_base_key = undefined;
-    job.mux_output_key = undefined;
+    job.mux_output_key = undefined; // a new random key, so the delivered mux is not overwritten
     job.mix_audio_key = undefined;
     job.mix_done_key = undefined;
     job.mix_skipped = undefined;
@@ -3532,7 +3554,7 @@ export async function retryFilmFinish(
     const missed = entries.filter((e) => e.stage === "speech" && e.shot_id === ss.shot_id).map((e) => e.step);
     if (missed.length === 0) continue;
     const configs = missed.map((b) => ss.configs?.[ss.chain.indexOf(b)] ?? {});
-    Object.assign(ss, { chain: missed, configs, idx: 0, status: "pending", poll: undefined, degraded: undefined, error: undefined, attempts: 0, wait: undefined });
+    Object.assign(ss, { chain: missed, configs, idx: 0, status: "pending", poll: undefined, degraded: undefined, error: undefined, attempts: 0, wait: undefined, hold_cycles: 0 });
   }
   const consumesAudio = new Set(modules.filter((m) => m.finish_consumes_audio).map((m) => m.binding));
   for (const fs of job.finish_shots ?? []) {
@@ -3544,12 +3566,12 @@ export async function retryFilmFinish(
     }
     if (missed.length === 0) continue;
     const configs = missed.map((b) => fs.configs?.[fs.chain.indexOf(b)] ?? {});
-    Object.assign(fs, { chain: missed, configs, idx: 0, status: "pending", poll: undefined, degraded: undefined, error: undefined, attempts: 0, wait: undefined });
+    Object.assign(fs, { chain: missed, configs, idx: 0, status: "pending", poll: undefined, degraded: undefined, error: undefined, attempts: 0, wait: undefined, hold_cycles: 0 });
   }
   if (job.master && has("master")) {
     const missed = entries.filter((e) => e.stage === "master").map((e) => e.step);
     const configs = missed.map((b) => job.master!.configs?.[job.master!.chain.indexOf(b)] ?? {});
-    job.master = { ...job.master, chain: missed, configs, idx: 0, poll: undefined, attempts: 0, degraded: [], wait: undefined };
+    job.master = { ...job.master, chain: missed, configs, idx: 0, poll: undefined, attempts: 0, degraded: [], wait: undefined, hold_cycles: 0 };
   }
 
   if (has("speech")) { job.speech_done = false; job.phase = "speech"; }
@@ -3558,7 +3580,7 @@ export async function retryFilmFinish(
   else if (has("master")) job.phase = "master";
   else if (remuxes) job.phase = "mux";
   else {
-    // film.finish alone: start from the cut it ran on, and keep the steps before the first one missed.
+    // film.finish alone: from the cut it ran on, under new keys, so the delivered film is untouched.
     job.film_key = baseKey ?? job.film_key;
     job.film_finish_resume = true;
     job.phase = "mux";
@@ -3581,6 +3603,67 @@ export async function retryFilmFinish(
   return { job, retried };
 }
 
+/**
+ * core#377: a retry reached an end. Whole means every step ran and there is a film: the new film
+ * replaces the old, whose artifacts go only now. Anything else restores the job as it was before the
+ * retry, including when only some of the steps succeeded, so the user keeps the film they had and can
+ * try again.
+ */
+async function settleFinishRetry(env: Env, job: FilmJob, preModules?: RegisteredModule[], cancelled?: string): Promise<void> {
+  if (!job.finish_retry_prior) return;
+  const prior = JSON.parse(job.finish_retry_prior) as FilmJob;
+  const envRec = env as unknown as Record<string, unknown>;
+  const stepCount = servingForHook(preModules ?? await discoverModules(envRec), "film.finish").length;
+  const whole = !cancelled && job.phase === "done" && !!job.film_key && !job.finish_incomplete?.length;
+  if (whole) {
+    job.finish_retry_prior = undefined;
+    job.finish_retry_failed = undefined;
+    const priorSuffix = prior.finish_retry_gen ? `-r${prior.finish_retry_gen}` : "";
+    await deleteArtifacts(
+      env,
+      [
+        prior.film_key,
+        prior.mux_output_key,
+        prior.mix_audio_key,
+        ...(prior.film_finish_base_key ? filmFinishArtifactKeys(prior.film_finish_base_key, priorSuffix, stepCount) : []),
+      ],
+      [job.film_key, job.silent_film_key, job.film_finish_base_key, job.mux_output_key, job.mix_audio_key, job.mix_done_key, job.audio_key],
+    );
+    emitStructuredEvent({ ev: "film.finish_retry_done", film_id: job.film_id, project: job.project });
+    await fireNotify(env, job, preModules);
+    return;
+  }
+  const named = (job.finish_incomplete ?? []).map((e) => `${e.step}: ${e.detail ?? e.code}`).join("; ");
+  const reason = cancelled ?? job.error ?? (named || "the retry did not finish");
+  // The attempt's own artifacts, and never anything the restored job still names.
+  await deleteArtifacts(
+    env,
+    [
+      job.mux_output_key,
+      job.mix_audio_key,
+      ...(job.film_finish_base_key && job.finish_retry_gen ? filmFinishArtifactKeys(job.film_finish_base_key, `-r${job.finish_retry_gen}`, stepCount) : []),
+    ],
+    [prior.film_key, prior.silent_film_key, prior.film_finish_base_key, prior.mux_output_key, prior.mix_audio_key, prior.mix_done_key, prior.audio_key],
+  );
+  const gen = job.finish_retry_gen;
+  for (const k of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[k];
+  Object.assign(job, prior, { finish_retry_gen: gen, finish_retry_failed: { at: Date.now(), reason: reason.slice(0, 500) } });
+  emitStructuredEvent({ ev: "film.finish_retry_failed", film_id: job.film_id, project: job.project, reason: job.finish_retry_failed!.reason });
+  if (job.phase === "done" && job.film_key) {
+    await markFinishDone(
+      env,
+      job.film_id,
+      job.film_key,
+      JSON.stringify(filmDonePayload(job, null)),
+      outputMsFromSeconds(job.film_output_seconds?.[job.film_key]),
+      job.finish_elapsed_ms,
+    );
+  } else {
+    await markRenderFailedByJobId(env, job.film_id, job.error ?? reason);
+  }
+  await markRenderNotifiedNow(env, job.film_id);
+}
+
 /** Mark an in-flight film job cancelled. Terminal jobs are returned unchanged. */
 export async function cancelFilmJob(env: Env, filmId: string): Promise<FilmJob | null> {
   const obj = await env.R2_RENDERS.get(filmKey(filmId));
@@ -3590,6 +3673,12 @@ export async function cancelFilmJob(env: Env, filmId: string): Promise<FilmJob |
   // Request-entry: discover once and thread into both cancel helpers.
   const modules = await discoverModules(env as unknown as Record<string, unknown>);
   await finishQueueCall(env, job.film_id, "forget", (q) => q.forget(job.film_id));
+  // Cancelling a retry cancels the retry, not the film the user already has.
+  if (job.finish_retry_prior) {
+    await settleFinishRetry(env, job, modules, "cancelled");
+    await putFilm(env, job);
+    return job;
+  }
   // #328: STOP the in-flight RunPod job, not just the studio state -- a cancel that leaves the GPU
   // training is a lie to the user and a money leak. Run this BEFORE mutating phase, so the helper can
   // still see the in-flight keyframe poll token. (Motion/finish/speech phases adopt /cancel in
@@ -4205,6 +4294,11 @@ export async function advanceFilmJob(
     console.error(JSON.stringify({ ev: "film.advance_failed", film_id: filmId, error: msg }));
     const job = await persistFilmJobFailed(env, filmId, error);
     await markRenderFailedByJobId(env, filmId, error);
+    await finishQueueCall(env, filmId, "forget", (q) => q.forget(filmId));
+    if (job?.finish_retry_prior) {
+      await settleFinishRetry(env, job);
+      await putFilm(env, job);
+    }
     return job ? { job, clipJob: null } : null;
   } finally {
     if (claim.token !== undefined) {
@@ -4379,6 +4473,10 @@ async function advanceFilmJobLocked(
   // ALSO load-bearing for recovery: the 90min ceiling measures the per-shot phases (clips/speech/finish)
   // against last_progress_at, so a slow-but-landing local-gpu film never dies mid-progress; the
   // same-phase recovery triggers and the batch keyframe ceiling still measure from phase_started_at.
+  if (job.finish_retry_prior && (job.phase === "done" || job.phase === "failed")) {
+    await settleFinishRetry(env, job, modules);
+    await putFilm(env, job);
+  }
   const progressed = stampFilmProgress(job, clipJob);
   // On any phase transition this tick, stamp when the new phase began (the stall recovery measures
   // against it) and persist. The phase legs above already persisted on the paths they took; this also

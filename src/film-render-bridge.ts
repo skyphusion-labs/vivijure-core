@@ -166,7 +166,9 @@ export function filmJobToPollView(job: FilmJob, clipJob: ClipJob | null, keyfram
   } else if (job.phase === "failed") {
     status = "FAILED";
     // A film that failed at assemble or mux still names the step and what is kept, so it can be retried.
-    if (job.finish_incomplete?.length) output = { finish_incomplete: job.finish_incomplete };
+    if (job.finish_incomplete?.length) {
+      output = { finish_incomplete: job.finish_incomplete, ...(job.finish_retry_failed ? { finish_retry_failed: job.finish_retry_failed } : {}) };
+    }
   } else {
     // cf#307: when the keyframe module reports wait=accepted (queue / cold start), surface IN_QUEUE
     // so the panel can distinguish spinning-up from sampling. Only when the module actually sent

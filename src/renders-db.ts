@@ -739,25 +739,32 @@ export async function markFinishDone(
  * core#377: a retry puts a terminal film back in flight. One row per film, and this reopens that row, so
  * a second completion REPLACES the first and nothing is added.
  *
- * `output_ms` goes to NULL, which means NOT MEASURED: the film it measured is being rebuilt, and if the
- * retry fails nothing was delivered. The finish then writes the new length, last writer wins, the same as
- * any later stage. `output_key` goes too, since the retry may delete the artifact it names.
- * `submitted_at` is NOT touched: it is when the film was asked for, and moving it would move the film in
- * history and in anything that windows by it. `finish_elapsed_ms` stays, because it is a running sum of
- * real CPU time and the retry's CPU time is added to it. `output_json` carries a phase so the sweep's
- * stranded pass reaches a film older than its first day. `notified_at` clears, so the new outcome is
- * told once more.
+ * `output_key` stays, because the delivered film stays until a new one replaces it. `output_ms` goes to
+ * NULL, which means NOT MEASURED, because a finish that reports no length must not inherit the old one; a
+ * retry that does not finish restores it (settleFinishRetry). `submitted_at` is NOT touched: it is when
+ * the film was asked for, and moving it would move the film in history and in anything that windows by
+ * it. `output_json` carries a phase so the sweep's stranded pass reaches a film older than its first day.
+ * `notified_at` clears because the sweep skips a notified row.
  */
 export async function reopenRenderForFinishRetry(env: Env, jobId: string): Promise<void> {
   const now = nowSeconds();
   await withD1Retry(() =>
     env.DB.prepare(
       `UPDATE renders SET status = 'IN_PROGRESS', finish_state = NULL, completed_at = NULL,
-       notified_at = NULL, error = NULL, output_ms = NULL, output_key = NULL,
+       notified_at = NULL, error = NULL, output_ms = NULL,
        output_json = '{"phase":"finish","retrying":true}', updated_at = ? WHERE job_id = ?`,
     )
       .bind(now, jobId)
       .run(),
+  );
+}
+
+/** A retry did not finish and the film stands as it was. The user has already heard about this film,
+ *  and nothing about it changed, so it is not announced again. */
+export async function markRenderNotifiedNow(env: Env, jobId: string): Promise<void> {
+  const now = nowSeconds();
+  await withD1Retry(() =>
+    env.DB.prepare(`UPDATE renders SET notified_at = COALESCE(notified_at, ?) WHERE job_id = ?`).bind(now, jobId).run(),
   );
 }
 

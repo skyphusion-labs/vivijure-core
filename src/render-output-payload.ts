@@ -58,6 +58,7 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
   // cf#1662: ALWAYS set, including null. The keys presence is what says this row was measured.
   out.film_finish = filmFinishView(job.film_finish);
   if (job.finish_incomplete?.length) out.finish_incomplete = job.finish_incomplete;
+  if (job.finish_retry_failed) out.finish_retry_failed = job.finish_retry_failed;
   if (job.finish_unavailable) {
     const u = job.finish_unavailable;
     const finish: Record<string, unknown> = { at: u.at, reason: u.reason };

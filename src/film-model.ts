@@ -180,6 +180,54 @@ export function nextStepWait(
   return { firstAt, attempts, nextAt: now + assembleCapacityBackoffSeconds(attempts) * 1000, detail };
 }
 
+/** A step that holds and the shot or chain it belongs to. */
+export interface HoldableStep {
+  wait?: StepWait;
+  hold_cycles?: number;
+}
+
+/** Hold cycles one step may start: a hold, then an accept, then a fresh failure. Without a cap a door
+ *  that accepts and then fails would re-stamp the stall clock for ever. */
+export const FINISH_STEP_MAX_HOLD_CYCLES = 3;
+
+/**
+ * Hold a step, or return false when it may not hold any longer.
+ *
+ * THE CLOCK. A hold moves no progress marker, and neither does the step it then submits, while the stall
+ * ceiling counts from `last_progress_at`. So time already pending, plus the hold, plus the run, all spent
+ * one 90 minute budget, and a hold under 90 minutes guaranteed nothing. Starting a hold and accepting
+ * after one both stamp the clock (`acceptHeldStep`), so each stretch gets its own budget, and the cycle
+ * cap is what keeps that finite.
+ */
+export function holdStep(
+  step: HoldableStep,
+  job: { last_progress_at?: number },
+  detail: string,
+  maxSeconds: number = FINISH_TRANSPORT_HOLD_MAX_SECONDS,
+  now: number = Date.now(),
+): boolean {
+  if (!step.wait) {
+    if ((step.hold_cycles ?? 0) >= FINISH_STEP_MAX_HOLD_CYCLES) return false;
+    step.hold_cycles = (step.hold_cycles ?? 0) + 1;
+    job.last_progress_at = now;
+  }
+  const w = nextStepWait(step.wait, detail, maxSeconds, now);
+  if (!w) {
+    step.wait = undefined;
+    return false;
+  }
+  step.wait = w;
+  return true;
+}
+
+/** A held step was accepted. The wait is over, so a later failure gets its own bound, and the run gets
+ *  its own stall budget. */
+export function acceptHeldStep(step: HoldableStep, job: { last_progress_at?: number }, now: number = Date.now()): void {
+  if (!step.wait) return;
+  step.wait = undefined;
+  job.last_progress_at = now;
+}
+
 /** True while a held step must not be called again. */
 export function stepWaitHolding(wait: StepWait | undefined, now: number = Date.now()): boolean {
   return !!wait && now < wait.nextAt;
@@ -273,6 +321,7 @@ export interface FinishShot {
   // "door timed out". Optional: job docs written before #226 have only the tag.
   degraded?: string[];
   wait?: StepWait; // core#377: holding for a transient failure, status stays pending
+  hold_cycles?: number; // core#377: holds this step has started, capped
 }
 
 /** One shot's dialogue audio moving through the `speech` chain (post-dialogue, pre-finish). `chain` is
@@ -293,6 +342,7 @@ export interface SpeechShot {
   error?: string;
   attempts?: number;   // transient-retry counter for the current step (reset on advance)
   wait?: StepWait;     // core#377: holding for a transient failure, status stays pending
+  hold_cycles?: number; // core#377: holds this step has started, capped
 }
 
 export interface FilmKeyframeRef {
@@ -429,6 +479,7 @@ export interface FilmJob {
     degraded: string[];  // per-step soft-degrade reasons ("<binding>: <reason>"); a passthrough is never silent
     configs?: Record<string, unknown>[]; // per-step clamped planner config, aligned to `chain` order (enterMasterOrMux)
     wait?: StepWait;     // core#377: holding for a transient failure
+    hold_cycles?: number; // core#377: holds this step has started, capped
   };
   // Opening title + end-credit text for the film.finish chain (title / credit cards). Absent -> no
   // cards; the film.finish module passes the film through unchanged. (#190)
@@ -556,6 +607,13 @@ export interface FilmJob {
   film_finish_base_key?: string;
   // A retry asked for the film.finish chain alone: mux re-entry goes straight to it.
   film_finish_resume?: boolean;
+  // core#377: the whole job as it stood before a retry. A retry deletes nothing and only replaces the
+  // film once the new one is finished; if it does not finish, this is restored. See settleFinishRetry.
+  finish_retry_prior?: string;
+  // Which retry this is, so its film.finish steps write new keys and leave the delivered film alone.
+  finish_retry_gen?: number;
+  // The last retry did not finish. The film stands as it was.
+  finish_retry_failed?: { at: number; reason: string };
   // core#377: the mixed bed, once made, so a wait for a slot does not mix again on each attempt.
   mix_done_key?: string;
   // The mix could not run and the film moves on with the bare bed. Cleared by a retry.
@@ -703,6 +761,7 @@ export interface FilmSummary {
   // core#377: finish steps that did not run. Absent on a clean finish. A `done` film with this set is
   // not a clean done: it names each step and what is kept, and the steps can be retried.
   finish_incomplete?: FinishIncompleteStep[];
+  finish_retry_failed?: FilmJob["finish_retry_failed"];
   // #619: keyframe recovery hit the ceiling with a partial set; the film delivered only the scenes
   // that rendered. Absent on a normal render. Lets the API/UI show "N of M scenes, dropped [...]".
   keyframes_incomplete?: FilmJob["keyframes_incomplete"];
@@ -826,6 +885,7 @@ export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummar
     finish_unavailable: job.finish_unavailable,
     finish_waiting: filmFinishWaiting(job),
     finish_incomplete: job.finish_incomplete?.length ? job.finish_incomplete : undefined,
+    finish_retry_failed: job.finish_retry_failed,
     keyframes_incomplete: job.keyframes_incomplete,
     assemble_ms,
     output_ms,

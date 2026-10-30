@@ -90,7 +90,9 @@ export type FinishQueueAnswer =
  * implementation both shipped panels can use.
  */
 export interface FinishQueue {
-  /** Join the line, or re-ask from the existing place. Idempotent. Renews a lease already held. */
+  /** Join the line, or re-ask from the existing place. Idempotent. Asking does NOT extend a lease held:
+   *  only `renew` does, because only a running job earns one. A film granted a slot that then never
+   *  submits must lose it when the lease runs out. */
   acquire(holder: string, ask?: { step?: string; fairnessKey?: string }): Promise<FinishQueueAnswer>;
   /** A job is running. Holds the slot, and takes one if the lease lapsed or never existed. */
   renew(holder: string): Promise<void>;
@@ -172,9 +174,8 @@ export function sqlFinishQueue(db: Database, opts: SqlFinishQueueOptions = {}): 
            ON CONFLICT(holder) DO UPDATE SET
              last_seen = excluded.last_seen,
              step = excluded.step,
-             state = CASE WHEN finish_queue.state = 'parked' THEN 'waiting' ELSE finish_queue.state END,
-             lease_expires = CASE WHEN finish_queue.state = 'leased' THEN ? ELSE finish_queue.lease_expires END`,
-        ).bind(holder, step ?? null, key ?? null, now, now, now + FINISH_QUEUE_LEASE_SECONDS * 1000),
+             state = CASE WHEN finish_queue.state = 'parked' THEN 'waiting' ELSE finish_queue.state END`,
+        ).bind(holder, step ?? null, key ?? null, now, now),
         // THE GRANT, one atomic compare-and-set: this holder is served when the running jobs plus the
         // live waiters ahead of it still leave a slot under the effective cap.
         db.prepare(
@@ -190,10 +191,10 @@ export function sqlFinishQueue(db: Database, opts: SqlFinishQueueOptions = {}): 
         () =>
           db.prepare(
             `SELECT state, asked_at, ${LEASED} AS running,
-               (SELECT COUNT(*) FROM finish_queue w WHERE w.state = 'waiting' AND w.seq < q.seq) AS ahead,
-               (SELECT COUNT(*) FROM finish_queue w WHERE w.state = 'waiting') AS depth
+               (SELECT COUNT(*) FROM finish_queue w WHERE w.state = 'waiting' AND w.last_seen >= ? AND w.seq < q.seq) AS ahead,
+               (SELECT COUNT(*) FROM finish_queue w WHERE w.state = 'waiting' AND w.last_seen >= ?) AS depth
              FROM finish_queue q WHERE holder = ?`,
-          ).bind(holder).first<{ state: string; asked_at: number; running: number; ahead: number; depth: number }>(),
+          ).bind(staleBefore, staleBefore, holder).first<{ state: string; asked_at: number; running: number; ahead: number; depth: number }>(),
         { label: "finish_queue" },
       );
       if (!row) throw new Error(`finish_queue: no row for ${holder} after acquire`);

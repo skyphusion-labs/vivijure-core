@@ -662,8 +662,8 @@ async function tickVideoFinishAssembleInner(
       }
       // The film was granted a slot and the door refused it: give the slot back and keep the place.
       const holder = opts.affinity;
-      const queued = !!holder && finishQueueOf(env) !== null;
-      if (holder) await finishQueueCall(env, holder, "yield", (q) => q.yield(holder));
+      // `queued` means the queue answered. A queue that threw is no queue, so the film takes the backoff.
+      const queued = !!holder && (await finishQueueCall(env, holder, "yield", async (q) => { await q.yield(holder); return true; })) === true;
       const next: AssembleCapacityWait = {
         firstAt,
         attempts,

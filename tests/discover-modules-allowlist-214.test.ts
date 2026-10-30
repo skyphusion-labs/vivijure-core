@@ -23,7 +23,7 @@ const REQUEST_ENTRY = new Set([
   "startScatterRender",
   "advanceScatterJob",
   "cancelFilmJob",
-  "retryFilmFinish",
+  "retryFilmFinishLocked",
 ]);
 
 const DISCOVER = /await\s+discoverModules\b/;

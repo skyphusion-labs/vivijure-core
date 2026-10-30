@@ -193,6 +193,29 @@ describe("finish queue recovery", () => {
     expect(await granted(q, "b")).toBe(true);
   });
 
+  it("asking does not extend a lease: a film granted a slot that never submits loses it", async () => {
+    const { q, clock } = open(1);
+    await q.acquire("stuck");
+    await q.acquire("b");
+    for (let i = 0; i < 4; i++) {
+      clock.t += (FINISH_QUEUE_STALE_SECONDS - 60) * 1000;
+      await q.acquire("stuck"); // its tick asks, then throws before it can submit
+      await q.acquire("b");
+    }
+    clock.t += FINISH_QUEUE_LEASE_SECONDS * 1000;
+    await q.acquire("b");
+    expect(await q.next(10)).toContain("stuck");
+  });
+
+  it("position and depth count only waiters that can hold anyone up", async () => {
+    const { q, clock } = open(1);
+    await q.acquire("a");
+    await q.acquire("gone");
+    clock.t += (FINISH_QUEUE_STALE_SECONDS + 1) * 1000;
+    await q.renew("a");
+    expect(await q.acquire("c")).toMatchObject({ granted: false, position: 1, depth: 1 });
+  });
+
   it("renewing holds the slot past the original lease", async () => {
     const { q, clock } = open(1);
     await q.acquire("a");
@@ -434,6 +457,19 @@ describe("the gate and the tick", () => {
     const row = raw.prepare("SELECT state FROM finish_queue WHERE holder = 'f'").get() as { state: string };
     expect(row.state).toBe("waiting");
     expect(decodeAssembleWait(tick.wait)!.queued).toBe(true);
+  });
+
+  it("a queue that throws on yield means the backoff, not the 30 second recheck", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const broken = { acquire: async () => ({ granted: true }), yield: async () => { throw new Error("d1 down"); } };
+    const { env } = doorEnv({ FINISH_QUEUE: broken }, 429);
+    const now = Date.now();
+    const wait = encodeAssembleWait({ firstAt: now - 1000, attempts: 3, nextAt: now - 1, detail: "d" });
+    const tick = await tickVideoFinishAssemble(env, payload, undefined, { affinity: "f", wait });
+    if (tick.kind !== "waiting") throw new Error(`expected waiting, got ${tick.kind}`);
+    const w = decodeAssembleWait(tick.wait)!;
+    expect(w.queued).toBeUndefined();
+    expect(w.nextAt - now).toBeGreaterThan(FINISH_QUEUE_RECHECK_SECONDS * 1000);
   });
 
   it("a queue failure during renew does not fail a running job", async () => {
