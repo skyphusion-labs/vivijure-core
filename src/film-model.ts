@@ -723,6 +723,9 @@ export interface ClipDelivery {
   delivered_seconds: number; // frames/fps, rounded to ms
   fps: number;
   frames: number;
+  // vivijure-cf#1125: true when frames and fps were read from the clip. Absent, the door reported them,
+  // and for many doors that is planned seconds times a rate, so it is not evidence of what was delivered.
+  measured?: boolean;
   // #705: tier honesty -- true when a distilled model variant rendered the clip. Carried only when
   // the backend reported it; absent otherwise.
   distilled?: boolean;
@@ -740,6 +743,7 @@ export function clipDeliveries(clipJob: ClipJob | null): ClipDelivery[] | undefi
       fps: s.delivered_fps,
       frames: s.delivered_frames,
     };
+    if (s.delivered_measured === true) entry.measured = true;
     if (typeof s.distilled === "boolean") entry.distilled = s.distilled;
     out.push(entry);
   }

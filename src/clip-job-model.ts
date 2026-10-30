@@ -46,6 +46,9 @@ export interface ClipShot extends ClipShotInput {
   content_unmeasured?: string;
   delivered_fps?: number;
   delivered_frames?: number;
+  /** vivijure-cf#1125: true when the frames and rate come from the file. Absent, they are what the door
+   *  reported, and many doors report the plan. */
+  delivered_measured?: boolean;
   /** cf#507b: the clip's ACTUAL pixel dimensions, as probed from its mp4 `tkhd` box.
    *
    *  Already computed on every done clip -- validateDoneClips calls validateClipArtifact, which
