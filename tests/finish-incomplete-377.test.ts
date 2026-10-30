@@ -756,6 +756,49 @@ describe("retryFilmFinish", () => {
     });
   });
 
+  describe("why a retry started nothing (vivijure-cf#1114)", () => {
+    const named = { stage: "finish" as const, step: "MODULE_U", shot_id: "s1", code: "refused", kept: "k", at: 1 };
+    const fs = (status: string) => ({ shot_id: "s1", clip_key: "c", chain: ["MODULE_U"], configs: [{}], idx: 0, status, applied: [] });
+
+    it("another tick holds the film: busy, and the job is unchanged", async () => {
+      quiet();
+      const lost = { prepare: () => { const st = { bind: () => st, run: async () => ({ success: true, meta: { changes: 0 } }), first: async () => ({ one: 1 }), all: async () => ({ results: [] }) }; return st; } };
+      const job = baseJob({ finish_shots: [fs("done")] as never, finish_incomplete: [named] });
+      const { e, stored } = env({ DB: lost }, { [filmJobDocKey("film-1")]: JSON.stringify(job) });
+      const before = stored[filmJobDocKey("film-1")];
+      expect(await retryFilmFinish(e, "film-1")).toMatchObject({ retried: [], not_started: "busy" });
+      expect(stored[filmJobDocKey("film-1")]).toBe(before);
+    });
+
+    it("a film still running: busy", async () => {
+      const { e } = env({}, { [filmJobDocKey("film-1")]: JSON.stringify(baseJob({ phase: "mux", finish_incomplete: [named] })) });
+      expect((await retryFilmFinish(e, "film-1"))?.not_started).toBe("busy");
+    });
+
+    it("no missing step, or a cancelled film: nothing_to_retry", async () => {
+      const clean = env({}, { [filmJobDocKey("film-1")]: JSON.stringify(baseJob()) });
+      expect((await retryFilmFinish(clean.e, "film-1"))?.not_started).toBe("nothing_to_retry");
+      const cancelled = env({}, { [filmJobDocKey("film-1")]: JSON.stringify(baseJob({ phase: "mux", cancelled: true, finish_incomplete: [named] } as never)) });
+      expect((await retryFilmFinish(cancelled.e, "film-1"))?.not_started).toBe("nothing_to_retry");
+    });
+
+    it("a refused shot: cannot_deliver", async () => {
+      quiet();
+      const job = baseJob({ phase: "failed", finish_shots: [fs("refused")] as never, finish_incomplete: [named] });
+      const { e } = env({ DB: rowDb().DB }, { [filmJobDocKey("film-1")]: JSON.stringify(job) });
+      expect((await retryFilmFinish(e, "film-1"))?.not_started).toBe("cannot_deliver");
+    });
+
+    it("a retry that starts has no reason", async () => {
+      quiet();
+      const job = baseJob({ finish_shots: [fs("done")] as never, finish_incomplete: [named] });
+      const { e } = env({ DB: rowDb().DB }, { [filmJobDocKey("film-1")]: JSON.stringify(job) });
+      const r = await retryFilmFinish(e, "film-1");
+      expect(r?.retried).toHaveLength(1);
+      expect(r?.not_started).toBeUndefined();
+    });
+  });
+
   it("a clean film has nothing to retry, and is left alone", async () => {
     const { e, stored } = env({}, { [filmJobDocKey("film-1")]: JSON.stringify(baseJob()) });
     const before = stored[filmJobDocKey("film-1")];

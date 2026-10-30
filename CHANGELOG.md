@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.28.3
+
 ## [1.28.2] -- 2026-10-30
 
 **Fix: one film's finish step can no longer replace a clip another film recorded (#379).**
