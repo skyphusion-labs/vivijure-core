@@ -3,7 +3,11 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.28.1
+## [1.28.1] -- 2026-10-30
+
+### fix(finish): a film that cannot deliver does not reopen on a retry (#384)
+
+`retryFilmFinish` no longer reopens a film holding a refused shot, or a failed shot with no named step. Those shots would fail the finish phase again, after the other shots' steps had called their doors and spent money. `retried` is empty and no door is called. The event `film.finish_retry_blocked` names the shots.
 
 ## [1.28.0] -- 2026-10-30
 
