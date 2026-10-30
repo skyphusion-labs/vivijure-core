@@ -432,6 +432,58 @@ describe("retryFilmFinish", () => {
     });
   });
 
+  it("a whole retry also deletes the old cut, when the film delivered was built on it", async () => {
+    quiet();
+    const CUT = "renders/film-1/film.mp4";
+    const NEW = "renders/film-1/film-r1.mp4";
+    const delivered = "renders/film-1/film-ff0.mp4";
+    const job = baseJob({
+      film_key: delivered, silent_film_key: CUT, film_finish_base_key: CUT, actual_clip_durations: { s1: 4 },
+      scenes: [{ shot_id: "s1", prompt: "p", seconds: 4 }] as never,
+      finish_shots: [{ shot_id: "s1", clip_key: "renders/p1/clips/s1.mp4", chain: ["MODULE_U"], configs: [{}], idx: 1, status: "done", applied: [] }] as never,
+      finish_incomplete: [{ stage: "assemble", step: "assemble", code: "unavailable", kept: "k", at: 1 }],
+    });
+    let box: Record<string, string> = {};
+    const door = { fetch: async (url: string) => {
+      if (new URL(url).pathname === "/async/finish") return Response.json({ ok: true, jobId: "j" }, { status: 202 });
+      box[NEW] = "new";
+      return Response.json({ status: "completed", result: { ok: true, durationSeconds: 8 } });
+    } };
+    const made = env(
+      { DB: rowDb().DB, MEDIA_FINISH_TOKEN: "t", VIDEO_FINISH_URL: "http://vf", MEDIA_DOOR_FETCHERS: { VIDEO_FINISH_URL: door } },
+      { [filmJobDocKey("film-1")]: JSON.stringify(job), [CUT]: "old cut", [delivered]: "old film" },
+    );
+    box = made.stored;
+    await retryFilmFinish(made.e, "film-1");
+    const r = await advanceFilmJob(made.e, "film-1", []);
+    expect(r?.job.film_key).toBe(NEW);
+    expect(made.deleted).toEqual(expect.arrayContaining([CUT, delivered]));
+  });
+
+  it("a failed retry that reused the cut does not delete it, because the restored film still names it", async () => {
+    quiet();
+    const CUT = "renders/film-1/film.mp4";
+    const delivered = "renders/film-1/film-audio.mp4";
+    const job = baseJob({
+      film_key: delivered, silent_film_key: CUT, mux_output_key: delivered, audio_key: "renders/p1/bed.wav", beats_read: true,
+      finish_incomplete: [{ stage: "mux", step: "mux", code: "failed", kept: "the silent cut", at: 1 }],
+    } as Partial<FilmJob>);
+    const door = { fetch: async (url: string) =>
+      new URL(url).pathname === "/async/finish"
+        ? Response.json({ ok: true, jobId: "j" }, { status: 202 })
+        : Response.json({ status: "failed", error: "mux exploded" }) };
+    const { e, deleted, stored } = env(
+      { DB: rowDb().DB, MEDIA_FINISH_TOKEN: "t", VIDEO_FINISH_URL: "http://vf", MEDIA_DOOR_FETCHERS: { VIDEO_FINISH_URL: door } },
+      { [filmJobDocKey("film-1")]: JSON.stringify(job), [CUT]: "cut", [delivered]: "film" },
+    );
+    await retryFilmFinish(e, "film-1");
+    const r = await advanceFilmJob(e, "film-1", []);
+    expect(r?.job).toMatchObject({ phase: "done", film_key: delivered, silent_film_key: CUT });
+    expect(deleted).not.toContain(CUT);
+    expect(deleted).not.toContain(delivered);
+    expect(stored[CUT]).toBe("cut");
+  });
+
   it("a film that fails through a throw while retrying is restored, and stays retryable", async () => {
     quiet();
     const delivered = "renders/p1/film-ff0.mp4";
