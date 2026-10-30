@@ -48,6 +48,8 @@ export interface ScatterJob {
   silent_film_key?: string;
   mux_output_key?: string;
   assemble_poll?: string;
+  // Waiting for a finish slot (encoded AssembleCapacityWait). Never stored in assemble_poll.
+  assemble_wait?: string;
   error?: string;
   created_at: number;
   cancelled?: boolean;

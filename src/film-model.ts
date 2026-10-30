@@ -4,6 +4,7 @@
 // master-chain state helpers, and the stall math. The orchestrator (film-orchestrator.ts) owns
 // every await; it re-exports this module, so importers and tests keep their one entry point.
 
+import { decodeAssembleWait } from "./video-finish-assemble.js";
 import type { ConfigSchema, DialogueLine, FinishOutput, HookSelection, MasterOutput, RegisteredModule, SpeechOutput } from "./modules/types.js";
 import { validateConfig } from "./modules/registry.js";
 import { summarizeJob, type ClipJob, type JobSummary } from "./clip-job-model.js";
@@ -454,6 +455,9 @@ export interface FilmJob {
   // Async /finish job token (jobId + streak). A 17-shot concat outlives the
   // Worker fetch; the next poll tick reads this instead of re-POSTing /finish.
   assemble_poll?: string;
+  // Waiting for a finish slot (encoded AssembleCapacityWait). Never stored in assemble_poll, because
+  // every caller reads an empty assemble_poll as "mint URLs and submit".
+  assemble_wait?: string;
   // Wall-clock the job entered its CURRENT phase (issue #129). advanceFilmJob stamps this on every
   // phase transition; the stall recovery measures how long a pollable phase has been stuck against it.
   // Absent on pre-#129 jobs -> recovery falls back to created_at (still bounded, just more generous).
@@ -590,6 +594,9 @@ export interface FilmSummary {
   // the film COMPLETED delivering per-shot clips (assemble) or the silent film (mux) instead of the
   // finished film. Absent on a normal render. Lets the API/UI show "clips only, finish unavailable" (#519).
   finish_unavailable?: FilmJob["finish_unavailable"];
+  // The film is waiting for a finish slot and has not failed. Absent otherwise. It says why the
+  // phase is not moving, so a wait does not read as a hung render.
+  finish_waiting?: { since: number; attempts: number; next_at: number; detail: string };
   // #619: keyframe recovery hit the ceiling with a partial set; the film delivered only the scenes
   // that rendered. Absent on a normal render. Lets the API/UI show "N of M scenes, dropped [...]".
   keyframes_incomplete?: FilmJob["keyframes_incomplete"];
@@ -652,6 +659,11 @@ export function summarizeFinish(shots: FinishShot[]): FinishSummary {
     reasons: uniqueFirstSeen(perShot.flat()),
   };
 }
+function finishWaitingView(raw: string | undefined): FilmSummary["finish_waiting"] {
+  const w = decodeAssembleWait(raw);
+  return w ? { since: w.firstAt, attempts: w.attempts, next_at: w.nextAt, detail: w.detail } : undefined;
+}
+
 export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummary {
   const durations = job.film_output_seconds;
   const assembleKey = defaultFilmOutputKey(job.film_id);
@@ -670,6 +682,7 @@ export function summarizeFilm(job: FilmJob, clipJob: ClipJob | null): FilmSummar
     film_key: job.film_key,
     film_finish: job.film_finish,
     finish_unavailable: job.finish_unavailable,
+    finish_waiting: finishWaitingView(job.assemble_wait),
     keyframes_incomplete: job.keyframes_incomplete,
     assemble_ms,
     output_ms,

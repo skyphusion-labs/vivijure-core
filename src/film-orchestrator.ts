@@ -16,6 +16,7 @@ import {
   deletePartialPool,
   encodeAssemblePoll,
   mintPartialUrlPool,
+  assembleWaitHolding,
   tickVideoFinishAssemble,
   type FinishPayload,
 } from "./video-finish-assemble.js";
@@ -2500,6 +2501,7 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
     audioUrl: undefined as string | undefined,
     remuxAudioOnly: true,
   };
+  if (assembleWaitHolding(job.assemble_wait)) { job.phase = "mux"; job.error = undefined; return; }
   if (!job.assemble_poll) {
     const [videoUrl, audioUrl, outputUrl] = await Promise.all([
       presignR2Get(env, silentKey, 1800),
@@ -2509,7 +2511,14 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
     payload = { ...payload, clips: [{ url: videoUrl }], outputUrl, audioUrl };
   }
 
-  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll);
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.film_id });
+  if (tick.kind === "waiting") {
+    job.assemble_wait = tick.wait;
+    job.phase = "mux";
+    job.error = undefined;
+    return;
+  }
+  job.assemble_wait = undefined;
   if (tick.kind === "pending") {
     job.assemble_poll = encodeAssemblePoll(tick.poll);
     job.phase = "mux";
@@ -2723,6 +2732,8 @@ async function enterAssemblePhase(
     width: delivery.width,
     height: delivery.height,
   };
+  // Before admission and presign: a film holding for a slot pays no R2 reads on each sweep tick.
+  if (assembleWaitHolding(job.assemble_wait)) { job.phase = "assemble"; job.error = undefined; return; }
   if (!job.assemble_poll) {
     // cf#815: PRE-FLIGHT INPUT ADMISSION. Refuse a film that cannot fit the container's ephemeral
     // disk BEFORE a presign is minted, so nothing is downloaded, normalized or encoded first.
@@ -2787,7 +2798,15 @@ async function enterAssemblePhase(
   }
   // Async /finish: the Worker must not sit on a 17-shot concat. 524 is what
   // that wait looks like. Submit 202s; later ticks poll.
-  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll);
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.film_id });
+  if (tick.kind === "waiting") {
+    // No slot is free. The clips stay in R2 and the 1-minute sweep drives the next attempt.
+    job.assemble_wait = tick.wait;
+    job.phase = "assemble";
+    job.error = undefined;
+    return;
+  }
+  job.assemble_wait = undefined;
   if (tick.kind === "pending") {
     job.assemble_poll = encodeAssemblePoll(tick.poll);
     job.phase = "assemble";
@@ -2804,7 +2823,10 @@ async function enterAssemblePhase(
     // in R2, and the reason stays on the job, but the phase is failed: the join did not run.
     // A container that RAN and refused still fails loud too, and so do an expired job and an auth error.
     if (tick.unreachable) {
-      await degradeAssembleUnavailable(env, job, finalClips, `video-finish tier unreachable (${tick.error}); per-shot clips kept`, preModules);
+      const reason = tick.capacity
+        ? `${tick.error}; per-shot clips kept`
+        : `video-finish tier unreachable (${tick.error}); per-shot clips kept`;
+      await degradeAssembleUnavailable(env, job, finalClips, reason, preModules);
       return;
     }
     job.phase = "failed";

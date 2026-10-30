@@ -7,6 +7,7 @@ import {
   deletePartialPool,
   encodeAssemblePoll,
   mintPartialUrlPool,
+  assembleWaitHolding,
   tickVideoFinishAssemble,
   type FinishPayload,
 } from "./video-finish-assemble.js";
@@ -373,7 +374,14 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
       audioUrl: await presignR2Get(env, audioKey, 1800),
     };
   }
-  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll);
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.scatter_id });
+  if (tick.kind === "waiting") {
+    job.assemble_wait = tick.wait;
+    job.phase = "mux";
+    job.error = undefined;
+    return;
+  }
+  job.assemble_wait = undefined;
   if (tick.kind === "pending") {
     job.assemble_poll = encodeAssemblePoll(tick.poll);
     job.phase = "mux";
@@ -512,6 +520,7 @@ async function assembleScatterClips(
     outputKey,
     keepClipAudio: true,
   };
+  if (assembleWaitHolding(job.assemble_wait)) { job.phase = "gather"; job.error = undefined; return; }
   if (!job.assemble_poll) {
     // ASSEMBLE_PRESIGN_TTL_SECONDS, not the old hardcoded 1800. Under chunked assemble batch N
     // downloads its clips only after batch N-1 has finished encoding, and the final pass reads
@@ -529,7 +538,14 @@ async function assembleScatterClips(
     ]);
     payload = { ...payload, clips: presigned, outputUrl, partialUrls };
   }
-  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll);
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.scatter_id });
+  if (tick.kind === "waiting") {
+    job.assemble_wait = tick.wait;
+    job.phase = "gather";
+    job.error = undefined;
+    return;
+  }
+  job.assemble_wait = undefined;
   if (tick.kind === "pending") {
     job.assemble_poll = encodeAssemblePoll(tick.poll);
     job.phase = "gather";
