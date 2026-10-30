@@ -1,7 +1,7 @@
 // core#379: a film's finish steps write under that film, so one render cannot replace a clip another
 // render has recorded. Same class as the still collision in vivijure-backend#535.
 import { describe, expect, it, vi } from "vitest";
-import { FINISH_REUSE_COPIES_PER_TICK, advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
+import { FINISH_REUSE_COPIES_PER_TICK, FINISH_REUSE_LOOKUPS_PER_TICK, advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
 import { finishClipScope, finishStepIsShotNamed, finishStepOutputKey, finishStepPointerKey, type FinishShot } from "../src/film-model.js";
 import type { RegisteredModule } from "../src/modules/types.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
@@ -225,6 +225,67 @@ describe("a real tick", () => {
     expect(ticks).toBeLessThanOrEqual(Math.ceil(ids.length / FINISH_REUSE_COPIES_PER_TICK) + 1);
     const done = JSON.parse(w.store[filmJobDocKey("film-a")]) as FilmJob;
     expect(JSON.stringify(done.finish_shots)).not.toContain("film-b");
+  });
+
+  it("reads at most the bound of pointers in a tick, and still reaches a shot behind the bound", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const hash = await import("../src/finish-hash.js");
+    const good = await hash.finishStepInputHash(null, null, {});
+    const ids = Array.from({ length: 9 }, (_, i) => `s${i + 1}`);
+    const other = "renders/p/clips/film-b/s9_finished.mp4";
+    // Only the last shot has anything to reuse. Without a moving start, the first shots would spend the
+    // lookups on every tick, and it would never be reached.
+    const stored = { [other]: "clip", [`${other}.hash`]: good, "renders/p/clips/s9_finished.latest.json": JSON.stringify({ key: other }) };
+    const shots = ids.map((id) => shot({ shot_id: id, clip_key: `renders/p/clips/${id}.mp4`, poll: "tok" }));
+    const w = world({ finish_shots: shots as never }, () => ({ ok: true, pending: true }), stored);
+    const bucket = (w.e as unknown as { R2_RENDERS: { get: (k: string) => Promise<unknown> } }).R2_RENDERS;
+    const realGet = bucket.get;
+    let pointerReads = 0;
+    bucket.get = async (k: string) => { if (k.endsWith(".latest.json")) pointerReads += 1; return realGet(k); };
+    let reached = false;
+    for (let tick = 0; tick < 4 && !reached; tick++) {
+      pointerReads = 0;
+      const r = await advanceFilmJob(w.e, "film-a", [RIFE]);
+      expect(pointerReads).toBeLessThanOrEqual(FINISH_REUSE_LOOKUPS_PER_TICK);
+      reached = r!.job.finish_shots![8].clip_key === "renders/p/clips/film-a/s9_finished.mp4";
+    }
+    expect(reached).toBe(true);
+  });
+
+  it("failed shots past the bound are copied a few a tick, and the film does not fail for the wait", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const hash = await import("../src/finish-hash.js");
+    const good = await hash.finishStepInputHash(null, null, {});
+    const ids = Array.from({ length: 6 }, (_, i) => `s${i + 1}`);
+    const stored: Record<string, string> = {};
+    for (const id of ids) {
+      const other = `renders/p/clips/film-b/${id}_finished.mp4`;
+      stored[other] = "clip";
+      stored[`${other}.hash`] = good;
+      stored[`renders/p/clips/${id}_finished.latest.json`] = JSON.stringify({ key: other });
+    }
+    const shots = ids.map((id) => shot({ shot_id: id, clip_key: `renders/p/clips/${id}.mp4`, status: "failed", error: "x" } as never));
+    const w = world({ finish_shots: shots as never, clips_only: true }, () => ({ ok: true }), stored);
+    const copied = () => ids.filter((id) => w.store[`renders/p/clips/film-a/${id}_finished.mp4`]).length;
+    let before = 0;
+    let phase: string | undefined = "finish";
+    let ticks = 0;
+    while (phase === "finish" && ticks < 12) {
+      phase = (await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.phase;
+      ticks += 1;
+      expect(copied() - before).toBeLessThanOrEqual(FINISH_REUSE_COPIES_PER_TICK);
+      before = copied();
+    }
+    expect(phase).toBe("done");
+    expect(copied()).toBe(ids.length);
+  });
+
+  it("a failed shot with nothing to reuse still fails the film once its turn has passed", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const w = world({ finish_shots: [shot({ status: "failed", error: "x" } as never)] as never }, () => ({ ok: true }));
+    expect((await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.phase).toBe("failed");
   });
 
   it("a lost poll past the bound stays pending, and is not failed for the wait", async () => {
