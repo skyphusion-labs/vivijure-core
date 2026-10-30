@@ -3,7 +3,30 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.27.0
+## [1.27.0] -- 2026-10-30
+
+### fix(clips): a render no longer adopts a sibling door's clip
+
+Two doors on one project could ship byte-identical films, both marked done. The reclaim matched an
+archived take as a motion clip, and it adopted a lone unstamped clip that was a live sibling's. A take
+is now never a candidate. A lone unstamped clip is adopted only after it has settled for five minutes.
+A clip with a matching sidecar is still adopted at once.
+
+### fix(keyframe): a job-scoped keyframe key stays job-scoped
+
+`isRendersKeyframeKey` now accepts one job segment, `renders/<project>/keyframes/<job>/<shot>.png`.
+Before, `own-gpu` and `local-gpu` clip submits copied that key back to the shared canonical key.
+Concurrent renders of one project could then overwrite each other again (cf#1059). `listProjectKeyframes` now also finds the stills of the keyframe jobs this film started, so a lost poll still recovers them. It never adopts another job's still.
+
+### fix(video-finish): a full finish tier is a wait, not a failed film
+
+A video-finish door that answers 429 on submit no longer fails the film. The phase stays `assemble`, `mux` or `gather`, and the sweep retries at 30s, 60s, 120s, 240s, then every 300s. Past `ASSEMBLE_CAPACITY_MAX_WAIT_SECONDS` (6 hours, the same as the job horizon) the film fails with an error that names capacity, and the clips stay on `finish_unavailable` as retained. `FilmSummary.finish_waiting` says why the phase is not moving.
+
+Any other refusal stays terminal, and its error now carries the door's text with URLs removed, in place of a bare status.
+
+A submit carries `x-vivijure-finish-affinity` with the film id, so a door can send a retry and the next leg to one instance. A door that ignores the header behaves as before.
+
+Publishing this package, and moving the studio pin, are separate from this commit.
 
 ## [1.26.0] -- 2026-10-19
 
