@@ -302,6 +302,11 @@ export interface ModuleManifest {
    * (community) module even when this flag is set.
    */
   needs_tenant_r2?: boolean;
+  /** OPTIONAL, additive (no MODULE_API bump). A keyframe module sets this true when a job trains any
+   *  slot that arrives with no adapter in `pretrained_loras`. The core then keeps such a film to one job,
+   *  because every job of a split film would otherwise train the same slot and be billed for it (core#370).
+   *  Absent means the module never trains, and the split is unchanged. */
+  trains_loras?: boolean;
   /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`). A finish module sets this
    *  true when it drives its output from the shot dialogue audio (`FinishInput.audio_key`), i.e. it
    *  lip-syncs. It carries TWO facts the core needs: (a) this finish step CONSUMES the shot dialogue
