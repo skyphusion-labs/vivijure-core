@@ -1216,7 +1216,23 @@ export function finishShotLedgerReconciles(fs: FinishShot): boolean {
  *  upscale -> `_up`; see vivijure-upscale handler.py). Returns null for a module whose
  *  convention we do not model (e.g. text-overlay), so an unmodeled step gets NO R2 shortcut and can never
  *  be advanced off a sibling step's artifact -- the mid-chain phantom-adopt the silent-render bug warned of. */
-export function finishStepOutputKey(project: string, fs: FinishShot, modules?: RegisteredModule[]): string | null {
+export function finishStepOutputKey(project: string, fs: FinishShot, modules?: RegisteredModule[], scope?: string): string | null {
+  const key = unscopedFinishStepOutputKey(project, fs, modules);
+  if (!key || !scope) return key;
+  const dir = `renders/${project}/clips/${scope}/`;
+  return key.startsWith(dir) ? key : dir + key.slice(key.lastIndexOf("/") + 1);
+}
+
+/**
+ * core#379: the folder under `clips/` this film's finish steps write to, so one film cannot replace a
+ * clip another film has recorded. A retry gets its own folder too, so a retry that fails leaves the clips
+ * of the film that stands as they were. Reclaiming a render sweeps `clips/<film_id>/`.
+ */
+export function finishClipScope(job: { film_id: string; finish_retry_gen?: number }): string {
+  return job.finish_retry_gen ? `${job.film_id}/r${job.finish_retry_gen}` : job.film_id;
+}
+
+function unscopedFinishStepOutputKey(project: string, fs: FinishShot, modules?: RegisteredModule[]): string | null {
   const binding = fs.chain[fs.idx] ?? "";
   // Contract-carried convention first (finish_artifacts, S6): the module DECLARES how it names its
   // output, so the core stops reverse-engineering module internals from the binding name.

@@ -99,6 +99,7 @@ import {
   filmFinishView,
   reclaimFinishShotsFromR2,
   finishStepOutputKey,
+  finishClipScope,
   finishStepAppliedTag,
   finishShotLedgerReconciles,
   MASTER_STEP_MAX_ATTEMPTS,
@@ -1170,15 +1171,20 @@ async function finishArtifactHashMatches(env: Env, job: FilmJob, fs: FinishShot,
 async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: RecoverableFinishShot, preModules?: RegisteredModule[]): Promise<boolean> {
   // The tick threads its once-discovered registry in (preModules); a direct caller discovers fresh.
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
-  const expected = finishStepOutputKey(job.project, fs, modules);
-  if (!expected) return false;
-  if ((await env.R2_RENDERS.head(expected)) === null) return false;
-  // #583 gate: a present artifact is adopted only if its provenance sidecar matches this step's inputs;
-  // a missing/mismatched sidecar (legacy artifact, or a resubmit with changed inputs) re-runs the step.
-  if (!(await finishArtifactHashMatches(env, job, fs, expected))) return false;
-  // #583: an R2-adopted step is REUSED, not run -- record the marker in `adopted`, never a fake `applied`-run tag.
-  adoptFinishStepOutput(fs, expected, finishStepAppliedTag(fs, modules));
-  return true;
+  // core#379: this film's own key first. The shared key is where a backend or module that predates the
+  // film-scoped key still writes, and where a film already in flight at the upgrade wrote.
+  const candidates = [finishStepOutputKey(job.project, fs, modules, finishClipScope(job)), finishStepOutputKey(job.project, fs, modules)];
+  for (const expected of new Set(candidates)) {
+    if (!expected) continue;
+    if ((await env.R2_RENDERS.head(expected)) === null) continue;
+    // #583 gate: a present artifact is adopted only if its provenance sidecar matches this step's inputs;
+    // a missing/mismatched sidecar (legacy artifact, or a resubmit with changed inputs) re-runs the step.
+    if (!(await finishArtifactHashMatches(env, job, fs, expected))) continue;
+    // #583: an R2-adopted step is REUSED, not run -- record the marker in `adopted`, never a fake `applied`-run tag.
+    adoptFinishStepOutput(fs, expected, finishStepAppliedTag(fs, modules));
+    return true;
+  }
+  return false;
 }
 
 // cf#312: satellite finish/speech jobs queue + cold-start + GPU work. Same 30min envelope as
@@ -1207,8 +1213,10 @@ export async function attachFinishPresigns(
   input: FinishInput,
   modules: RegisteredModule[],
 ): Promise<void> {
-  const outKey = finishStepOutputKey(job.project, fs, modules);
+  const outKey = finishStepOutputKey(job.project, fs, modules, finishClipScope(job));
   if (!outKey) return;
+  // core#379: set with or without presigned URLs, because a module on the credentialed path needs it too.
+  input.output_key = outKey;
   try {
     // `<output_key>.hash`, NOT `<output_key minus .mp4>.hash`. ONE key, three call sites that must
     // agree: the #583 adoption gate reads `${artifactKey}.hash` (finishArtifactHashMatches), the
@@ -1235,7 +1243,6 @@ export async function attachFinishPresigns(
     if (!videoUrl || !outputUrl || (input.audio_key && !audioUrl)) return;
     input.video_url = videoUrl;
     input.output_url = outputUrl;
-    input.output_key = outKey;
     if (audioUrl) input.audio_url = audioUrl;
     if (hashUrl) input.hash_url = hashUrl;
     // Keep clip_key / audio_key. Own-iron finish (RIFE on our RunPod) reads R2 by
@@ -1513,15 +1520,21 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
   // Only one R2 list, only when there is an adoptable shot to reclaim (the all-done happy path pays nothing).
   const finishShots = job.finish_shots || [];
   if (finishShots.some(finishShotAdoptableFromR2)) {
-    const present = await listClipsByShotId(env, job.project, finishShots.map((fs) => fs.shot_id), finishedClipFileMatchesShot);
+    const shotIds = finishShots.map((fs) => fs.shot_id);
+    // core#379: this film's own folder first, then the shared key an older writer used.
+    const scope = `${finishClipScope(job)}/`;
+    const own = await listClipsByShotId(env, job.project, shotIds, (file, shotId) =>
+      file.startsWith(scope) && finishedClipFileMatchesShot(file.slice(scope.length), shotId));
+    const present = await listClipsByShotId(env, job.project, shotIds, finishedClipFileMatchesShot);
     // #583 gate: adopt a present final artifact only when its provenance sidecar matches the shot's current
     // inputs. A same-job recovery (#141/#166) matches (inputs unchanged) and still adopts; a cross-film
     // resubmit with changed inputs (or a legacy unstamped artifact) fails the match and re-runs.
     const verified = new Map<string, string>();
     for (const fs of finishShots) {
       if (!finishShotAdoptableFromR2(fs)) continue;
-      const key = present.get(fs.shot_id);
-      if (key && await finishArtifactHashMatches(env, job, fs, key)) verified.set(fs.shot_id, key);
+      for (const key of [own.get(fs.shot_id), present.get(fs.shot_id)]) {
+        if (key && await finishArtifactHashMatches(env, job, fs, key)) { verified.set(fs.shot_id, key); break; }
+      }
     }
     reclaimFinishShotsFromR2(finishShots, verified, preModules); // #583: thread modules so the reused marker reconstructs into `adopted`
   }

@@ -778,7 +778,8 @@ export interface FinishInput {
   // URLs and is correct; that is the R2 case, not a partial presigned one.
   video_url?: string;   // presigned GET of clip_key
   output_url?: string;  // presigned PUT for the step's expected output key
-  output_key?: string;  // R2 key behind output_url (echoed by the satellite)
+  output_key?: string;  // Where this step writes. Set with or without output_url, so one film cannot
+                        // replace another film's clip (core#379). A module forwards it to its backend.
   audio_url?: string;   // presigned GET of audio_key. An audio-consuming satellite's presigned branch
                         // can REQUIRE it: the retired musetalk satellite returned a top-level `error`
                         // without one, a hard job failure. The core presigns all-or-nothing for it.
