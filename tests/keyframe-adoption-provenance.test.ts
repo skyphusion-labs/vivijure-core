@@ -132,3 +132,31 @@ describe("provenance is stamped only on a still drawn this run", () => {
     expect(puts).toEqual([provKey(drawn)]);
   });
 });
+
+describe("lost-poll adoption against the key shape a real worker wrote", () => {
+  // Measured 2026-10-30 on image 1.1.2: RunPod's /run returned these ids, the keyframe module stores
+  // that id unchanged, and the handler wrote these keys. The -uN suffix is on both sides.
+  const OWN_JOB = "eb68fae9-1801-42b2-9933-b98a79aaaf5a-u2";
+  const SIBLING = "d8d893fa-68ef-406f-8d63-99cc8a90d037-u2";
+  const P = "renders/fs1030-trial/keyframes";
+
+  function bucket() {
+    const { env, seed } = memR2();
+    seed(`${P}/${OWN_JOB}/shot_01.png`);
+    seed(`${P}/${SIBLING}/shot_01.png`);
+    seed(`${P}/shot_01.latest.json`);
+    seed(`${P}/shot_01.png`, { uploaded: NOW - 1_000 });
+    seed(`${P}/shot_01.hash`, { uploaded: NOW - 1_000 });
+    return env;
+  }
+
+  it("adopts this film's still when the stored id carries the suffix", async () => {
+    const kfs = await listProjectKeyframes(bucket(), "fs1030-trial", SCENES, NOW, undefined, BUNDLE_A, [OWN_JOB]);
+    expect(kfs).toEqual([{ shot_id: "shot_01", keyframe_key: `${P}/${OWN_JOB}/shot_01.png` }]);
+  });
+
+  it("adopts nothing when the stored id lost the suffix, so a mismatch is a failure and not a wrong film", async () => {
+    const kfs = await listProjectKeyframes(bucket(), "fs1030-trial", SCENES, NOW, undefined, BUNDLE_A, [OWN_JOB.replace(/-u\d+$/, "")]);
+    expect(kfs).toEqual([]);
+  });
+});
