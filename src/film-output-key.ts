@@ -9,6 +9,16 @@ export function defaultFilmOutputKey(filmId: string): string {
   return `renders/${filmId}/film.mp4`;
 }
 
+/**
+ * Where this job's concat goes. A retry writes its own key and never the first one, so a retry that does
+ * not finish leaves a film delivered at the canonical key exactly as it was. When the retry is whole, this
+ * key simply becomes the film: no copy, and nothing can be half promoted. Nothing but this job names these
+ * keys, and every reader goes through `job.film_key` or `job.silent_film_key`.
+ */
+export function assembleOutputKey(job: { film_id: string; finish_retry_gen?: number }): string {
+  return job.finish_retry_gen ? `renders/${job.film_id}/film-r${job.finish_retry_gen}.mp4` : defaultFilmOutputKey(job.film_id);
+}
+
 /** Does this job owe the user a single assembled film at all?
  *
  *  FALSE for the two shapes that are complete WITHOUT one, because they deliver something else:

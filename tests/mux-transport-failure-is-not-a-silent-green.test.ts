@@ -3,6 +3,7 @@ import { installVfFetch } from "./install-vf-fetch.js";
 import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
 import { _resetModuleDiscoveryCache } from "../src/modules/registry.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
+import { FINISH_TRANSPORT_HOLD_MAX_SECONDS, encodeAssembleWait } from "../src/video-finish-assemble.js";
 
 // cf#746(a): a TRANSPORT failure at mux must not ship a silent film as COMPLETED.
 //
@@ -18,6 +19,15 @@ import type { Env } from "../src/platform/orchestrator-context.js";
 // beats_read so this file still measures the mux door.
 
 const FILM = "film-mux-transport";
+/** core#377: a dead door holds first. These cases are about what happens once that hold has run out. */
+const holdSpent = () => ({
+  assemble_wait: encodeAssembleWait({
+    firstAt: Date.now() - (FINISH_TRANSPORT_HOLD_MAX_SECONDS + 1) * 1000,
+    attempts: 5,
+    nextAt: Date.now() - 1,
+    detail: "d",
+  }),
+});
 const SILENT = `renders/${FILM}/film-silent.mp4`;
 const OUT = `renders/${FILM}/film-audio.mp4`;
 const CLIP = `renders/${FILM}/shots/shot_01.mp4`;
@@ -89,7 +99,7 @@ describe("cf#746(a): a transport failure at mux FAILS, it does not ship a silent
     ["container reports the job failed", statusFailed],
   ] as const) {
     it(`${name} -> phase failed, NOT a silent green`, async () => {
-      const { env, read } = envFor(muxJob(), handler);
+      const { env, read } = envFor(muxJob(holdSpent()), handler);
       const r = await advanceFilmJob(env, FILM);
 
       expect(r?.job.phase).toBe("failed");
@@ -101,6 +111,14 @@ describe("cf#746(a): a transport failure at mux FAILS, it does not ship a silent
       expect(read().phase).toBe("failed");
     });
   }
+
+  it("core#377: a dead door holds first, and the film is neither failed nor done", async () => {
+    const { env, read } = envFor(muxJob(), submitThrows);
+    const r = await advanceFilmJob(env, FILM);
+    expect(r?.job.phase).toBe("mux");
+    expect(read().assemble_wait).toBeTruthy();
+    expect(read().finish_incomplete).toBeUndefined();
+  });
 
   it("the silent film is still in R2, so failing loses nothing a degrade would have kept", async () => {
     const { env, read } = envFor(muxJob(), submitThrows);
@@ -266,7 +284,8 @@ describe("cf#746(a) inverse controls: the degrades that SHOULD survive", () => {
 // named on finish_unavailable, and they stay in R2, but the phase is failed. A skipped join is
 // a failed film. The mux leg fails too when a song was staged: a silent cut is not that film.
 describe("core#327: both legs answer an unreachable tier by failing, and they name what is in R2", () => {
-  const assembleJob = () => ({
+  const assembleJob = (over: object = {}) => ({
+    ...over,
     film_id: FILM,
     project: "p",
     scenes: [{ shot_id: "shot_01", prompt: "x", seconds: 4 }],
@@ -276,9 +295,9 @@ describe("core#327: both legs answer an unreachable tier by failing, and they na
   });
 
   it("THE RULE: a dead origin DECLARES and delivers what exists -- clips at assemble, nothing at mux", async () => {
-    const a = envFor(assembleJob(), submitThrows);
+    const a = envFor(assembleJob(holdSpent()), submitThrows);
     const ra = await advanceFilmJob(a.env, FILM);
-    const m = envFor(muxJob(), submitThrows);
+    const m = envFor(muxJob(holdSpent()), submitThrows);
     const rm = await advanceFilmJob(m.env, FILM);
 
     // ASSEMBLE: the clips stay in R2, and the reason is on the job, but the film is failed.
@@ -322,7 +341,7 @@ describe("core#327: both legs answer an unreachable tier by failing, and they na
   it("a 502 from the EDGE is unavailability: the app never answered", async () => {
     const gateway = async (u: string) =>
       u.includes("/async/finish") ? new Response("bad gateway", { status: 502 }) : json({ ok: false }, 404);
-    const a = envFor(assembleJob(), gateway);
+    const a = envFor(assembleJob(holdSpent()), gateway);
     const r = await advanceFilmJob(a.env, FILM);
     expect(r?.job.phase).toBe("failed");
     expect(r?.job.finish_unavailable?.retained).toBe("clips");

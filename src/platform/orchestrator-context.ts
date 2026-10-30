@@ -3,6 +3,7 @@
 
 import type { Database, ObjectPresigner, Platform } from "./types.js";
 import type { MediaDoorFetchers } from "../media-finish-auth.js";
+import type { FinishQueue } from "../finish-queue.js";
 import { platformAsEnv } from "./types.js";
 import type { R2Bucket } from "./r2-types.js";
 import { wrapR2Bucket } from "./object-store-r2.js";
@@ -30,6 +31,11 @@ export interface OrchestratorEnv {
    * behaviour. Keyed by the URL var name so there is ONE door vocabulary rather than two.
    */
   MEDIA_DOOR_FETCHERS?: MediaDoorFetchers;
+  /**
+   * FIFO admission to the video-finish tier. Optional: absent means retry with backoff, so a host
+   * opts in by binding this and applying the migration. See src/finish-queue.ts.
+   */
+  FINISH_QUEUE?: FinishQueue;
   /**
    * The TENANT's own bucket-scoped R2 credential (cp#270). Present on a provisioned hosted studio
    * (provisioner.ts binds all four) and on any self-host that configured presigning; absent
