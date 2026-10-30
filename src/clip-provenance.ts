@@ -120,16 +120,32 @@ export async function writeProv(env: Env, artifactKey: string, hash: string): Pr
   }
 }
 
+/**
+ * How long an artifact must have sat with no sidecar before an adopt-and-heal may read it as orphaned.
+ *
+ * A sibling render stamps its clip AFTER its whole poll loop, so a fresh unstamped clip can be a live
+ * sibling's, written moments ago and about to be stamped. That reads exactly like a lost-poll clip of
+ * this render. Age is what tells them apart: a live writer stamps within its own tick, so a sidecar still
+ * missing after this long means the writer is gone. Measured on film-df662ff9, which adopted
+ * shot_01_cf-grok-video.mp4 on a cf-flux-3-video shot with no window.
+ *
+ * Five minutes, not seconds, because the loop downloads every other shot of a long film before it stamps.
+ * The cost of waiting is a later recovery. The cost of not waiting is another door's clip, marked done.
+ */
+export const UNSTAMPED_SETTLE_MS = 5 * 60 * 1000;
+
 /** Choose the candidate artifact whose provenance sidecar PROVES it matches `expected`, from the set of
  *  same-shot candidates a project-scoped R2 listing returned. Returns the matched key (stampNeeded=false),
  *  or -- when no sidecar matches -- a SINGLE unstamped candidate to adopt-and-heal (a legacy artifact or a
- *  lost-poll clip THIS render produced, already excluded-if-stale by the caller freshness floor). Returns
- *  null when nothing can be PROVEN identical-config: a mismatched sidecar, or an ambiguous multi-candidate
- *  unstamped set (rival renders, both lost-poll) -- the honest outcome is to re-render, never guess. */
+ *  lost-poll clip THIS render produced, already excluded-if-stale by the caller freshness floor), once
+ *  `orphaned` says it has settled. Returns null when nothing can be PROVEN identical-config: a mismatched
+ *  sidecar, an ambiguous multi-candidate unstamped set (rival renders, both lost-poll), or an unstamped
+ *  candidate that may still be a live sibling's -- the honest outcome is to re-render, never guess. */
 export async function chooseProvenanceMatch(
   env: Env,
   expected: string,
   candidateKeys: string[],
+  orphaned: (key: string) => boolean = () => true,
 ): Promise<{ key: string; stampNeeded: boolean } | null> {
   const unstamped: string[] = [];
   for (const key of candidateKeys) {
@@ -138,6 +154,6 @@ export async function chooseProvenanceMatch(
     if (verdict === "match") return { key, stampNeeded: false };
     // a present-but-mismatched sidecar => a different-config render wrote this; skip it
   }
-  if (unstamped.length === 1) return { key: unstamped[0], stampNeeded: true };
+  if (unstamped.length === 1 && orphaned(unstamped[0])) return { key: unstamped[0], stampNeeded: true };
   return null;
 }
