@@ -209,13 +209,78 @@ export type AssemblePollState = {
   notFoundStreak: number;
 };
 
+/**
+ * How long a film may wait for a finish slot before it fails.
+ *
+ * One constant with the job horizon on purpose. A running job can hold a slot for at most
+ * ASSEMBLE_MAX_JOB_SECONDS, so a slot that has not freed by then is not a queue. It is a fault.
+ * Waiting costs one submit per backoff step and no compute, because nothing has started.
+ */
+export const ASSEMBLE_CAPACITY_MAX_WAIT_SECONDS = ASSEMBLE_MAX_JOB_SECONDS;
+export const ASSEMBLE_CAPACITY_BACKOFF_BASE_SECONDS = 30;
+export const ASSEMBLE_CAPACITY_BACKOFF_MAX_SECONDS = 300;
+
+/**
+ * Request header that names the film behind a submit.
+ *
+ * A host door may route on it, so a retry and the next leg of the same film reach the same
+ * instance. A door that ignores it behaves as before. The value is the film id and is not a secret.
+ */
+export const FINISH_AFFINITY_HEADER = "x-vivijure-finish-affinity";
+
+/**
+ * A film that is waiting for a finish slot. Separate from assemble_poll on purpose: every caller
+ * reads `!assemble_poll` as "mint presigned URLs and submit", so a wait stored in that field would
+ * submit an empty payload.
+ */
+export type AssembleCapacityWait = {
+  firstAt: number;
+  attempts: number;
+  nextAt: number;
+  detail: string;
+};
+
+export function encodeAssembleWait(w: AssembleCapacityWait): string {
+  return JSON.stringify(w);
+}
+
+export function decodeAssembleWait(raw: string | undefined | null): AssembleCapacityWait | null {
+  if (!raw) return null;
+  try {
+    const w = JSON.parse(raw) as Partial<AssembleCapacityWait>;
+    if (typeof w.firstAt !== "number" || typeof w.nextAt !== "number") return null;
+    return {
+      firstAt: w.firstAt,
+      nextAt: w.nextAt,
+      attempts: typeof w.attempts === "number" && w.attempts > 0 ? Math.floor(w.attempts) : 0,
+      detail: typeof w.detail === "string" ? w.detail : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** True while a waiting film must not submit. Callers check this before they mint URLs. */
+export function assembleWaitHolding(raw: string | undefined | null, now: number = Date.now()): boolean {
+  const w = decodeAssembleWait(raw);
+  return !!w && now < w.nextAt;
+}
+
+/** Backoff before attempt `attempts + 1`: 30s, 60s, 120s, 240s, then 300s. */
+export function assembleCapacityBackoffSeconds(attempts: number): number {
+  const exp = Math.max(0, Math.min(attempts - 1, 16));
+  return Math.min(ASSEMBLE_CAPACITY_BACKOFF_BASE_SECONDS * 2 ** exp, ASSEMBLE_CAPACITY_BACKOFF_MAX_SECONDS);
+}
+
 export type AssembleTick =
   | { kind: "pending"; poll: AssemblePollState }
+  /** No finish slot is free. Nothing ran and nothing failed. Keep the phase, store `wait`, retry. */
+  | { kind: "waiting"; wait: string; detail: string }
   | { kind: "done"; result: FinishResult }
   /** core#327: `unreachable` means the tier could not be reached AT ALL, so the caller may take the
    *  #519 clips degrade instead of failing the render. Absent means the container ran and reported
    *  something, which still fails loud. The caller reads this FIELD, never the error prose. */
-  | { kind: "failed"; error: string; unreachable?: true };
+  | { kind: "failed"; error: string; unreachable?: true; capacity?: true };
 
 export function encodeAssemblePoll(p: AssemblePollState): string {
   return JSON.stringify(p);
@@ -254,15 +319,48 @@ export function videoFinishPollUrls(env: Env): string[] {
 type SubmitOutcome =
   | { kind: "ok"; jobId: string }
   | { kind: "unreachable"; detail: string }
+  /** The door answered 429: no slot is free now. Retryable, and the only outcome that is. */
+  | { kind: "capacity"; detail: string }
   | { kind: "refused"; detail: string };
 
 /** Statuses that mean the EDGE answered, not the app: the request never reached a serving process. */
 const GATEWAY_STATUSES = new Set([502, 503, 504]);
 
-async function submitAsync(env: Env, payload: FinishPayload): Promise<SubmitOutcome> {
+/** Longest door text copied into an error. The text reaches the user, so it stays short. */
+const SUBMIT_DETAIL_MAX_CHARS = 240;
+
+/**
+ * The first part of a refusal body, safe to store. A bare status hid the real cause: a capacity
+ * refusal read as "returned 500" on six films. URLs are removed because a container error can quote
+ * a presigned URL, and the signature must not reach a job doc.
+ */
+async function refusalText(resp: Response): Promise<string> {
+  let raw: string;
+  try {
+    raw = await resp.text();
+  } catch {
+    return "";
+  }
+  let text = raw;
+  try {
+    const parsed = JSON.parse(raw) as { detail?: unknown; error?: unknown };
+    const picked = typeof parsed.detail === "string" ? parsed.detail : parsed.error;
+    if (typeof picked === "string") text = picked;
+  } catch {
+    // Not JSON. The base Container class answers in plain text.
+  }
+  return text
+    .replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, "<url>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, SUBMIT_DETAIL_MAX_CHARS);
+}
+
+async function submitAsync(env: Env, payload: FinishPayload, affinity?: string): Promise<SubmitOutcome> {
+  const headers = await mediaFinishHeaders(env);
   const init = {
     method: "POST",
-    headers: await mediaFinishHeaders(env),
+    headers: affinity ? { ...headers, [FINISH_AFFINITY_HEADER]: affinity } : headers,
     body: JSON.stringify(payload),
   };
   let resp: Response | null = null;
@@ -279,10 +377,15 @@ async function submitAsync(env: Env, payload: FinishPayload): Promise<SubmitOutc
   if (GATEWAY_STATUSES.has(resp.status)) {
     return { kind: "unreachable", detail: `video-finish answered ${resp.status} at the edge, not the app` };
   }
+  if (resp.status === 429) {
+    const why = await refusalText(resp);
+    return { kind: "capacity", detail: why || "video-finish has no free instance (429)" };
+  }
   if (resp.status !== 202) {
     // The app answered and did not accept the job. A REAL refusal, and it must not be laundered
     // into an availability degrade.
-    return { kind: "refused", detail: `video-finish async submit returned ${resp.status}` };
+    const why = await refusalText(resp);
+    return { kind: "refused", detail: `video-finish async submit returned ${resp.status}${why ? `: ${why}` : ""}` };
   }
   try {
     const body = (await resp.json()) as { ok?: boolean; jobId?: string };
@@ -379,6 +482,13 @@ export async function pollVideoFinishAsync(env: Env, jobId: string): Promise<Sta
   return { kind: "missing" };
 }
 
+export type AssembleTickOptions = {
+  /** The caller's stored AssembleCapacityWait, if the film is waiting for a slot. */
+  wait?: string;
+  /** Film id, sent as FINISH_AFFINITY_HEADER on a submit. */
+  affinity?: string;
+};
+
 /**
  * One assemble/mux tick. First call submits. Later calls poll. 404 from a
  * peer replica is pending until ASSEMBLE_NOTFOUND_STREAK misses in a row.
@@ -387,9 +497,10 @@ export async function tickVideoFinishAssemble(
   env: Env,
   payload: FinishPayload,
   pollRaw: string | undefined,
+  opts: AssembleTickOptions = {},
 ): Promise<AssembleTick> {
   try {
-    return await tickVideoFinishAssembleInner(env, payload, pollRaw);
+    return await tickVideoFinishAssembleInner(env, payload, pollRaw, opts);
   } catch (e) {
     if (isMediaFinishAuthError(e)) return { kind: "failed", error: e.message };
     throw e;
@@ -400,13 +511,47 @@ async function tickVideoFinishAssembleInner(
   env: Env,
   payload: FinishPayload,
   pollRaw: string | undefined,
+  opts: AssembleTickOptions,
 ): Promise<AssembleTick> {
   const existing = decodeAssemblePoll(pollRaw);
   let jobId = existing?.jobId;
   let submittedAt = existing?.submittedAt ?? Date.now();
   let notFoundStreak = existing?.notFoundStreak ?? 0;
   if (!jobId) {
-    const submitted = await submitAsync(env, payload);
+    const wait = decodeAssembleWait(opts.wait);
+    const now = Date.now();
+    if (wait && now < wait.nextAt) {
+      return { kind: "waiting", wait: encodeAssembleWait(wait), detail: wait.detail };
+    }
+    const submitted = await submitAsync(env, payload, opts.affinity);
+    if (submitted.kind === "capacity") {
+      const firstAt = wait?.firstAt ?? now;
+      const attempts = (wait?.attempts ?? 0) + 1;
+      if (now - firstAt >= ASSEMBLE_CAPACITY_MAX_WAIT_SECONDS * 1000) {
+        return {
+          kind: "failed",
+          error:
+            `video-finish had no free instance for ${ASSEMBLE_CAPACITY_MAX_WAIT_SECONDS}s ` +
+            `(${attempts} attempts): ${submitted.detail}`,
+          unreachable: true,
+          capacity: true,
+        };
+      }
+      const next: AssembleCapacityWait = {
+        firstAt,
+        attempts,
+        nextAt: now + assembleCapacityBackoffSeconds(attempts) * 1000,
+        detail: submitted.detail,
+      };
+      console.warn(JSON.stringify({
+        ev: "assemble.capacity_wait",
+        attempts,
+        waited_ms: now - firstAt,
+        next_at: next.nextAt,
+        detail: submitted.detail,
+      }));
+      return { kind: "waiting", wait: encodeAssembleWait(next), detail: submitted.detail };
+    }
     if (submitted.kind === "unreachable") {
       return {
         kind: "failed",

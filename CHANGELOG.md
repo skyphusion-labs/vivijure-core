@@ -3,7 +3,7 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.26.1
+## Unreleased / v1.27.0
 
 ## [1.26.0] -- 2026-10-19
 
