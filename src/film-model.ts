@@ -610,8 +610,13 @@ export interface FilmJob {
   // core#377: the whole job as it stood before a retry. A retry deletes nothing and only replaces the
   // film once the new one is finished; if it does not finish, this is restored. See settleFinishRetry.
   finish_retry_prior?: string;
-  // Which retry this is, so its film.finish steps write new keys and leave the delivered film alone.
+  // The retry that wrote this job's artifacts, which selects their keys. Absent means the first run.
+  // Restored with the job, so a failed retry leaves the keys pointing at the film that still stands.
   finish_retry_gen?: number;
+  // The last retry number used, which survives a restore, so a later retry never reuses a key.
+  finish_retry_seq?: number;
+  // renders.completed_at before the retry reopened the row. A retry that fails puts it back.
+  finish_retry_completed_at?: number | null;
   // The last retry did not finish. The film stands as it was.
   finish_retry_failed?: { at: number; reason: string };
   // core#377: the mixed bed, once made, so a wait for a slot does not mix again on each attempt.

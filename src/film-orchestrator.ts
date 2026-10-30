@@ -172,7 +172,7 @@ import {
   type ClipJob,
   type JobSummary,
 } from "./render-orchestrator.js";
-import { markFinishDone, markRenderFailedByJobId, markRenderNotifiedNow, reopenRenderForFinishRetry } from "./renders-db.js";
+import { markFinishDone, markRenderFailedByJobId, markRenderRetryRestored, renderCompletedAt, reopenRenderForFinishRetry } from "./renders-db.js";
 import { filmDonePayload } from "./render-output-payload.js";
 import { validateFilmArtifact } from "./clip-validate.js";
 import {
@@ -3531,8 +3531,11 @@ async function retryFilmFinishLocked(
 
   // The snapshot holds no earlier one, since that retry ended when it settled.
   job.finish_retry_failed = undefined;
+  const completedAt = await renderCompletedAt(env, job.film_id);
   job.finish_retry_prior = JSON.stringify(job);
-  job.finish_retry_gen = (job.finish_retry_gen ?? 0) + 1;
+  job.finish_retry_completed_at = completedAt;
+  job.finish_retry_seq = Math.max(job.finish_retry_seq ?? 0, job.finish_retry_gen ?? 0) + 1;
+  job.finish_retry_gen = job.finish_retry_seq;
 
   job.film_finish = undefined;
   job.film_finish_skipped = {};
@@ -3627,10 +3630,13 @@ async function settleFinishRetry(env: Env, job: FilmJob, preModules?: Registered
   const prior = JSON.parse(job.finish_retry_prior) as FilmJob;
   const envRec = env as unknown as Record<string, unknown>;
   const stepCount = servingForHook(preModules ?? await discoverModules(envRec), "film.finish").length;
-  const whole = !cancelled && job.phase === "done" && !!job.film_key && !job.finish_incomplete?.length;
+  // A film is whole when it has what it owes. A clips-only shard and a keyframes-only preview owe no film.
+  const hasDeliverable = !!job.film_key || !!job.clips_only || !filmDeliverableExpected(job);
+  const whole = !cancelled && job.phase === "done" && hasDeliverable && !job.finish_incomplete?.length;
   if (whole) {
     job.finish_retry_prior = undefined;
     job.finish_retry_failed = undefined;
+    job.finish_retry_completed_at = undefined;
     const priorSuffix = prior.finish_retry_gen ? `-r${prior.finish_retry_gen}` : "";
     await deleteArtifacts(
       env,
@@ -3660,9 +3666,10 @@ async function settleFinishRetry(env: Env, job: FilmJob, preModules?: Registered
     ],
     [prior.film_key, prior.silent_film_key, prior.film_finish_base_key, prior.mux_output_key, prior.mix_audio_key, prior.mix_done_key, prior.audio_key],
   );
-  const gen = job.finish_retry_gen;
+  const seq = job.finish_retry_seq;
+  const completedAt = job.finish_retry_completed_at;
   for (const k of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[k];
-  Object.assign(job, prior, { finish_retry_gen: gen, finish_retry_failed: { at: Date.now(), reason: reason.slice(0, 500) } });
+  Object.assign(job, prior, { finish_retry_seq: seq, finish_retry_failed: { at: Date.now(), reason: reason.slice(0, 500) } });
   emitStructuredEvent({ ev: "film.finish_retry_failed", film_id: job.film_id, project: job.project, reason: job.finish_retry_failed!.reason });
   if (job.phase === "done" && job.film_key) {
     await markFinishDone(
@@ -3676,7 +3683,40 @@ async function settleFinishRetry(env: Env, job: FilmJob, preModules?: Registered
   } else {
     await markRenderFailedByJobId(env, job.film_id, job.error ?? reason);
   }
-  await markRenderNotifiedNow(env, job.film_id);
+  await markRenderRetryRestored(env, job.film_id, completedAt);
+}
+
+/**
+ * Stop the finish, speech, master and film.finish steps a film has running. The same discipline as
+ * #328: a cancel that leaves the GPU working is a lie to the user and a money leak. A retried step could
+ * also still write the shared clip key after the cancel. A module with no cancel primitive, or a cancel
+ * that fails, is logged as an orphan and never hides it, and nothing here stops the cancel going through.
+ */
+async function cancelInFlightChainSteps(env: Env, job: FilmJob, modules: RegisteredModule[]): Promise<void> {
+  const envRec = env as unknown as Record<string, unknown>;
+  const inFlight: { binding: string | undefined; poll: string }[] = [];
+  for (const fs of job.finish_shots ?? []) {
+    if (fs.status === "pending" && fs.poll) inFlight.push({ binding: fs.chain[fs.idx], poll: fs.poll });
+  }
+  for (const ss of job.speech_shots ?? []) {
+    if (ss.status === "pending" && ss.poll) inFlight.push({ binding: ss.chain[ss.idx], poll: ss.poll });
+  }
+  if (job.master?.poll) inFlight.push({ binding: job.master.chain[job.master.idx], poll: job.master.poll });
+  const cardSteps = servingForHook(modules, "film.finish");
+  for (const [key, poll] of Object.entries(job.film_finish_polls ?? {})) {
+    const n = /-ff(\d+)\.mp4$/.exec(key);
+    inFlight.push({ binding: n ? cardSteps[Number(n[1])]?.binding : undefined, poll });
+  }
+  for (const { binding, poll } of inFlight) {
+    const mod = modules.find((m) => m.binding === binding);
+    const fetcher = binding ? resolveFetcher(envRec, binding) : null;
+    if (!mod || !fetcher || !mod.cancelable) {
+      console.warn(`film ${job.film_id}: cannot cancel a running step of ${binding ?? "an unknown module"} (no cancel primitive) -- left running (ORPHAN)`);
+      continue;
+    }
+    const r = await cancelModule(fetcher, { poll });
+    if (!r.ok) console.warn(`film ${job.film_id}: cancel of a running ${mod.name} step FAILED (${r.error}) -- left running (ORPHAN)`);
+  }
 }
 
 /** Mark an in-flight film job cancelled. Terminal jobs are returned unchanged. */
@@ -3688,6 +3728,8 @@ export async function cancelFilmJob(env: Env, filmId: string): Promise<FilmJob |
   // Request-entry: discover once and thread into both cancel helpers.
   const modules = await discoverModules(env as unknown as Record<string, unknown>);
   await finishQueueCall(env, job.film_id, "forget", (q) => q.forget(job.film_id));
+  // Before anything that drops a poll token: once a token is gone, nothing can stop that job.
+  await cancelInFlightChainSteps(env, job, modules);
   // Cancelling a retry cancels the retry, not the film the user already has.
   if (job.finish_retry_prior) {
     await settleFinishRetry(env, job, modules, "cancelled");

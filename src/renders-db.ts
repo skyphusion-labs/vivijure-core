@@ -759,12 +759,22 @@ export async function reopenRenderForFinishRetry(env: Env, jobId: string): Promi
   );
 }
 
-/** A retry did not finish and the film stands as it was. The user has already heard about this film,
- *  and nothing about it changed, so it is not announced again. */
-export async function markRenderNotifiedNow(env: Env, jobId: string): Promise<void> {
+/** When the row says this film completed, or null. Read before a retry reopens it. */
+export async function renderCompletedAt(env: Env, jobId: string): Promise<number | null> {
+  const row = await withD1Retry(() =>
+    env.DB.prepare(`SELECT completed_at FROM renders WHERE job_id = ?`).bind(jobId).first<{ completed_at: number | null }>(),
+  );
+  return row?.completed_at ?? null;
+}
+
+/** A retry did not finish and the film stands as it was. So it completed when it first completed, and
+ *  the user, who has already heard about it, is not told again. */
+export async function markRenderRetryRestored(env: Env, jobId: string, completedAt: number | null | undefined): Promise<void> {
   const now = nowSeconds();
   await withD1Retry(() =>
-    env.DB.prepare(`UPDATE renders SET notified_at = COALESCE(notified_at, ?) WHERE job_id = ?`).bind(now, jobId).run(),
+    env.DB.prepare(
+      `UPDATE renders SET notified_at = COALESCE(notified_at, ?), completed_at = COALESCE(?, completed_at) WHERE job_id = ?`,
+    ).bind(now, completedAt ?? null, jobId).run(),
   );
 }
 

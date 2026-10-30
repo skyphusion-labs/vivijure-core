@@ -37,7 +37,6 @@ export interface ScatterJob {
   film_finish_attempts?: Record<string, number>;      // #602 async job+poll terminal-failure count
   finish_incomplete?: FinishIncompleteStep[];         // core#377 (see FilmJob)
   film_finish_skipped?: Record<string, FinishIncompleteStep>; // core#377 (see FilmJob)
-  film_finish_base_key?: string;                      // core#377 (see FilmJob)
   // #289 (atomic submit / self-heal): the doc is written to R2 BEFORE the D1 render rows, so the
   // poll path can reconstruct a missing UI-list row entirely from the doc (project_id is the FK to
   // storyboard_projects; render_overrides round-trips the submit knobs). Optional / back-compat.

@@ -31,7 +31,7 @@ import {
   type FilmJob,
   type FilmScene,
 } from "./film-orchestrator.js";
-import { applyVoiceSeed, finishWaitingView, voiceLockFromCast, type FinishIncompleteStep } from "./film-model.js";
+import { applyVoiceSeed, finishWaitingView, voiceLockFromCast } from "./film-model.js";
 import { generateAudioOn, motionScatterAllowed, usageOf } from "./motion-usage.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
 import { filmJobToPollView, filterScenesByShotIds, orderScenesByShotIds, mapRenderOverridesToModuleConfigs } from "./film-render-bridge.js";
@@ -68,7 +68,6 @@ import {
   runPreparedWrites,
 } from "./renders-db.js";
 import type { PreparedRenderUpdate } from "./renders-db.js";
-import { reopenRenderForFinishRetry } from "./renders-db.js";
 import { resolveCastLoras, untrainedCastMessage } from "./cast-loras.js";
 import { fireNotifyForScatter } from "./scatter-notify.js";
 import { isTransientD1Error, withD1Retry, d1ErrorCode } from "./d1-retry.js";
@@ -448,7 +447,6 @@ async function runScatterFilmFinish(
   preModules?: RegisteredModule[],
 ): Promise<boolean> {
   if (job.film_finish || !job.film_key) return true; // already run (or nothing to card) -> complete
-  job.film_finish_base_key ??= job.film_key;
   job.film_finish_skipped ??= {};
   job.film_finish_dispatched ??= {};
   job.film_finish_polls ??= {};
@@ -935,41 +933,6 @@ export async function advanceScatterJob(
   const view = scatterJobToPollView(job);
   if (view.status !== "IN_PROGRESS") await updateRenderFromView(env, view, ctx);
   return view;
-}
-
-/**
- * core#377: run again the film.finish steps a gathered film names as not done. Only film.finish is
- * recorded on a scatter job, since per-shot steps belong to the shard films.
- */
-export async function retryScatterFilmFinish(
-  env: Env,
-  scatterId: string,
-): Promise<{ job: ScatterJob; retried: FinishIncompleteStep[] } | null> {
-  const job = await loadScatterJob(env, scatterId);
-  if (!job) return null;
-  const entries = job.finish_incomplete ?? [];
-  if (job.cancelled || entries.length === 0 || job.phase !== "done" || !job.film_finish_base_key) {
-    return { job, retried: [] };
-  }
-  const first = entries.reduce((min, e) => Math.min(min, e.step_index ?? 0), Number.POSITIVE_INFINITY);
-  const base = job.film_finish_base_key.replace(/\.mp4$/i, "");
-  // Later steps were built from the film without the missing step, so they run again too.
-  for (let n = first; Number.isFinite(n) && n < first + 16; n++) {
-    await env.R2_RENDERS.delete(`${base}-ff${n}.mp4`).catch(() => undefined);
-  }
-  job.film_key = job.film_finish_base_key;
-  job.film_finish = undefined;
-  job.film_finish_skipped = {};
-  job.film_finish_polls = {};
-  job.film_finish_dispatched = {};
-  job.film_finish_attempts = {};
-  job.finish_incomplete = undefined;
-  job.assemble_wait = undefined;
-  job.phase = "finishing";
-  await finishQueueCall(env, scatterId, "forget", (q) => q.forget(scatterId));
-  await saveScatterJob(env, job);
-  await reopenRenderForFinishRetry(env, scatterId);
-  return { job, retried: entries };
 }
 
 export function scatterJobToPollView(job: ScatterJob): RunpodJobView {

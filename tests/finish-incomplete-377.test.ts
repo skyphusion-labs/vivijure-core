@@ -511,16 +511,125 @@ describe("retryFilmFinish", () => {
     expect((await retryFilmFinish(e, "film-1"))?.retried).toHaveLength(1);
   });
 
-  it("cancelling a retry cancels the retry, not the film", async () => {
+  it("cancelling a retry stops the running step first, then restores the film", async () => {
     quiet();
+    const U = { ...mod("finish-upscale", "MODULE_U", "finish"), cancelable: true } as RegisteredModule;
     const delivered = "renders/p1/film-ff0.mp4";
-    const job = baseJob({ film_key: delivered, film_finish_base_key: FILM, finish_incomplete: [{ ...ENTRY, step_index: 0 }] });
-    const { e } = env({ DB: rowDb().DB }, { [filmJobDocKey("film-1")]: JSON.stringify(job), [delivered]: "old" });
+    const job = baseJob({
+      film_key: delivered, film_finish_base_key: FILM,
+      finish_shots: [{ shot_id: "s1", clip_key: "renders/p1/clips/s1.mp4", chain: ["MODULE_U"], configs: [{}], idx: 1, status: "done", applied: [] }] as never,
+      finish_incomplete: [{ stage: "finish", step: "MODULE_U", shot_id: "s1", code: "x", kept: "k", at: 1 }],
+    });
+    const calls: { path: string; body: string }[] = [];
+    const door = { fetch: async (input: string | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (url.endsWith("/module.json")) return Response.json(U);
+      calls.push({ path: new URL(url).pathname, body: String(init?.body ?? "") });
+      return url.endsWith("/cancel") ? Response.json({ ok: true }) : Response.json({ ok: true, pending: true, poll: "tok-running" });
+    } };
+    const { e, stored } = env({ DB: rowDb().DB, MODULE_U: door }, { [filmJobDocKey("film-1")]: JSON.stringify(job), [delivered]: "old" });
     await retryFilmFinish(e, "film-1");
+    await advanceFilmJob(e, "film-1", [U]);
+    expect((JSON.parse(stored[filmJobDocKey("film-1")]) as FilmJob).finish_shots![0].poll).toBe("tok-running");
     const r = await cancelFilmJob(e, "film-1");
+    const cancel = calls.find((c) => c.path === "/cancel");
+    expect(cancel?.body).toContain("tok-running");
     expect(r).toMatchObject({ phase: "done", film_key: delivered });
     expect(r?.cancelled).toBeUndefined();
     expect(r?.finish_retry_failed?.reason).toBe("cancelled");
+  });
+
+  it("a cancel stops running card steps too, and an uncancelable module does not stop the cancel", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const T = { ...TITLES, cancelable: true } as RegisteredModule;
+    const cancelled: string[] = [];
+    const titles = { fetch: async (input: string | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (url.endsWith("/module.json")) return Response.json(T);
+      cancelled.push(String(init?.body));
+      return Response.json({ ok: true });
+    } };
+    const job = baseJob({
+      phase: "mux", film_finish_polls: { "renders/p1/film-ff0.mp4": "tok-card" },
+      master: { chain: ["MODULE_M"], idx: 0, applied: [], degraded: [], poll: "tok-master" },
+    } as Partial<FilmJob>);
+    const { e } = env({ DB: rowDb().DB, MODULE_FILM_TITLES: titles, MODULE_M: fetcher(mod("audio-master", "MODULE_M", "master"), () => ({})) }, { [filmJobDocKey("film-1")]: JSON.stringify(job) });
+    const r = await cancelFilmJob(e, "film-1");
+    expect(cancelled.join()).toContain("tok-card");
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("ORPHAN"))).toBe(true);
+    expect(r?.cancelled).toBe(true);
+  });
+
+  it("a clips-only film can finish a retry, since it owes no film", async () => {
+    quiet();
+    const U = mod("finish-upscale", "MODULE_U", "finish");
+    const job = baseJob({
+      film_key: undefined, clips_only: true,
+      finish_shots: [{ shot_id: "s1", clip_key: "renders/p1/clips/s1.mp4", chain: ["MODULE_U"], configs: [{}], idx: 1, status: "done", applied: [] }] as never,
+      finish_incomplete: [{ stage: "finish", step: "MODULE_U", shot_id: "s1", code: "x", kept: "k", at: 1 }],
+    } as Partial<FilmJob>);
+    const door = fetcher(U, () => ({ shot_id: "s1", clip_key: "renders/p1/clips/s1_finished.mp4", out_fps: 24, frames: 1, applied: ["upscale"] }));
+    const { e } = env({ DB: rowDb().DB, MODULE_U: door }, { [filmJobDocKey("film-1")]: JSON.stringify(job) });
+    await retryFilmFinish(e, "film-1");
+    const r = await advanceFilmJob(e, "film-1", [U]);
+    expect(r?.job.phase).toBe("done");
+    expect(r?.job.finish_retry_failed).toBeUndefined();
+    expect(r?.job.finish_incomplete).toBeUndefined();
+    expect(r?.job.finish_shots![0].clip_key).toBe("renders/p1/clips/s1_finished.mp4");
+  });
+
+  it("a failed retry leaves the keys on the film that stands, and the next retry uses a new one", async () => {
+    quiet();
+    const delivered = "renders/p1/film-ff0.mp4";
+    const job = baseJob({ film_key: delivered, film_finish_base_key: FILM, film_output_seconds: { "renders/film-1/film.mp4": 7 }, finish_incomplete: [{ ...ENTRY, step: "film-titles", step_index: 0 }], film_titles: { title: { text: "T" } } });
+    const { e, stored } = env(
+      { MODULE_FILM_TITLES: fetcher(TITLES, () => pass("refused", REFUSED)), DB: rowDb().DB },
+      { [filmJobDocKey("film-1")]: JSON.stringify(job), [delivered]: "old", [FILM]: "cut" },
+    );
+    await retryFilmFinish(e, "film-1");
+    const restored = (await advanceFilmJob(e, "film-1", [TITLES]))!.job;
+    expect(restored.finish_retry_gen).toBeUndefined(); // the film's keys are the first run's
+    expect(restored.finish_retry_seq).toBe(1);
+    expect(summarizeFilm(restored, null).assemble_ms).toBe(7000);
+    await retryFilmFinish(e, "film-1");
+    expect((JSON.parse(stored[filmJobDocKey("film-1")]) as FilmJob).finish_retry_gen).toBe(2);
+  });
+
+  it("a whole second retry deletes the intermediates of the film it replaces", async () => {
+    quiet();
+    const delivered = "renders/p1/film-ff0.mp4";
+    const job = baseJob({ film_key: delivered, film_finish_base_key: FILM, finish_retry_seq: 1, finish_incomplete: [{ ...ENTRY, step: "film-titles", step_index: 0 }], film_titles: { title: { text: "T" } } });
+    const made = env(
+      { DB: rowDb().DB },
+      { [filmJobDocKey("film-1")]: JSON.stringify(job), [delivered]: "old", [FILM]: "cut", "renders/p1/film-ff0.srt": "s" },
+    );
+    const t = fetcher(TITLES, () => { made.stored["renders/p1/film-r2-ff0.mp4"] = "new"; return { film_key: "renders/p1/film-r2-ff0.mp4", applied: ["film-titles"] }; });
+    (made.e as unknown as Record<string, unknown>).MODULE_FILM_TITLES = t;
+    await retryFilmFinish(made.e, "film-1");
+    await advanceFilmJob(made.e, "film-1", [TITLES]);
+    expect(made.deleted).toEqual(expect.arrayContaining([delivered, "renders/p1/film-ff0.srt"]));
+  });
+
+  it("a failed retry puts completed_at back: the film did not change", async () => {
+    quiet();
+    const d1 = openTestD1();
+    try {
+      d1.raw.prepare("INSERT INTO renders (job_id, status, submitted_at, completed_at, notified_at, output_key, output_ms) VALUES ('film-1', 'COMPLETED', 1000, 2000, 2001, 'renders/p1/film-ff0.mp4', 5000)").run();
+      const delivered = "renders/p1/film-ff0.mp4";
+      const job = baseJob({ film_key: delivered, film_finish_base_key: FILM, film_output_seconds: { [delivered]: 5 }, finish_incomplete: [{ ...ENTRY, step: "film-titles", step_index: 0 }], film_titles: { title: { text: "T" } } });
+      const { e } = env(
+        { MODULE_FILM_TITLES: fetcher(TITLES, () => pass("refused", REFUSED)), DB: d1.DB },
+        { [filmJobDocKey("film-1")]: JSON.stringify(job), [delivered]: "old", [FILM]: "cut" },
+      );
+      await retryFilmFinish(e, "film-1");
+      await advanceFilmJob(e, "film-1", [TITLES]);
+      const row = d1.raw.prepare("SELECT * FROM renders WHERE job_id = 'film-1'").get() as Record<string, unknown>;
+      expect(row).toMatchObject({ status: "COMPLETED", completed_at: 2000, submitted_at: 1000, output_ms: 5000, output_key: delivered });
+      expect(row.notified_at).not.toBeNull();
+    } finally {
+      d1.close();
+    }
   });
 
   it("the retried film.finish runs again on the next tick and nothing is muxed", async () => {
