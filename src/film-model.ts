@@ -1657,6 +1657,25 @@ export function resolveKeyframeParallel(raw: unknown, shotCount: number): number
   return n <= 1 ? 1 : n;
 }
 
+/** Pure: the storyboard slots with no adapter in `pretrained`, or null when the slots cannot be read.
+ *  Null is the caller's reason to take the safe path: one job trains a slot once, split or not. */
+export function slotsMissingAdapters(
+  yaml: string | null,
+  pretrained: Record<string, string> | undefined,
+): string[] | null {
+  if (yaml === null) return null;
+  // Plain string handling, not a regex: this reads a filmmaker's bundle, so a line of repeated tabs must
+  // not cost polynomial time (CodeQL js/polynomial-redos).
+  const prefix = "use_characters:";
+  const line = yaml.split("\n").find((l) => l.startsWith(prefix));
+  if (line === undefined) return [];
+  const value = line.slice(prefix.length).trim();
+  // A block list or anything else this reader does not parse.
+  if (!value.startsWith("[") || !value.endsWith("]")) return null;
+  const slots = value.slice(1, -1).split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+  return slots.filter((slot) => !pretrained?.[slot]);
+}
+
 /** Pure: split `items` into `parts` contiguous chunks (earlier chunks get the remainder).
  *  Empty input is one empty chunk so a caller can still send today's single invoke. */
 export function partitionContiguous<T>(items: readonly T[], parts: number): T[][] {
