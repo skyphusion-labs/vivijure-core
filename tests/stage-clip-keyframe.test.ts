@@ -18,6 +18,32 @@ describe("stage-clip-keyframe", () => {
     expect(isRendersKeyframeKey("uploads/foo.jpg")).toBe(false);
   });
 
+  it("isRendersKeyframeKey takes ONE job segment and no more (cf#1059)", () => {
+    expect(isRendersKeyframeKey("renders/p/keyframes/job-1/shot_01.png")).toBe(true);
+    expect(isRendersKeyframeKey("renders/p/keyframes/job-1/deep/shot_01.png")).toBe(false);
+    expect(isRendersKeyframeKey("renders/p/keyframes//shot_01.png")).toBe(false);
+    expect(isRendersKeyframeKey("renders/p/clips/job-1/shot_01.png")).toBe(false);
+  });
+
+  it("passes a job-scoped key through and never copies it to the shared canonical key (cf#1059)", async () => {
+    const key = "renders/p/keyframes/job-1/shot_01.png";
+    const puts: string[] = [];
+    const env = {
+      R2_RENDERS: {
+        get: async () => null,
+        head: async (k: string) => (k === key ? {} : null),
+        put: async (k: string) => { puts.push(k); },
+      },
+      PRESIGNER: {
+        presignGet: async (k: string) => `https://bucket.example/${k}?sig=1`,
+        presignPut: async () => "https://bucket.example/put",
+      },
+    } as unknown as Env;
+    const out = await ensureClipKeyframeInR2(env, "p", { shot_id: "shot_01", keyframe_url: "", keyframe_key: key, prompt: "x", seconds: 4 });
+    expect(out.keyframe_key).toBe(key);
+    expect(puts).toEqual([]);
+  });
+
   it("copies uploads/ bytes into renders/<project>/keyframes/<shot>.png", async () => {
     const uploadKey = "uploads/smoke-test.jpg";
     const bytes = new Uint8Array([0xff, 0xd8, 0xff]);

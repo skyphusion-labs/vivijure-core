@@ -43,11 +43,28 @@ async function stamp(
 }
 
 describe("#767 keyframe-adoption provenance", () => {
+  it("never adopts another job's job-scoped keyframe, even with a matching sidecar (cf#1059)", async () => {
+    const { env, seed } = memR2();
+    await stamp(seed, "renders/proj/keyframes/other-job/shot_01.png", { quality_tier: "final" });
+    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" }, BUNDLE_A);
+    expect(kfs).toEqual([]);
+  });
+
   it("does NOT adopt a keyframe a different-keyframe-config render wrote", async () => {
     const { env, seed } = memR2();
     await stamp(seed, KF, { quality_tier: "draft" });
     const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, { quality_tier: "final" }, BUNDLE_A);
     expect(kfs.length).toBe(0); // mismatch -> regenerate, never adopt the draft keyframe for a final render
+  });
+
+  it("adopts THIS film's own job-scoped still, and prefers it to a flat one (cf#1059)", async () => {
+    const { env, seed } = memR2();
+    const own = "renders/proj/keyframes/kf-1/shot_01.png";
+    seed("renders/proj/keyframes/kf-2/shot_01.png");
+    seed(own);
+    seed(KF);
+    const kfs = await listProjectKeyframes(env, "proj", SCENES, NOW, undefined, BUNDLE_A, ["kf-1"]);
+    expect(kfs).toEqual([{ shot_id: "shot_01", keyframe_key: own }]);
   });
 
   it("adopts a keyframe stamped with the SAME keyframe config (legit cross-backend share preserved)", async () => {

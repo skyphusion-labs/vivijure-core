@@ -905,7 +905,7 @@ export interface KeyframeInput {
 /** One generated start keyframe, already stored in R2 by the backend. */
 export interface KeyframeShot {
   shot_id: string;
-  keyframe_key: string; // R2 key of the PNG (renders/<project>/keyframes/<shot>.png)
+  keyframe_key: string; // R2 key of the PNG (renders/<project>/keyframes/[<job>/]<shot>.png)
 }
 /** What a `keyframe` module returns: every keyframe it generated, by shot. The core presigns each
  *  key into a fetchable keyframe_url when it hands them on to the motion.backend orchestrator. */

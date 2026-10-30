@@ -3175,6 +3175,8 @@ export async function listProjectKeyframes(
   keyframeConfig?: Record<string, unknown>,
   /** cf#388: bundle identity in the expected provenance hash (not caller-supplied project alone). */
   bundleKey?: string | null,
+  /** cf#1059: the keyframe jobs THIS film started. Their job-scoped stills are this film's own. */
+  keyframeJobIds: string[] = [],
 ): Promise<FilmKeyframeRef[]> {
   const prefix = `renders/${project}/keyframes/`;
   const wanted = new Set(scenes.map((s) => s.shot_id));
@@ -3185,6 +3187,8 @@ export async function listProjectKeyframes(
     keyframeConfig !== undefined
       ? await keyframeProvenanceHash({ keyframe_config: keyframeConfig, bundle_key: bundleKey })
       : null;
+  const ownJobs = new Set(keyframeJobIds);
+  const own: FilmKeyframeRef[] = [];
   const out: FilmKeyframeRef[] = [];
   let cursor: string | undefined;
   do {
@@ -3200,17 +3204,28 @@ export async function listProjectKeyframes(
       // (backend #112, reuse-vs-regen). Without this filter the sidecar shares the shot_id, sorts
       // before .png, and the first-seen dedupe below adopts the 16-byte hash as the keyframe (#578).
       if (!/\.(png|jpe?g|webp)$/i.test(file)) continue;
-      const shot_id = file.replace(/\.[^.]+$/, ""); // drop the extension (.png)
+      // A job-scoped key (keyframes/<job>/<shot>.png, cf#1059) is this film's only when the job is. Another
+      // job's still is never adopted, even with a matching sidecar: its name matches no scene below.
+      const stem = file.replace(/\.[^.]+$/, ""); // drop the extension (.png)
+      const slash = stem.indexOf("/");
+      const isOwn = slash > 0 && ownJobs.has(stem.slice(0, slash));
+      const shot_id = isOwn ? stem.slice(slash + 1) : stem;
       if (!shot_id || !wanted.has(shot_id)) continue;
       // #767: refuse a keyframe a DIFFERENT-config render wrote (mismatched provenance). Absent/match keep.
       if (expected !== null && (await provVerdict(env, o.key, expected)) === "mismatch") continue;
-      out.push({ shot_id, keyframe_key: o.key });
+      (isOwn ? own : out).push({ shot_id, keyframe_key: o.key });
     }
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor);
   // De-dupe (a project could in principle hold .png + another ext for a shot); keep the first seen.
   const seen = new Set<string>();
-  return out.filter((k) => (seen.has(k.shot_id) ? false : (seen.add(k.shot_id), true)));
+  return [...own, ...out].filter((k) => (seen.has(k.shot_id) ? false : (seen.add(k.shot_id), true)));
+}
+
+/** The keyframe jobs this film has in flight, whichever way it submitted them. */
+function filmKeyframeJobIds(job: FilmJob): string[] {
+  const ids = [...(job.keyframe_job_ids ?? []), job.keyframe_job_id];
+  return ids.filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
 /** True iff EVERY scene's keyframe is already in R2 (the full set, one per shot). Gate for adopting on a
@@ -3226,6 +3241,7 @@ export async function keyframeSetCompleteInR2(env: Env, job: FilmJob): Promise<b
     job.created_at,
     job.keyframe_config,
     job.bundle_key,
+    filmKeyframeJobIds(job),
   );
   const have = new Set(present.map((k) => k.shot_id));
   return job.scenes.every((s) => have.has(s.shot_id));
@@ -3508,6 +3524,7 @@ async function recoverStalledKeyframePhase(env: Env, job: FilmJob, preModules: R
     job.created_at,
     job.keyframe_config,
     job.bundle_key,
+    filmKeyframeJobIds(job),
   );
   if (!adopted.length) return false; // nothing in R2 to adopt -- not actually complete; let the ceiling hard-fail
   const covered = new Set(adopted.map((k) => k.shot_id));
