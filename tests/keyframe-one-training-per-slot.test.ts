@@ -92,6 +92,10 @@ describe("slotsMissingAdapters", () => {
   it("reads flow lists, quoted or not", () => {
     expect(slotsMissingAdapters('use_characters: [A, "B"]\n', { A: "x" })).toEqual(["B"]);
   });
+  it("a long run of tabs after the key is read, not a slow match", () => {
+    expect(slotsMissingAdapters(`use_characters:${"\t".repeat(200_000)}[A]\n`, undefined)).toEqual(["A"]);
+    expect(slotsMissingAdapters(`use_characters:${"\t".repeat(200_000)}x`, undefined)).toBeNull();
+  });
   it("no key means no slots", () => {
     expect(slotsMissingAdapters("title: x\n", undefined)).toEqual([]);
   });

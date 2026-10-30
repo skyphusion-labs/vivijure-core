@@ -1664,11 +1664,15 @@ export function slotsMissingAdapters(
   pretrained: Record<string, string> | undefined,
 ): string[] | null {
   if (yaml === null) return null;
-  const line = /^use_characters:[ \t]*(.*)$/m.exec(yaml);
-  if (!line) return [];
-  const flow = /^\[(.*)\]\s*$/.exec(line[1].trim());
-  if (!flow) return null; // a block list or anything else this reader does not parse
-  const slots = flow[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+  // Plain string handling, not a regex: this reads a filmmaker's bundle, so a line of repeated tabs must
+  // not cost polynomial time (CodeQL js/polynomial-redos).
+  const prefix = "use_characters:";
+  const line = yaml.split("\n").find((l) => l.startsWith(prefix));
+  if (line === undefined) return [];
+  const value = line.slice(prefix.length).trim();
+  // A block list or anything else this reader does not parse.
+  if (!value.startsWith("[") || !value.endsWith("]")) return null;
+  const slots = value.slice(1, -1).split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
   return slots.filter((slot) => !pretrained?.[slot]);
 }
 
