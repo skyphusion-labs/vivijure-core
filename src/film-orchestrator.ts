@@ -94,6 +94,7 @@ import {
   coerceSceneIds,
   coerceDialogueLineIds,
   resolveKeyframeParallel,
+  slotsMissingAdapters,
   partitionContiguous,
   KEYFRAME_STALL_SECONDS,
   PHASE_HARD_DEADLINE_SECONDS,
@@ -166,6 +167,7 @@ import {
 import { finishStepInputHash } from "./finish-hash.js";
 import { presignR2Get, presignR2Put, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
+import { readBundleStoryboardYaml } from "./bundle-storyboard.js";
 import { contentValidateDoneClips, contentValidationView } from "./clip-content-validate.js";
 import { buildCaptionCues } from "./captions.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
@@ -3114,7 +3116,17 @@ export async function startFilmJob(
   } else {
     const config = validateConfig(kf.config_schema, args.keyframe_config);
     const shotIds = scenes.map((s) => s.shot_id);
-    const n = resolveKeyframeParallel(envRec.KEYFRAME_PARALLEL, shotIds.length);
+    let n = resolveKeyframeParallel(envRec.KEYFRAME_PARALLEL, shotIds.length);
+    // core#370: every job of a split film trains a slot it has no adapter for. Measured on film-a9939630:
+    // two jobs logged the same loss at every step they shared, each billed for the same adapter.
+    if (n > 1 && kf.trains_loras) {
+      const yaml = await readBundleStoryboardYaml(env, args.bundle_key).catch(() => null);
+      const missing = slotsMissingAdapters(yaml, args.pretrained_loras);
+      if (missing === null || missing.length > 0) {
+        console.log(`film ${job.film_id}: one keyframe job instead of ${n}: ${missing === null ? "slots unreadable" : `no adapter for ${missing.join(", ")}`} (core#370)`);
+        n = 1;
+      }
+    }
     if (n <= 1) {
       const keyframeInput: KeyframeInput = {
         project: args.project,
