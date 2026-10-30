@@ -3,7 +3,21 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.28.2
+## [1.28.2] -- 2026-10-30
+
+**Fix: one film's finish step can no longer replace a clip another film recorded (#379).**
+
+A `shot_named` finish step now writes to `renders/<project>/clips/<film_id>/`, and a retry to `<film_id>/r<gen>/`. Core sends the key as `output_key` with or without presigned URLs. Adoption reads the film's own key, then the shared key, behind the #583 hash. Another film's folder is never read. It takes effect once the backend honours `output_key`. Until then it writes the shared key as before.
+
+A resubmit of the same inputs runs its own steps. An `append_suffix` step is not changed: it derives its key from its input clip, so two films with the same shared input still share its output (#385).
+
+`archiveExistingClipTakes` streams now. It called `arrayBuffer()`, so a large clip would exceed an isolate's memory, and its best-effort catch hid that.
+
+**Fix: a paid upscale now reaches the film, or the finish summary says it did not (#389).**
+
+Assemble measured clip sizes from before finish, so a clip upscaled to 2688x1536 was scaled back to a 1344x768 film. It now measures finished clips, and `film.finish` reads the same frame, so a vertical film stays vertical. If an operator target is smaller than the clip, or a finished clip cannot be measured, the shot's `degraded` names it.
+
+A per-shot finish step now aims at a 1080 short side at the clip's own shape, so a vertical clip aims at 1080x1920. A module may declare `finish_scales_frame`: the core prices the film at the frame that step will produce, and if it could not be assembled the step is refused by name before it spends, with code `assemble_budget`. The shot keeps its clip and the film still finishes.
 
 ## [1.28.1] -- 2026-10-30
 
