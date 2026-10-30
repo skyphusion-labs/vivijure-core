@@ -3,6 +3,10 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.28.1
+
+Entries are in `changelog.d/` until the release is cut.
+
 ## [1.28.0] -- 2026-10-30
 
 ### fix(keyframe): a split film no longer trains one LoRA per job
