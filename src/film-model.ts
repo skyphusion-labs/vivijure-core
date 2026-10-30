@@ -365,6 +365,9 @@ export interface FilmJob {
   delivery_width?: number;
   delivery_height?: number;
   delivery_fps?: number;
+  /** core#389: the frame assemble built, recorded the first time it is worked out, so a later tick,
+   *  and film.finish, read one answer. Cleared by a retry that assembles again. */
+  assemble_frame?: { width: number; height: number };
   /** cf#518: RESPONSE-ONLY. Set to `true` on the job a submit gets back when that submit was
    *  DEDUPLICATED against a live claim -- i.e. the caller's inputs matched an in-flight submit
    *  inside the idempotency window and no second film was started.
@@ -1890,6 +1893,48 @@ export function resolveMeasuredDelivery(
   const explicit = resolveDeliveryResolution(job);
   if (explicit.decided) return explicit;
   return selectDeliveryFromMeasured(measured);
+}
+
+/** The short side a finish step that changes the frame aims at when nobody set a size (core#389). */
+export const FINISH_TARGET_SHORT_SIDE = 1080;
+
+const evenDown = (n: number): number => {
+  const v = Math.floor(n);
+  return v - (v % 2);
+};
+
+/** The frame a per-shot finish step is told to aim at.
+ *
+ *  An operator pair wins. Otherwise a 1080 short side at the clip's own shape, so a vertical clip aims
+ *  at 1080x1920 and not at a landscape 1920x1080 (whose height is below its own). With no measurement
+ *  this is the labelled default. This is a target and NOT the measured frame: a target equal to the
+ *  source would make every upscale pay for a GPU job that changes nothing. */
+export function finishTargetFrame(
+  job: { delivery_width?: unknown; delivery_height?: unknown },
+  source: { width: number; height: number } | undefined,
+): { width: number; height: number } {
+  const explicit = resolveDeliveryResolution(job);
+  if (explicit.decided || !source || !(source.width > 0) || !(source.height > 0)) {
+    return { width: explicit.width, height: explicit.height };
+  }
+  const short = FINISH_TARGET_SHORT_SIDE;
+  return source.width >= source.height
+    ? { width: evenDown((source.width * short) / source.height), height: short }
+    : { width: short, height: evenDown((source.height * short) / source.width) };
+}
+
+/** The frame a `finish_scales_frame` step will leave a clip at, so the film can be priced before the
+ *  step spends. A usable `scale` in its config is a factor. Otherwise it goes to the target. */
+export function predictScaledFrame(
+  source: { width: number; height: number } | undefined,
+  target: { width: number; height: number },
+  config: Record<string, unknown> | undefined,
+): { width: number; height: number } {
+  const scale = Number(config?.scale);
+  if (source && Number.isFinite(scale) && scale > 0) {
+    return { width: source.width * scale, height: source.height * scale };
+  }
+  return target;
 }
 
 /** Default fan-out for keyframe invokes when KEYFRAME_PARALLEL is unset. */

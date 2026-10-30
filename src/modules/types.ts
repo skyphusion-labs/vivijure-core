@@ -319,6 +319,12 @@ export interface ModuleManifest {
    *  means ordered purely by `ui.order` (the legacy behavior). The module declares only its OWN nature;
    *  the cross-module ordering policy stays in the core. */
   finish_consumes_audio?: boolean;
+  /** OPTIONAL, additive (no MODULE_API bump, same pattern as `finish_consumes_audio`). A finish module
+   *  whose output has a different frame from its input declares this, and reads a positive `scale` in
+   *  its config as a factor and otherwise aims at `delivery_width` and `delivery_height`. The core
+   *  prices the film at that frame and refuses the step by name, before it spends, if the film could
+   *  not then be assembled (core#389). */
+  finish_scales_frame?: boolean;
   /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`). A motion.backend module
    *  whose engine renders on a FIXED duration grid (pinned fps + per-tier frame caps, e.g. CogVideoX:
    *  8fps, draft <= 25 frames) declares the grid so the core can warn AT STORYBOARD TIME that a shot's

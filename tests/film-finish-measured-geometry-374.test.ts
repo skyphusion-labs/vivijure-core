@@ -158,8 +158,10 @@ describe("core#374: per-shot finish keeps its delivery target", () => {
     await advanceFilmJob(env as unknown as Env, FILM);
 
     expect(seen.length, "DENOMINATOR: the finish module was invoked").toBeGreaterThan(0);
-    expect(seen[0].delivery_width).toBe(DEFAULT_DELIVERY_WIDTH);
-    expect(seen[0].delivery_height).toBe(DEFAULT_DELIVERY_HEIGHT);
+    // core#389: a target at the clip's shape, which closes the landscape-default gap this pin recorded.
+    expect(seen[0].delivery_width).toBe(1080);
+    expect(seen[0].delivery_height).toBe(1920);
+    expect(seen[0].delivery_height).not.toBe(VERT.height);
     // The source hints still ride along, measured, so the module knows what it was given.
     expect(seen[0].width).toBe(720);
     expect(seen[0].height).toBe(1280);
