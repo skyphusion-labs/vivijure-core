@@ -9,7 +9,7 @@
 import { describe, it, expect } from "vitest";
 import { reclaimClipsFromR2 } from "../src/render-orchestrator.js";
 import type { ClipJob } from "../src/render-orchestrator.js";
-import { clipProvenanceHash, provKey } from "../src/clip-provenance.js";
+import { clipProvenanceHash, provKey, UNSTAMPED_SETTLE_MS } from "../src/clip-provenance.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
 const NOW = 5_000_000;
@@ -139,5 +139,55 @@ describe("#767 clip-adoption provenance: a different-backend render never adopts
 
     expect(adopted).toBe(0);
     expect(cj.shots[0].status).toBe("pending"); // cannot prove which is ours -> re-render, never guess
+  });
+
+  it("never adopts an archived take of a sibling door, however old and however alone (film-7b84f133)", async () => {
+    const { env, seed } = memR2();
+    seed(KF_KEY, { etag: KF_ETAG });
+    seed("renders/proj/clips/shot_01_seedance_take1793373122721.mp4", { uploaded: NOW + 1_000, etag: "et-take" });
+
+    const cj = pendingJob("infinitetalk", {});
+    const adopted = await reclaimClipsFromR2(env, cj);
+
+    expect(adopted).toBe(0);
+    expect(cj.shots[0].status).toBe("pending");
+    expect(cj.shots[0].clip_key).toBeUndefined();
+  });
+
+  it("does not adopt a live sibling clip that has not been stamped yet, and leaves its sidecar alone (film-df662ff9)", async () => {
+    const { env, seed, store } = memR2();
+    seed(KF_KEY, { etag: KF_ETAG });
+    const sibling = "renders/proj/clips/shot_01_cf-grok-video.mp4";
+    seed(sibling, { uploaded: Date.now(), etag: "et-sibling" });
+
+    const cj = pendingJob("cf-flux-3-video", {});
+    const adopted = await reclaimClipsFromR2(env, cj);
+
+    expect(adopted).toBe(0);
+    expect(cj.shots[0].status).toBe("pending");
+    expect(store.has(provKey(sibling))).toBe(false); // the heal must not stamp another render's clip
+  });
+
+  it("adopts the same unstamped clip once it has settled past the window (#141 recovery survives)", async () => {
+    const { env, seed } = memR2();
+    seed(KF_KEY, { etag: KF_ETAG });
+    const own = "renders/proj/clips/shot_01_kling.mp4";
+    seed(own, { uploaded: Date.now() - UNSTAMPED_SETTLE_MS - 1_000, etag: "et-own" });
+
+    const cj = pendingJob("kling", { steps: 40 });
+    expect(await reclaimClipsFromR2(env, cj)).toBe(1);
+    expect(cj.shots[0].clip_key).toBe(own);
+  });
+
+  it("a fresh clip with a MATCHING sidecar is still adopted at once: proof needs no waiting", async () => {
+    const { env, seed } = memR2();
+    seed(KF_KEY, { etag: KF_ETAG });
+    const own = "renders/proj/clips/shot_01_kling.mp4";
+    await stampFor(env, seed, own, "kling", { steps: 40 });
+    seed(own, { uploaded: Date.now(), etag: "et-own" });
+
+    const cj = pendingJob("kling", { steps: 40 });
+    expect(await reclaimClipsFromR2(env, cj)).toBe(1);
+    expect(cj.shots[0].clip_key).toBe(own);
   });
 });

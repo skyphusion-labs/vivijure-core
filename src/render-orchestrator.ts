@@ -24,6 +24,9 @@ import { INVOKE_FAILURE_DISPOSITION, isInvokeFailureReason } from "./modules/typ
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
 
+/** The name an archived take carries, `<clip>_take<ms>.<ext>`. Written only by the archiver below. */
+const CLIP_TAKE_RE = /_take\d+/;
+
 /** Reroll must not destroy the last take. Copy live clip objects aside before overwrite. */
 async function archiveExistingClipTakes(env: Env, project: string, shot: ClipShot): Promise<void> {
   const prefix = `renders/${project}/clips/${shot.shot_id}`;
@@ -31,7 +34,7 @@ async function archiveExistingClipTakes(env: Env, project: string, shot: ClipSho
   const now = Date.now();
   const takes = shot.takes ? shot.takes.slice() : [];
   for (const obj of listed.objects) {
-    if (/_take\d+/.test(obj.key)) continue;
+    if (CLIP_TAKE_RE.test(obj.key)) continue;
     if (!/\.(mp4|webm)$/i.test(obj.key)) continue;
     const takeKey = obj.key.replace(/(\.[a-z0-9]+)$/i, `_take${now}$1`);
     const body = await env.R2_RENDERS.get(obj.key);
@@ -56,7 +59,7 @@ import type {
 } from "./modules/types.js";
 import { validateClipArtifact } from "./clip-validate.js";
 import { contentValidateDoneClips } from "./clip-content-validate.js";
-import { clipProvenanceHash, chooseProvenanceMatch, headEtag, writeProv } from "./clip-provenance.js";
+import { clipProvenanceHash, chooseProvenanceMatch, headEtag, UNSTAMPED_SETTLE_MS, writeProv } from "./clip-provenance.js";
 import { BUCKET_KEYFRAME_MOTION_BACKENDS, ensureClipKeyframeInR2 } from "./stage-clip-keyframe.js";
 import { assertProjectKey } from "./key-safety.js";
 
@@ -205,6 +208,9 @@ export function clipFileMatchesShot(file: string, shotId: string): boolean {
   if (rest.length === 0) return false; // need a separator + extension
   if (/^\d/.test(rest)) return false; // digit boundary: shot_1 must not match shot_10...
   if (/(^|[._-])finished([._-]|$)/i.test(rest)) return false; // finish-chain output, not a motion clip
+  // An archived take is a COPY, of any door's clip, with a fresh upload time and no sidecar. It is never a
+  // render's output. Letting it match is how an InfiniteTalk film shipped a Seedance clip marked done.
+  if (CLIP_TAKE_RE.test(rest)) return false;
   return /\.(mp4|mov|webm|mkv)$/i.test(file); // a video file
 }
 
@@ -218,6 +224,7 @@ export function finishedClipFileMatchesShot(file: string, shotId: string): boole
   const rest = file.slice(shotId.length);
   if (/^\d/.test(rest)) return false; // digit boundary: shot_1 must not match shot_10...
   if (!/(^|[._-])finished([._-]|$)/i.test(rest)) return false; // MUST be a finish-chain output
+  if (CLIP_TAKE_RE.test(rest)) return false; // an archived copy is not this render's finish output
   return /\.(mp4|mov|webm|mkv)$/i.test(file);
 }
 
@@ -261,12 +268,14 @@ export async function listClipsByShotId(
 /** #767: like listClipsByShotId but returns EVERY candidate clip key per shot (not first-match-wins), so
  *  the provenance-gated reclaim can pick the one whose sidecar proves identical-config. A sibling render of
  *  the same project leaves its own <shot>_<backend>.mp4 at the same shot-id path; both are candidates. The
- *  #661 freshness floor (minUploadedMs) still excludes anything written before this run started. */
+ *  #661 freshness floor (minUploadedMs) still excludes anything written before this run started. Each
+ *  candidate's upload time is recorded in `uploadedMs` when the caller passes a map. */
 export async function listAllClipsByShotId(
   env: Env,
   project: string,
   shotIds: string[],
   minUploadedMs = 0,
+  uploadedMs?: Map<string, number>,
 ): Promise<Map<string, string[]>> {
   const prefix = `renders/${project}/clips/`;
   const found = new Map<string, string[]>();
@@ -282,6 +291,7 @@ export async function listAllClipsByShotId(
           const arr = found.get(shotId) ?? [];
           arr.push(o.key);
           found.set(shotId, arr);
+          if (o.uploaded) uploadedMs?.set(o.key, o.uploaded.getTime());
         }
       }
     }
@@ -646,7 +656,15 @@ export async function reclaimClipsFromR2(env: Env, job: ClipJob): Promise<number
   // candidate and adopt ONLY the one whose provenance sidecar proves it was produced by THIS render config
   // (motion_backend + config + keyframe + prompt). A mismatch is skipped -> the shot re-renders rather than
   // shipping another render clip. The #661 freshness floor still excludes anything written before this job.
-  const candidates = await listAllClipsByShotId(env, job.project, notDone.map((s) => s.shot_id), job.created_at);
+  const uploadedMs = new Map<string, number>();
+  const candidates = await listAllClipsByShotId(env, job.project, notDone.map((s) => s.shot_id), job.created_at, uploadedMs);
+  // An active floor already excluded any candidate with no upload time (#19), so a missing time here means
+  // a job with no floor at all: there is no measurement to wait on, and it keeps its old behavior.
+  const now = Date.now();
+  const orphaned = (key: string) => {
+    const at = uploadedMs.get(key);
+    return at === undefined || now - at >= UNSTAMPED_SETTLE_MS;
+  };
   let adopted = 0;
   for (const shot of notDone) {
     const keys = candidates.get(shot.shot_id);
@@ -658,7 +676,7 @@ export async function reclaimClipsFromR2(env: Env, job: ClipJob): Promise<number
       prompt: shot.prompt,
       seconds: shot.seconds,
     });
-    const chosen = await chooseProvenanceMatch(env, expected, keys);
+    const chosen = await chooseProvenanceMatch(env, expected, keys, orphaned);
     if (!chosen) continue; // no clip PROVEN identical-config -> re-render (never adopt a mismatched clip)
     shot.status = "done";
     shot.clip_key = chosen.key;
