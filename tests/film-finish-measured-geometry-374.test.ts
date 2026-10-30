@@ -91,8 +91,8 @@ describe("core#374: film.finish is seeded with the assembled geometry", () => {
   });
 });
 
-describe("core#374: per-shot finish delivers at the assembled geometry", () => {
-  it("a 720x1280 clip doc sets delivery_width and delivery_height on the finish invoke", async () => {
+describe("core#374: per-shot finish keeps its delivery target", () => {
+  it("the measured size is not sent as the target, since upscale would then pay to change nothing", async () => {
     const FILM = "film-374-vert";
     const seen: Record<string, unknown>[] = [];
     const job = {
@@ -158,9 +158,10 @@ describe("core#374: per-shot finish delivers at the assembled geometry", () => {
     await advanceFilmJob(env as unknown as Env, FILM);
 
     expect(seen.length, "DENOMINATOR: the finish module was invoked").toBeGreaterThan(0);
-    expect(seen[0].delivery_width).toBe(720);
-    expect(seen[0].delivery_height).toBe(1280);
-    expect(seen[0].delivery_width).not.toBe(DEFAULT_DELIVERY_WIDTH);
-    expect(seen[0].delivery_height).not.toBe(DEFAULT_DELIVERY_HEIGHT);
+    expect(seen[0].delivery_width).toBe(DEFAULT_DELIVERY_WIDTH);
+    expect(seen[0].delivery_height).toBe(DEFAULT_DELIVERY_HEIGHT);
+    // The source hints still ride along, measured, so the module knows what it was given.
+    expect(seen[0].width).toBe(720);
+    expect(seen[0].height).toBe(1280);
   });
 });

@@ -4,8 +4,8 @@
 // (the R2-presence reclaim source) the same way the clip sidecar gates reclaimClipsFromR2.
 
 import { describe, it, expect } from "vitest";
-import { listProjectKeyframes } from "../src/film-orchestrator.js";
-import type { FilmScene } from "../src/film-model.js";
+import { listProjectKeyframes, stampKeyframeProvenance } from "../src/film-orchestrator.js";
+import type { FilmJob, FilmScene } from "../src/film-model.js";
 import { keyframeProvenanceHash, provKey } from "../src/clip-provenance.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
@@ -104,5 +104,31 @@ describe("cf#388 keyframe provenance includes bundle identity", () => {
     const b = await keyframeProvenanceHash({ keyframe_config: cfg, bundle_key: BUNDLE_B });
     expect(a).not.toBe(b);
     expect(a).toHaveLength(64);
+  });
+});
+
+describe("provenance is stamped only on a still drawn this run", () => {
+  const job = { keyframe_config: { quality_tier: "final" }, bundle_key: BUNDLE_A } as unknown as FilmJob;
+
+  function recording() {
+    const puts: string[] = [];
+    const env = { R2_RENDERS: { put: async (k: string) => { puts.push(k); } } } as unknown as Env;
+    return { env, puts };
+  }
+
+  it("stamps a still with no reused flag, so a module that always draws is unchanged", async () => {
+    const { env, puts } = recording();
+    await stampKeyframeProvenance(env, job, { project: "proj", keyframes: [{ shot_id: "shot_01", keyframe_key: KF }] });
+    expect(puts).toEqual([provKey(KF)]);
+  });
+
+  it("leaves a reused still's sidecar alone, and still stamps the drawn one beside it", async () => {
+    const { env, puts } = recording();
+    const drawn = "renders/proj/keyframes/shot_02.png";
+    await stampKeyframeProvenance(env, job, {
+      project: "proj",
+      keyframes: [{ shot_id: "shot_01", keyframe_key: KF, reused: true }, { shot_id: "shot_02", keyframe_key: drawn }],
+    });
+    expect(puts).toEqual([provKey(drawn)]);
   });
 });

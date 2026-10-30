@@ -302,6 +302,11 @@ export interface ModuleManifest {
    * (community) module even when this flag is set.
    */
   needs_tenant_r2?: boolean;
+  /** OPTIONAL, additive (no MODULE_API bump). A keyframe module sets this true when a job trains any
+   *  slot that arrives with no adapter in `pretrained_loras`. The core then keeps such a film to one job,
+   *  because every job of a split film would otherwise train the same slot and be billed for it (core#370).
+   *  Absent means the module never trains, and the split is unchanged. */
+  trains_loras?: boolean;
   /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`). A finish module sets this
    *  true when it drives its output from the shot dialogue audio (`FinishInput.audio_key`), i.e. it
    *  lip-syncs. It carries TWO facts the core needs: (a) this finish step CONSUMES the shot dialogue
@@ -782,6 +787,22 @@ export interface FinishInput {
                         // `<output_key>.hash` and a mismatch makes the step permanently unadoptable.
 }
 
+/**
+ * Why a step did not do its work, in a form the core can act on. OPTIONAL + additive (no api bump).
+ *
+ * A module that passes its input through because it could not run sets this next to `degraded`.
+ * `transient` means a later attempt can succeed (no capacity, door unreachable, a 5xx): the core holds
+ * the film and retries the step. `permanent` means it cannot (bad input, the door ran and refused):
+ * the core records the step as not done and moves on. Never use this for a CSAM refusal, which is a
+ * hard failure and not a step that can be retried. A passthrough with no `failure` is read as
+ * permanent, so an older module can never make a missing step read as a clean finish.
+ */
+export interface StepFailure {
+  kind: "transient" | "permanent";
+  code: string;       // short machine word, for example "capacity", "unreachable", "server_error"
+  detail?: string;    // short human note. Never a URL, a key or a token.
+}
+
 /** What a `finish` module returns: the processed clip plus what it did. Duration is invariant
  *  (interpolation changes fps + frame count, never length). */
 export interface FinishOutput {
@@ -793,6 +814,7 @@ export interface FinishOutput {
   degraded?: string; // set ONLY when the clip was passed through because the finish could not run
                      // (misconfig / backend down), carrying the reason; absent on success and on
                      // the intentional no-op, so a real degrade is never silent (finish-rife #77)
+  failure?: StepFailure;
 }
 
 // dialogue (v1) ---------------------------------------------------------------------------------
@@ -861,6 +883,7 @@ export interface SpeechOutput {
   applied: string[];  // "<module>:<backend>" tags naming what ran; [] on an honest passthrough
   degraded?: string;  // set ONLY when the audio was passed through because the work could not run
                       // (disabled / backend down / no audio), carrying the reason; absent on success
+  failure?: StepFailure;
 }
 
 // plan.enhance (v1) -----------------------------------------------------------------------------
@@ -906,6 +929,9 @@ export interface KeyframeInput {
 export interface KeyframeShot {
   shot_id: string;
   keyframe_key: string; // R2 key of the PNG (renders/<project>/keyframes/[<job>/]<shot>.png)
+  /** True when this job drew nothing and returns a still already in the store. Optional and additive:
+   *  absent means drawn. The core stamps its config provenance only on a still drawn this run. */
+  reused?: boolean;
 }
 /** What a `keyframe` module returns: every keyframe it generated, by shot. The core presigns each
  *  key into a fetchable keyframe_url when it hands them on to the motion.backend orchestrator. */
@@ -1090,6 +1116,7 @@ export interface MasterOutput {
   applied: string[];   // e.g. ["music-upscale:soxr48k", "loudnorm:-14LUFS"]; or ["passthrough:<reason>"]
   degraded?: string;   // set ONLY when the bed was passed through because the master could not run,
                        // carrying the reason; absent on success + on the intentional no-op (#77)
+  failure?: StepFailure;
 }
 
 // film.finish (v1) ------------------------------------------------------------------------------
@@ -1199,6 +1226,7 @@ export interface FilmFinishOutput {
                       // Conformance enforces the TYPE when present (string[]); requiring it outright is
                       // queued for the next genuine api bump.
   degraded?: string;  // set ONLY when the film was passed through UNCARDED, carrying the reason (#207)
+  failure?: StepFailure;
   // Seconds this module PREPENDED to the FRONT of the film (an opening title card). The core shifts any
   // .srt sidecar written by an EARLIER film.finish step (the subtitle module, ui.order 5, runs before
   // film-titles at 10) forward by this so the soft subtitles line up with the FINAL film, not the

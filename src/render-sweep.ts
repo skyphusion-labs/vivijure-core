@@ -4,6 +4,7 @@ import type { Env, ExecutionContext } from "./platform/orchestrator-context.js";
 import { advanceFilmJob, filmJobDocKey } from "./film-orchestrator.js";
 import { filmJobToPollView, isFilmJobId } from "./film-render-bridge.js";
 import { advanceScatterJob, isScatterJobId } from "./scatter-orchestrator.js";
+import { finishQueueCall } from "./video-finish-assemble.js";
 import {
   countStrandedPostClipsFilmJobs,
   countUnresolvedNotifiableJobs,
@@ -20,6 +21,21 @@ export const SWEEP_TICK_SECONDS = 60;
 
 /** Rows one pass will handle in a single tick. Bounds tick cost; it is NOT a fairness knob. */
 export const SWEEP_PAGE_SIZE = 25;
+
+/**
+ * Queue heads driven first on each tick, after the films holding a slot.
+ *
+ * The rotation below reaches each row once per `ceil(total / limit)` ticks, so with enough films a job
+ * that ended would hold its slot, and a freed slot would sit idle, for minutes. Holders go first, so a
+ * slot a job has given up is granted in the same tick.
+ *
+ * THE BOUND. A job's end is seen within one tick (60s). A waiter in the first SWEEP_QUEUE_HEADS is asked
+ * that tick, unless a client poll asked it in the last FINISH_QUEUE_RECHECK_SECONDS, and then the next
+ * tick. So a free slot sits for at most about 2 minutes with the cron running, and about 1 in the
+ * ordinary case. A client poll can only shorten this. It lengthens only when more than this many slots
+ * free in one tick, when a waiter further back is reached by its page.
+ */
+export const SWEEP_QUEUE_HEADS = 10;
 
 /**
  * Which page of the population this tick handles.
@@ -64,6 +80,25 @@ export async function sweepUnresolvedJobs(env: Env, ctx?: ExecutionContext): Pro
   const limit = SWEEP_PAGE_SIZE;
   const windowIndex = currentWindowIndex();
 
+  // Pass 0: the films next in the finish queue. A ticket whose job is gone or terminal can never ask
+  // again, so it is removed here rather than left ahead of live films.
+  const holding = (await finishQueueCall(env, "*", "holders", (q) => q.holders())) ?? [];
+  let headsHandled = 0;
+  const driveTicket = async (holder: string): Promise<void> => {
+    try {
+      const { handled, live } = await advanceOneJob(env, holder, ctx);
+      if (handled) headsHandled += 1;
+      if (!live) await finishQueueCall(env, holder, "forget", (q) => q.forget(holder));
+    } catch (e) {
+      console.warn(`render sweep failed for queue ticket ${holder}: ${(e as Error).message}`);
+    }
+  };
+  for (const holder of holding) await driveTicket(holder);
+  // Asked after the holders ran, so it sees the slots they gave up.
+  const waiting = (await finishQueueCall(env, "*", "next", (q) => q.next(SWEEP_QUEUE_HEADS))) ?? [];
+  for (const holder of waiting) await driveTicket(holder);
+  const heads = [...new Set([...holding, ...waiting])];
+
   // Pass 1: jobs young enough to still be live on RunPod (keyframe / clips can still
   // be polled). This is the common path.
   const total1 = await countUnresolvedNotifiableJobs(env, SWEEP_MAX_AGE_SECONDS);
@@ -76,7 +111,7 @@ export async function sweepUnresolvedJobs(env: Env, ctx?: ExecutionContext): Pro
   // existing in R2 so we never chase a swept/GC'd job. De-dup against pass 1.
   const total2 = await countStrandedPostClipsFilmJobs(env, SWEEP_MAX_AGE_SECONDS);
   const offset2 = rotatingOffset(total2, limit, windowIndex);
-  const seen = new Set(jobIds);
+  const seen = new Set([...jobIds, ...heads]);
   const stranded: string[] = [];
   let docMissing = 0;
   for (const id of await listStrandedPostClipsFilmJobs(env, SWEEP_MAX_AGE_SECONDS, limit, offset2)) {
@@ -91,10 +126,9 @@ export async function sweepUnresolvedJobs(env: Env, ctx?: ExecutionContext): Pro
 
   let n = 0;
   let failed = 0;
-  for (const jobId of [...jobIds, ...stranded]) {
+  for (const jobId of [...jobIds.filter((id) => !heads.includes(id)), ...stranded]) {
     try {
-      const handled = await resolveOneJob(env, jobId, ctx);
-      if (handled) n += 1;
+      if (await resolveOneJob(env, jobId, ctx)) n += 1;
     } catch (e) {
       failed += 1;
       console.warn(`render sweep failed for ${jobId}: ${(e as Error).message}`);
@@ -109,6 +143,7 @@ export async function sweepUnresolvedJobs(env: Env, ctx?: ExecutionContext): Pro
       JSON.stringify({
         window: windowIndex,
         limit,
+        queue_heads: { holding: holding.length, waiting: waiting.length, handled: headsHandled },
         pass1: { total: total1, offset: offset1, returned: jobIds.length },
         pass2: { total: total2, offset: offset2, returned: stranded.length, doc_missing: docMissing },
         attempted: jobIds.length + stranded.length,
@@ -117,7 +152,7 @@ export async function sweepUnresolvedJobs(env: Env, ctx?: ExecutionContext): Pro
       }),
   );
 
-  return n;
+  return n + headsHandled;
 }
 
 /** Cheap presence check: a stranded film job is only worth re-driving if its job doc
@@ -131,16 +166,25 @@ async function filmJobDocExists(env: Env, jobId: string): Promise<boolean> {
   }
 }
 
-async function resolveOneJob(env: Env, jobId: string, ctx?: ExecutionContext): Promise<boolean> {
+const TERMINAL_VIEW: ReadonlySet<string> = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
+
+/** Advance one job. The boolean is the same "handled" the sweep has always counted, and a terminal
+ *  job still counts. The queue pass asks a different question, so it reads `live` below. */
+async function advanceOneJob(env: Env, jobId: string, ctx?: ExecutionContext): Promise<{ handled: boolean; live: boolean }> {
   if (isScatterJobId(jobId)) {
     const view = await advanceScatterJob(env, jobId, ctx);
-    return view !== null;
+    return { handled: view !== null, live: view !== null && !TERMINAL_VIEW.has(view.status) };
   }
   if (isFilmJobId(jobId)) {
     const r = await advanceFilmJob(env, jobId);
-    if (!r) return false;
-    await updateRenderFromView(env, filmJobToPollView(r.job, r.clipJob), ctx);
-    return true;
+    if (!r) return { handled: false, live: false };
+    const view = filmJobToPollView(r.job, r.clipJob);
+    await updateRenderFromView(env, view, ctx);
+    return { handled: true, live: !TERMINAL_VIEW.has(view.status) };
   }
-  return false;
+  return { handled: false, live: false };
+}
+
+async function resolveOneJob(env: Env, jobId: string, ctx?: ExecutionContext): Promise<boolean> {
+  return (await advanceOneJob(env, jobId, ctx)).handled;
 }
