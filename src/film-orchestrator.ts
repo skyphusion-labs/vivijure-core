@@ -125,7 +125,7 @@ import {
   findClipDurationShortfalls,
   captionDurations,
   resolveDeliveryResolution,
-  selectDeliveryFromMeasured,
+  resolveMeasuredDelivery,
   DEFAULT_DELIVERY_FPS,
   type DeliveryResolution,
 } from "./film-model.js";
@@ -1338,7 +1338,7 @@ export async function resolveAssembleDelivery(env: Env, job: FilmJob): Promise<D
   const explicit = resolveDeliveryResolution(job);
   if (explicit.decided) return explicit;
   const dims = await measuredClipDimensions(env, job);
-  return selectDeliveryFromMeasured([...dims.values()]);
+  return resolveMeasuredDelivery(job, [...dims.values()]);
 }
 
 /**
@@ -1380,6 +1380,9 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
   const envRec = env as unknown as Record<string, unknown>;
   // Read once per pass, not per shot: one GET serves every shot in this dispatch.
   const clipDims = await measuredClipDimensions(env, job);
+  // NOT the measured frame, unlike film.finish. finish-upscale sends this as `target_height`, so a target
+  // equal to the source would make every upscale pay for a GPU job that changes nothing. A vertical clip
+  // and this landscape default is a known gap, tracked on core#374.
   const delivery = resolveDeliveryResolution(job);
   const modules = preModules ?? await discoverModules(envRec);
   const finishModByBinding = new Map(modules.filter((m) => m.hooks.includes("finish")).map((m) => [m.binding, m]));
@@ -1906,12 +1909,15 @@ export interface RunFilmFinishInput {
   // #698: ACTUAL per-shot assembled seconds (video-finish probe at assemble). Times caption cues to the
   // real cut; absent falls back to the bundle plan (readShotDurationsFromBundle).
   actual_durations?: Record<string, number>;
-  // cf#507b: the film's DELIVERY TARGET, carried from FilmJob. Absent falls back to the ONE estate
-  // default via resolveDeliveryResolution, which also reports whether it was decided -- so a
-  // defaulted target is never mistaken for a chosen one at the point it is used.
+  // cf#507b: the film's DELIVERY TARGET, carried from FilmJob. An operator pair wins.
+  // Absent, the seed uses the measured assemble geometry (clip_job_id below), and the
+  // 1920x1080 default only when that measurement is missing (core#374).
   delivery_width?: number;
   delivery_height?: number;
   delivery_fps?: number;
+  // The clip doc assemble already measured. Absent (scatter, a caller with no clip
+  // job) leaves the seed on the operator target or the unmeasured default.
+  clip_job_id?: string;
   // core#377: a retry writes its steps under new keys, so the delivered film is untouched until it is done.
   step_key_suffix?: string;
 }
@@ -1985,10 +1991,14 @@ async function filmFinishSeed(
   // cf#507b: ALWAYS populated, never conditionally. The panel modules fall back to `?? 1920` /
   // `?? 1080`, and the whole defect is that those fallbacks were doing the deciding. Emitting the
   // target on every seed makes those arms unreachable instead of load-bearing.
-  const delivery = resolveDeliveryResolution({
+  // core#374: that target is the frame assemble built, not the estate default. An operator
+  // delivery_* still wins. A 720x1280 assemble therefore seeds 720x1280, so the title
+  // card is drawn in that frame instead of pillarboxing the picture into 1920x1080.
+  const delivery = await resolveAssembleDelivery(env, {
     delivery_width: input.delivery_width,
     delivery_height: input.delivery_height,
-  });
+    clip_job_id: input.clip_job_id,
+  } as FilmJob);
   return {
     width: delivery.width,
     height: delivery.height,
@@ -2529,6 +2539,7 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
     delivery_width: job.delivery_width,
     delivery_height: job.delivery_height,
     delivery_fps: job.delivery_fps,
+    clip_job_id: job.clip_job_id,
     film_key: job.film_key,
     scenes: job.scenes,
     dialogue_lines: job.dialogue_lines,
