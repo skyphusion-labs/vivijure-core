@@ -56,6 +56,7 @@ export * from "./wav-duration.js";
 export * from "./render-orchestrator.js";
 export * from "./clip-validate.js";
 export * from "./film-orchestrator.js";
+export * from "./finish-queue.js";
 export {
   mediaFinishToken,
   mediaFinishHeaders,
