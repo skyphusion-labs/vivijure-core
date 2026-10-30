@@ -87,6 +87,7 @@ describe("applyMeasuredFrames", () => {
     const s = shot();
     expect(applyMeasuredFrames(s, null, 5.875)).toBe(false);
     expect(applyMeasuredFrames(s, 0, 5.875)).toBe(false);
+    expect(applyMeasuredFrames(s, 0, null)).toBe(false);
     expect(s).toMatchObject({ delivered_frames: 144 });
     expect(s.delivered_measured).toBeUndefined();
   });
