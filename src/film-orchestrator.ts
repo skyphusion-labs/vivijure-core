@@ -3596,6 +3596,18 @@ async function deleteArtifacts(env: Env, keys: (string | undefined)[], keep: (st
   }
 }
 
+/** Why a retry started nothing, present only when `retried` is empty (vivijure-cf#1114).
+ *  busy: the film is advancing or still running, so the caller may try again.
+ *  nothing_to_retry: it names no missing step, or it was cancelled.
+ *  cannot_deliver: a shot the retry will not run would fail the film again. */
+export type FinishRetryNotStarted = "busy" | "nothing_to_retry" | "cannot_deliver";
+
+export interface FinishRetryResult {
+  job: FilmJob;
+  retried: FinishIncompleteStep[];
+  not_started?: FinishRetryNotStarted;
+}
+
 /**
  * core#377: run again the finish steps a film names as not done, without rendering any clip again.
  *
@@ -3609,11 +3621,11 @@ async function deleteArtifacts(env: Env, keys: (string | undefined)[], keep: (st
 export async function retryFilmFinish(
   env: Env,
   filmId: string,
-): Promise<{ job: FilmJob; retried: FinishIncompleteStep[] } | null> {
+): Promise<FinishRetryResult | null> {
   const claim = await claimAdvanceOrFailOpen(env, filmId);
   if (!claim.won) {
     const live = await readFilmJobReadOnly(env, filmId);
-    return live ? { job: live.job, retried: [] } : null;
+    return live ? { job: live.job, retried: [], not_started: "busy" } : null;
   }
   try {
     return await retryFilmFinishLocked(env, filmId);
@@ -3629,14 +3641,13 @@ export async function retryFilmFinish(
 async function retryFilmFinishLocked(
   env: Env,
   filmId: string,
-): Promise<{ job: FilmJob; retried: FinishIncompleteStep[] } | null> {
+): Promise<FinishRetryResult | null> {
   const obj = await env.R2_RENDERS.get(filmKey(filmId));
   if (!obj) return null;
   const job = JSON.parse(await obj.text()) as FilmJob;
   const entries = job.finish_incomplete ?? [];
-  if (job.cancelled || entries.length === 0 || (job.phase !== "done" && job.phase !== "failed")) {
-    return { job, retried: [] };
-  }
+  if (!job.cancelled && job.phase !== "done" && job.phase !== "failed") return { job, retried: [], not_started: "busy" };
+  if (job.cancelled || entries.length === 0) return { job, retried: [], not_started: "nothing_to_retry" };
   // core#384: a shot the retry will not run again would fail the finish phase again, after the other
   // shots' steps had called their doors. So a refused shot, or a failed shot with no named step, keeps
   // the film closed, and no paid step starts for a film that cannot deliver.
@@ -3645,7 +3656,7 @@ async function retryFilmFinishLocked(
   );
   if (stuck.length) {
     emitStructuredEvent({ ev: "film.finish_retry_blocked", film_id: job.film_id, project: job.project, shots: stuck.map((fs) => fs.shot_id) });
-    return { job, retried: [] };
+    return { job, retried: [], not_started: "cannot_deliver" };
   }
   const has = (stage: FinishIncompleteStep["stage"]): boolean => entries.some((e) => e.stage === stage);
   const modules = await discoverModules(env as unknown as Record<string, unknown>);
