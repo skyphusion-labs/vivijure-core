@@ -27,6 +27,26 @@ import { emitStructuredEvent } from "./structured-events.js";
 /** The name an archived take carries, `<clip>_take<ms>.<ext>`. Written only by the archiver below. */
 const CLIP_TAKE_RE = /_take\d+/;
 
+/** How far a door's reported rate may sit from the file before it is not believed. Longer than an audio
+ *  track usually overruns the video, which is what makes `duration_s` larger than the frames alone. */
+const FPS_TRUST_SECONDS = 0.25;
+
+/** Pure: replace a reported frame count with the measured one. Null means it was not measured, and the
+ *  report stands, unmarked. The door's rate is kept while it agrees with the file. Returns true on change. */
+export function applyMeasuredFrames(shot: ClipShot, frames: number | null, durationS: number | null): boolean {
+  if (typeof frames !== "number" || frames <= 0) return false;
+  const reported = shot.delivered_fps;
+  const derived = typeof durationS === "number" && durationS > 0 ? Math.round((frames / durationS) * 1000) / 1000 : undefined;
+  const agrees = reported !== undefined && (derived === undefined || Math.abs(frames / reported - (durationS as number)) <= FPS_TRUST_SECONDS);
+  const fps = agrees ? reported : derived;
+  if (!fps) return false;
+  const changed = shot.delivered_frames !== frames || shot.delivered_fps !== fps || shot.delivered_measured !== true;
+  shot.delivered_frames = frames;
+  shot.delivered_fps = fps;
+  shot.delivered_measured = true;
+  return changed;
+}
+
 /** Reroll must not destroy the last take. Copy live clip objects aside before overwrite. */
 export async function archiveExistingClipTakes(env: Env, project: string, shot: ClipShot): Promise<void> {
   const prefix = `renders/${project}/clips/${shot.shot_id}`;
@@ -732,6 +752,9 @@ export async function validateDoneClips(env: Env, job: ClipJob): Promise<boolean
     // clip's real size is still evidence, and the shot is failed on its own merits below.
     if (typeof res.checks?.width === "number" && res.checks.width > 0) shot.delivered_width = res.checks.width;
     if (typeof res.checks?.height === "number" && res.checks.height > 0) shot.delivered_height = res.checks.height;
+    // vivijure-cf#1125: the frame count is measured too. Doors report planned seconds times their rate, so
+    // `delivered` read 144 on a 141 frame clip and the #707 comparison could never go red.
+    if (applyMeasuredFrames(shot, res.checks?.frames ?? null, res.checks?.duration_s ?? null)) changed = true;
     emitStructuredEvent({
       ev: "clip.validate",
       job_id: job.job_id,
