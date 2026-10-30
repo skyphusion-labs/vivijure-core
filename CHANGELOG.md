@@ -3,7 +3,27 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.27.1
+## [1.28.0] -- 2026-10-30
+
+### fix(keyframe): a split film no longer trains one LoRA per job
+
+A keyframe module that declares `trains_loras` gets one job when any storyboard slot has no adapter, or when the slots cannot be read. With every adapter present, the film splits as before. A module that does not declare it is unchanged.
+
+### fix(keyframe): a reused still keeps its own provenance
+
+A module may mark a returned still `reused: true`. The core no longer stamps its config hash on it, because that claimed a config match the still did not have.
+
+### fix(film-finish): a vertical film keeps the assembled frame
+
+`film.finish` seeded 1920x1080 whenever the job had no `delivery_width`. Assemble already used the measured clip geometry, so a 720x1280 film was pillarboxed and its title card drawn in a landscape frame. The seed now uses the frame assemble built. An operator `delivery_width` and `delivery_height` still win. Card and caption sizes are set in the video-finish container and do not change here, and neither does the per-shot finish target.
+
+### feat(finish): films queue for a finish slot in order, and a missing step is never a clean finish
+
+Adds `FINISH_QUEUE`, an optional host seam, and `sqlFinishQueue` over the `Database` seam, so films take finish work first come, first served, with leases that expire, a place in line that survives a restart, and an optional per-key cap so a batch or a heavy project cannot take every slot. Unbound, or if a queue call fails, a film uses retry with backoff as before. Module outputs may carry `failure` (`transient` or `permanent`, additive, no epoch bump): a transient failure holds the film, for up to 6 hours on capacity and 15 minutes on anything else, and a permanent failure or a wait that ran out records the step in `finish_incomplete`, on the summary and the poll. A passthrough with no `failure` counts as permanent. `retryFilmFinish` runs the missing steps again with no clip re-rendered. **Behaviour change for a repinner:** a dead door now holds for up to 15 minutes where it failed on the first attempt, and a 5xx from a polish step holds where it used to soft-degrade at once. `film_finish.degraded` and the other existing fields are unchanged.
+
+**Test: lost-poll keyframe adoption against the key shape a real worker wrote.**
+
+The job id in a real key carries RunPod's `-uN` suffix. These tests pin that the stored id matches it, and that an id without the suffix adopts nothing.
 
 ## [1.27.0] -- 2026-10-30
 
