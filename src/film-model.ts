@@ -619,11 +619,6 @@ export interface FilmJob {
   finish_retry_completed_at?: number | null;
   // The last retry did not finish. The film stands as it was.
   finish_retry_failed?: { at: number; reason: string };
-  // core#379: where the next tick starts looking for reusable clips, so a bound on one tick reaches them all.
-  finish_reuse_cursor?: number;
-  // Steps (`<shot>:<idx>`) whose copy was tried and failed. Each gets one try, so a copy that cannot succeed
-  // neither spends the budget on every tick nor holds the film. The step runs instead. Cleared by a retry.
-  finish_reuse_failed?: string[];
   // core#377: the mixed bed, once made, so a wait for a slot does not mix again on each attempt.
   mix_done_key?: string;
   // The mix could not run and the film moves on with the bare bed. Cleared by a retry.
@@ -1237,15 +1232,6 @@ export function finishStepIsShotNamed(fs: FinishShot, modules?: RegisteredModule
   const binding = fs.chain[fs.idx] ?? "";
   const decl = moduleByBinding(modules, binding)?.finish_artifacts;
   return decl ? decl.output_key.kind === "shot_named" : /RIFE/i.test(binding);
-}
-
-/** The reuse pointer for a shot-named step: one JSON object naming the newest film-scoped clip and its
- *  hash. The producer writes it after the clip and its sidecar. Same shape as the keyframe pointer in
- *  vivijure-backend#535. Null for a step with no shared name. */
-export function finishStepPointerKey(project: string, fs: FinishShot, modules?: RegisteredModule[]): string | null {
-  if (!finishStepIsShotNamed(fs, modules)) return null;
-  const key = unscopedFinishStepOutputKey(project, fs, modules);
-  return key ? key.replace(/\.mp4$/i, ".latest.json") : null;
 }
 
 /**
