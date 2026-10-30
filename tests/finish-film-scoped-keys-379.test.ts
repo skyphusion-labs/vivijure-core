@@ -125,7 +125,7 @@ describe("a real tick", () => {
     expect((await advanceFilmJob(noPointer.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).not.toBe(other);
 
     const stale = world({ finish_shots: [running] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: "different", [pointer]: JSON.stringify({ key: other }) });
-    expect((await advanceFilmJob(stale.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).not.toBe(other);
+    expect((await advanceFilmJob(stale.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).toBe(running.clip_key);
 
     const ok = world({ finish_shots: [running] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: good, [pointer]: JSON.stringify({ key: other }) });
     const own = "renders/p/clips/film-a/s1_finished.mp4";
@@ -189,7 +189,11 @@ describe("a real tick", () => {
     const hash = await import("../src/finish-hash.js");
     const good = await hash.finishStepInputHash(null, null, {});
     const w = world({ finish_shots: [running] as never }, lostPoll, { [key]: "clip", [`${key}.hash`]: good, "renders/p/clips/s1_finished.latest.json": JSON.stringify({ key }) });
-    expect((await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).not.toBe(key);
+    const s = (await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.finish_shots![0];
+    // Not `not.toBe(key)`: since a reused clip is copied, a followed pointer records the film's own key.
+    expect(s?.clip_key).toBe(running.clip_key);
+    expect(s?.idx).toBe(0);
+    expect(w.store["renders/p/clips/film-a/s1_finished.mp4"]).toBeUndefined();
   });
 
   it("a corrupt pointer only means the step is not reused", async () => {
