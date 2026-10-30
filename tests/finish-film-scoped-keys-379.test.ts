@@ -121,8 +121,11 @@ describe("a real tick", () => {
     const hash = await import("../src/finish-hash.js");
     const good = await hash.finishStepInputHash(null, null, {});
 
-    const noPointer = world({ finish_shots: [shot({ poll: "tok" })] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: good });
-    expect((await advanceFilmJob(noPointer.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).not.toBe(other);
+    const noPointer = world({ finish_shots: [running] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: good });
+    const untouched = (await advanceFilmJob(noPointer.e, "film-a", [RIFE]))?.job.finish_shots![0];
+    expect(untouched?.clip_key).toBe(running.clip_key);
+    expect(untouched?.idx).toBe(0);
+    expect(noPointer.store["renders/p/clips/film-a/s1_finished.mp4"]).toBeUndefined();
 
     const stale = world({ finish_shots: [running] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: "different", [pointer]: JSON.stringify({ key: other }) });
     expect((await advanceFilmJob(stale.e, "film-a", [RIFE]))?.job.finish_shots![0].clip_key).toBe(running.clip_key);
@@ -142,6 +145,9 @@ describe("a real tick", () => {
     const good = await hash.finishStepInputHash(null, null, {});
     const w = world({ finish_shots: [running] as never }, lostPoll, { [other]: "clip", [`${other}.hash`]: good, "renders/p/clips/s1_finished.latest.json": JSON.stringify({ key: other }) });
     const r = await advanceFilmJob(w.e, "film-a", [RIFE]);
+    // Control: it did reuse the clip, so the absence below is about a film that reused something.
+    expect(r?.job.finish_shots![0].clip_key).toBe("renders/p/clips/film-a/s1_finished.mp4");
+    expect(r?.job.finish_shots![0].idx).toBe(1);
     expect(JSON.stringify(r?.job)).not.toContain("film-b");
   });
 
@@ -343,6 +349,9 @@ describe("a real tick", () => {
   it("a corrupt pointer only means the step is not reused", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const w = world({ finish_shots: [running] as never }, lostPoll, { "renders/p/clips/s1_finished.latest.json": "{not json" });
-    expect((await advanceFilmJob(w.e, "film-a", [RIFE]))?.job).toBeTruthy();
+    const s = (await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.finish_shots![0];
+    expect(s?.clip_key).toBe(running.clip_key);
+    expect(s?.idx).toBe(0);
+    expect(w.store["renders/p/clips/film-a/s1_finished.mp4"]).toBeUndefined();
   });
 });
