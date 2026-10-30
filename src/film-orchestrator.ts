@@ -303,7 +303,7 @@ async function recordTrainedLorasToCast(env: Env, job: FilmJob, kfOut: KeyframeO
  *  keyframe is written by the backend under a project-scoped key with NO config distinguisher, so a second
  *  render with a different keyframe config overwrites / sits beside it; the sidecar lets the reclaim tell
  *  whose config produced it. Best-effort per keyframe. */
-async function stampKeyframeProvenance(env: Env, job: FilmJob, kfOut: KeyframeOutput): Promise<void> {
+export async function stampKeyframeProvenance(env: Env, job: FilmJob, kfOut: KeyframeOutput): Promise<void> {
   const kfs = kfOut.keyframes || [];
   if (!kfs.length) return;
   const hash = await keyframeProvenanceHash({
@@ -311,6 +311,9 @@ async function stampKeyframeProvenance(env: Env, job: FilmJob, kfOut: KeyframeOu
     bundle_key: job.bundle_key,
   });
   for (const k of kfs) {
+    // A still this job did not draw keeps the provenance of the render that did. Stamping it would claim
+    // a config match it does not have: film-a9939630 stamped SDXL's hash onto a cloud door's still.
+    if (k.reused === true) continue;
     if (k.keyframe_key) await writeProv(env, k.keyframe_key, hash);
   }
 }

@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.27.1
+
 ## [1.27.0] -- 2026-10-30
 
 ### fix(clips): a render no longer adopts a sibling door's clip
