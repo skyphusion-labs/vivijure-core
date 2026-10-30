@@ -303,6 +303,22 @@ describe("retryFilmFinish", () => {
     expect(stored[filmJobDocKey("film-1")]).toBeTruthy();
   });
 
+  it("while film.finish holds after a mux, the next tick does not submit the mux again", async () => {
+    quiet();
+    const job = baseJob({ phase: "mux", film_key: "renders/p1/film-audio.mp4", mux_output_key: "renders/p1/film-audio.mp4", silent_film_key: "s", audio_key: "a", beats_read: true });
+    const t = fetcher(TITLES, () => pass("x", CAPACITY));
+    const door = vi.fn();
+    const { e, stored } = env(
+      { MODULE_FILM_TITLES: t, MEDIA_FINISH_TOKEN: "t", VIDEO_FINISH_URL: "http://vf", MEDIA_DOOR_FETCHERS: { VIDEO_FINISH_URL: { fetch: door } } },
+      { [filmJobDocKey("film-1")]: JSON.stringify({ ...job, film_titles: { title: { text: "T" } } }) },
+    );
+    const r = await advanceFilmJob(e, "film-1", [TITLES]);
+    expect(door).not.toHaveBeenCalled();
+    expect(t.calls.invoke).toBe(1);
+    expect(r?.job.phase).toBe("mux");
+    expect(stored[filmJobDocKey("film-1")]).toContain("assemble_wait");
+  });
+
   it("a per-shot step: reruns only that step on that shot and re-joins the film, and clears the old cut", async () => {
     quiet();
     const shot = (id: string) => ({ shot_id: id, clip_key: `c/${id}.mp4`, chain: ["MODULE_R", "MODULE_U"], configs: [{ a: 1 }, { b: 2 }], idx: 2, status: "done", applied: [] });

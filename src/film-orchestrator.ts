@@ -2680,8 +2680,9 @@ async function failIfSongBeatsUnread(env: Env, job: FilmJob, preModules?: Regist
 }
 
 async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<void> {
-  // core#377: a retry of film.finish alone. The cut already exists, so nothing is muxed again.
-  if (job.film_finish_resume) {
+  // core#377: the mux is done and film.finish is what remains, either on a retry or while a step holds
+  // or encodes. Falling through would submit the remux again on every tick, and take a slot to do it.
+  if (job.film_finish_resume || (!!job.mux_output_key && job.film_key === job.mux_output_key)) {
     await transitionToDone(env, job, preModules);
     return;
   }
