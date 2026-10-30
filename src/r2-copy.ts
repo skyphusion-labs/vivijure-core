@@ -9,25 +9,31 @@ import type { R2Bucket } from "./platform/r2-types.js";
 
 /**
  * Copy `src` to `dst`, then its `.hash` sidecar, last, so a sidecar only ever describes a whole clip.
- * False on any failure, with nothing left at `dst`, because a caller must not record a clip it does not
- * own. Never throws.
+ * False on any failure, because a caller must not record a clip it does not own. Never throws.
+ *
+ * NEVER WRITES OVER `dst`, AND NEVER DELETES WHAT IT DID NOT WRITE. A clip at `dst` with no sidecar yet is
+ * this film's own job between its clip write and its sidecar write. Copying over it, and then cleaning up
+ * after a failed copy, would delete the film's own clip. So a present `dst` is false, untouched.
  */
 export async function copyClipWithSidecar(bucket: R2Bucket, src: string, dst: string): Promise<boolean> {
+  const wrote: string[] = [];
   try {
+    if (await bucket.head(dst)) return false;
     const sidecar = await bucket.get(`${src}.hash`);
     if (!sidecar) return false;
     const hash = await sidecar.text();
     const obj = await bucket.get(src);
     if (!obj) return false;
+    wrote.push(dst);
     await bucket.put(dst, obj.body, { httpMetadata: { contentType: "video/mp4" } });
     const [from, to] = await Promise.all([bucket.head(src), bucket.head(dst)]);
     if (!from || !to || from.size !== to.size) throw new Error(`copy of ${src} is not whole`);
+    wrote.push(`${dst}.hash`);
     await bucket.put(`${dst}.hash`, hash, { httpMetadata: { contentType: "text/plain" } });
     return true;
   } catch (e) {
     console.warn(`clip copy ${src} -> ${dst} failed: ${(e as Error).message}`);
-    await bucket.delete(dst).catch(() => undefined);
-    await bucket.delete(`${dst}.hash`).catch(() => undefined);
+    for (const key of wrote) await bucket.delete(key).catch(() => undefined);
     return false;
   }
 }

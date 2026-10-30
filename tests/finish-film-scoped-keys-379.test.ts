@@ -1,7 +1,7 @@
 // core#379: a film's finish steps write under that film, so one render cannot replace a clip another
 // render has recorded. Same class as the still collision in vivijure-backend#535.
 import { describe, expect, it, vi } from "vitest";
-import { advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
+import { FINISH_REUSE_COPIES_PER_TICK, advanceFilmJob, filmJobDocKey, type FilmJob } from "../src/film-orchestrator.js";
 import { finishClipScope, finishStepIsShotNamed, finishStepOutputKey, finishStepPointerKey, type FinishShot } from "../src/film-model.js";
 import type { RegisteredModule } from "../src/modules/types.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
@@ -161,6 +161,89 @@ describe("a real tick", () => {
       expect(w.store[own]).toBeUndefined();
       expect(w.store[`${own}.hash`]).toBeUndefined();
     }
+  });
+
+  it("never copies over the film's own clip, and a failed copy never deletes it (driven by review)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const other = "renders/p/clips/film-b/s1_finished.mp4";
+    const own = "renders/p/clips/film-a/s1_finished.mp4";
+    const hash = await import("../src/finish-hash.js");
+    const good = await hash.finishStepInputHash(null, null, {});
+    // The window between the film's own clip write and its sidecar write: the clip is there, no hash.
+    for (const failPut of [undefined, (k: string) => k === own]) {
+      const w = world({ finish_shots: [running] as never }, lostPoll,
+        { [own]: "my own clip", [other]: "their clip", [`${other}.hash`]: good, "renders/p/clips/s1_finished.latest.json": JSON.stringify({ key: other }) },
+        failPut);
+      const s = (await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.finish_shots![0];
+      expect(w.store[own]).toBe("my own clip");
+      expect(s?.clip_key).toBe(running.clip_key);
+    }
+  });
+
+  it("a failed copy deletes only what it wrote", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { copyClipWithSidecar } = await import("../src/r2-copy.js");
+    const a = "renders/p/clips/film-b/s1.mp4", b = "renders/p/clips/film-a/s1.mp4";
+    const deleted: string[] = [];
+    const bucket = {
+      head: async (k: string) => (k === a ? { size: 1 } : null),
+      get: async (k: string) => ({ body: "x", text: async () => k }),
+      put: async () => { throw new Error("no"); },
+      delete: async (k: string) => { deleted.push(k); },
+    };
+    await expect(copyClipWithSidecar(bucket as never, a, b)).resolves.toBe(false);
+    expect(deleted).toEqual([b]);
+  });
+
+  it("a film larger than the per-tick bound stays under it and ends complete", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const hash = await import("../src/finish-hash.js");
+    const good = await hash.finishStepInputHash(null, null, {});
+    const ids = Array.from({ length: 11 }, (_, i) => `s${i + 1}`);
+    const stored: Record<string, string> = {};
+    for (const id of ids) {
+      const other = `renders/p/clips/film-b/${id}_finished.mp4`;
+      stored[other] = "clip";
+      stored[`${other}.hash`] = good;
+      stored[`renders/p/clips/${id}_finished.latest.json`] = JSON.stringify({ key: other });
+    }
+    const shots = ids.map((id) => shot({ shot_id: id, clip_key: `renders/p/clips/${id}.mp4`, poll: "tok" }));
+    const w = world({ finish_shots: shots as never, clips_only: true }, () => ({ ok: true, pending: true }), stored);
+    const copied = () => ids.filter((id) => w.store[`renders/p/clips/film-a/${id}_finished.mp4`]).length;
+    let ticks = 0;
+    let before = 0;
+    let phase: string | undefined = "finish";
+    while (phase === "finish" && ticks < 30) {
+      phase = (await advanceFilmJob(w.e, "film-a", [RIFE]))?.job.phase;
+      ticks += 1;
+      expect(copied() - before).toBeLessThanOrEqual(FINISH_REUSE_COPIES_PER_TICK);
+      before = copied();
+    }
+    expect(phase).toBe("done");
+    expect(copied()).toBe(ids.length);
+    expect(ticks).toBeLessThanOrEqual(Math.ceil(ids.length / FINISH_REUSE_COPIES_PER_TICK) + 1);
+    const done = JSON.parse(w.store[filmJobDocKey("film-a")]) as FilmJob;
+    expect(JSON.stringify(done.finish_shots)).not.toContain("film-b");
+  });
+
+  it("a lost poll past the bound stays pending, and is not failed for the wait", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const hash = await import("../src/finish-hash.js");
+    const good = await hash.finishStepInputHash(null, null, {});
+    const ids = Array.from({ length: 7 }, (_, i) => `s${i + 1}`);
+    const stored: Record<string, string> = {};
+    for (const id of ids) {
+      const other = `renders/p/clips/film-b/${id}_finished.mp4`;
+      stored[other] = "clip";
+      stored[`${other}.hash`] = good;
+      stored[`renders/p/clips/${id}_finished.latest.json`] = JSON.stringify({ key: other });
+    }
+    const shots = ids.map((id) => shot({ shot_id: id, clip_key: `renders/p/clips/${id}.mp4`, poll: "tok", chain: ["MODULE_R", "MODULE_R"] }));
+    const w = world({ finish_shots: shots as never }, lostPoll, stored);
+    const r = await advanceFilmJob(w.e, "film-a", [RIFE]);
+    expect(r?.job.finish_shots!.filter((s) => s.status === "failed")).toEqual([]);
+    expect(r?.job.phase).toBe("finish");
   });
 
   it("a pointer whose target is gone means the step runs", async () => {

@@ -619,6 +619,8 @@ export interface FilmJob {
   finish_retry_completed_at?: number | null;
   // The last retry did not finish. The film stands as it was.
   finish_retry_failed?: { at: number; reason: string };
+  // core#379: where the next tick starts looking for reusable clips, so a bound on one tick reaches them all.
+  finish_reuse_cursor?: number;
   // core#377: the mixed bed, once made, so a wait for a slot does not mix again on each attempt.
   mix_done_key?: string;
   // The mix could not run and the film moves on with the bare bed. Cleared by a retry.
