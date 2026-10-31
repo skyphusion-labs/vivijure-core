@@ -114,6 +114,10 @@ HARD RULES:
 6a. A scene's dialogue.slot MUST be one of that scene's character_slots
     (the speaker has to be in the shot). Only one character speaks per
     shot. Most shots have no dialogue; reserve it for genuine spoken beats.
+6b. Every scenes[].prompt names where the shot takes place, even when it is
+    the same place as the shot before. Each scene is drawn from its own prompt
+    alone: the renderer does not read full_prompt or any other scene, so a
+    prompt with no place lands somewhere the model invents.
 
 LENGTH CAPS (the renderer rejects outputs over these caps because they
 overflow SDXL's CLIP 77-token text encoder or break manifest builds):
@@ -158,7 +162,7 @@ shape is the canonical output; produce JSON that matches its style:
       "act": "rising"
     },
     {
-      "prompt": "Close-up on Elena's face, soft side light, expression of quiet resolve, eyes catching the last warm light.",
+      "prompt": "Close-up on Elena's face on the hilltop, soft side light, expression of quiet resolve, eyes catching the last warm light.",
       "character_slots": ["A"],
       "act": "turn"
     }
@@ -168,6 +172,8 @@ shape is the canonical output; produce JSON that matches its style:
 What that example demonstrates concretely:
 - Each scene's prompt is ~15-25 words: subject + action + framing +
   one beat of mood. Well inside the ${SCENE_PROMPT_MAX_WORDS}-word cap.
+- Every scene names its place (the hilltop, the valley), including the
+  close-up, because each scene is drawn from its own prompt alone.
 - The cast member is referenced by NAME ("Elena"), not by slot id.
   The slot id only appears in scenes[].character_slots, never in prose.
 - Scene 1 omits character_slots entirely because nothing in the prompt
@@ -310,7 +316,7 @@ mirrors the renderer's storyboard.example.yaml):
       "act": "rising"
     },
     {
-      "prompt": "Close-up on Elena's face, soft side light, expression of quiet resolve, eyes catching the last warm light.",
+      "prompt": "Close-up on Elena's face on the hilltop, soft side light, expression of quiet resolve, eyes catching the last warm light.",
       "character_slots": ["A"],
       "act": "turn"
     }
