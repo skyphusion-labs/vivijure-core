@@ -1395,7 +1395,9 @@ export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<Delivery
   const measured = await Promise.all(worked.map(async (fs) => {
     const r = await validateClipArtifact(env, fs.clip_key, 0).catch(() => null);
     const w = Number(r?.checks.width), h = Number(r?.checks.height);
-    return w > 0 && h > 0 ? { fs, width: w - (w % 2), height: h - (h % 2) } : { fs };
+    const frames = Number(r?.checks.frames), seconds = Number(r?.checks.duration_s);
+    const fps = frames > 0 && seconds > 0 ? frames / seconds : undefined;
+    return w > 0 && h > 0 ? { fs, fps, width: w - (w % 2), height: h - (h % 2) } : { fs, fps };
   }));
   for (const m of measured) {
     if (m.width && m.height) dims.set(m.fs.shot_id, { width: m.width, height: m.height });
@@ -1405,6 +1407,14 @@ export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<Delivery
   for (const m of measured) {
     if (m.width && m.height && m.width * m.height > delivery.width * delivery.height) {
       note(m.fs, `finished clip is ${m.width}x${m.height}, delivered at ${delivery.width}x${delivery.height}`);
+    }
+  }
+  // vivijure-cf#1144: same rule as the frame, for time. Interpolated frames above the delivery rate do
+  // not reach the film, and the summary has to say so. One frame per second of slack absorbs rounding.
+  const deliveryFps = job.delivery_fps ?? DEFAULT_DELIVERY_FPS;
+  for (const m of measured) {
+    if (m.fps && m.fps > deliveryFps + 1) {
+      note(m.fs, `finished clip is ${Math.round(m.fps)} fps, delivered at ${deliveryFps} fps`);
     }
   }
   if (delivery.decided) job.assemble_frame = { width: delivery.width, height: delivery.height };
