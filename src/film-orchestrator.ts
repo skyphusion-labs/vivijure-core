@@ -1204,9 +1204,10 @@ async function adoptFinishStepFromR2(env: Env, job: FilmJob, fs: RecoverableFini
   return false;
 }
 
-// cf#312: satellite finish/speech jobs queue + cold-start + GPU work. Same 30min envelope as
-// keyframe_url / film.finish / master (cast REF_TTL is also 1800).
-const FINISH_PRESIGN_TTL_SECONDS = 1800;
+// cf#312: satellite finish/speech jobs queue + cold-start + GPU work. Signed at submit, and every shot of
+// a film submits together, so this has to cover the WHOLE queue. A door running one clip at a time took
+// 2.5 minutes a clip, and 30 minutes failed shots 13 to 20 of a 20 shot film with a 403 (vivijure-cf#1161).
+export const FINISH_PRESIGN_TTL_SECONDS = 6 * 60 * 60;
 
 /** The core's own `_enh.wav` output-key derivation for a `speech` step's presigned PUT, so the core
  *  never imports a module to compute it. It STARTED as a mirror of modules/speech-upscale's
