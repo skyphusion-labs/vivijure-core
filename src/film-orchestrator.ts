@@ -1784,8 +1784,8 @@ export function shouldMultiTrackMix(job: FilmJob, env: Env): boolean {
 }
 
 /** #231: mix the film's dialogue (in the assembled video) under-ducked with the music bed + loudnorm via
- *  /mix, returning the mixed audio R2 key to remux -- or null to DEGRADE to the single-track bed mux. The
- *  mix is a POLISH step: any failure soft-degrades (keep the bed), never fails a fully-rendered film
+ *  /mix, returning the mixed audio R2 key to remux. The
+ *  mix is a POLISH step: any failure soft-degrades (keep the voices, vivijure-cf#1158), never fails a fully-rendered film
  *  (#249/#77). /mix runs ffmpeg -i per track, so the assembled video's URL works as the dialogue track
  *  (its audio stream is extracted); the bed is the music track. */
 type MixOutcome =
@@ -2771,6 +2771,28 @@ async function degradeAssembleUnavailable(
  *  stored as film_key. The notice is render.failed and links that cut.
  *  A film with no song still finishes on the silent cut, and transitionToDone still runs the
  *  film.finish cards on that cut. A container that answered and refused is handled by the caller. */
+/** vivijure-cf#1158: this film has spoken lines and its mix can not be made. Muxing the bare bed would
+ *  replace the voices with music and leave the captions over silence, so the voices stay and the bed is
+ *  the part that goes. The film's own audio is already in the assembled cut. Says what was lost. */
+async function keepVoicesOverBed(
+  env: Env,
+  job: FilmJob,
+  silentKey: string,
+  code: string,
+  detail: string,
+  preModules?: RegisteredModule[],
+): Promise<void> {
+  noteFinishIncomplete(job, {
+    stage: "mix",
+    step: "mix",
+    code,
+    detail,
+    kept: "the film with its voices. The music bed is not in the film",
+  });
+  job.film_key = silentKey;
+  await transitionToDone(env, job, preModules);
+}
+
 async function degradeMuxUnavailable(env: Env, job: FilmJob, silentKey: string, reason: string, preModules?: RegisteredModule[]): Promise<void> {
   if (job.audio_key) {
     const reasonKept = reason.replace(/shipped silent film/g, "silent cut kept");
@@ -2842,8 +2864,8 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
 
   // #231: a dialogue + music film gets a PROPER multi-track mix first -- duck the music under the
   // dialogue + loudness-normalize via the audio-mix container -- then remux that single mixed track.
-  // Soft-degrades to the bare bed (single-track remux, prior behavior) when AUDIO_MIX_URL is unset
-  // or the mix fails; an audio-polish miss never fails a fully-rendered film (#249/#77).
+  // A failed mix keeps the voices and names the bed as lost (vivijure-cf#1158). With AUDIO_MIX_URL unset
+  // this film still gets the bare bed. An audio-polish miss never fails a fully-rendered film (#249/#77).
   //
   // core#377: only before a submit, and only once. This used to run on every tick, polls included,
   // and a transient miss shipped the bare bed. It now holds, and a mix that is made is kept, so a film
@@ -2864,10 +2886,12 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
       }
       job.mix_wait = undefined;
       job.mix_skipped = true;
-      noteFinishIncomplete(job, { stage: "mix", step: "mix", code: "wait_exhausted", detail: mixed.detail, kept: "the film with its unmixed audio bed" });
+      await keepVoicesOverBed(env, job, silentKey, "wait_exhausted", mixed.detail, preModules);
+      return;
     } else {
       job.mix_skipped = true;
-      noteFinishIncomplete(job, { stage: "mix", step: "mix", code: mixed.code, detail: mixed.detail, kept: "the film with its unmixed audio bed" });
+      await keepVoicesOverBed(env, job, silentKey, mixed.code, mixed.detail, preModules);
+      return;
     }
   }
   const audioToMux = job.mix_done_key ?? audioKey;
