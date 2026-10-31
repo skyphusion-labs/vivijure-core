@@ -137,6 +137,11 @@ function introducingCommit(title: string): string | null {
 // stays empty. Found by measuring the condition rather than by reading the regex.
 const BACKFILL_RE = /^[^\S\n]*[-*]?[^\S\n]*Backfilled:[^\S\n]*\S+/im;
 
+// On a --filter=blob:none clone the first run lazily fetches every CHANGELOG blob the pickaxe touches, and
+// that alone passes 15 seconds. It then reads as a failed release check when nothing is wrong: it failed
+// that way on main d2180e8 and passed on the second run in the same clone. A normal clone takes far less.
+const COLD_CLONE_TIMEOUT_MS = 180_000;
+
 describe("every entry under a released heading is IN that release (core#202)", () => {
   const changelog = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8");
   const tags = new Set(git("tag --list", { emptyOnFail: true }).split("\n").filter(Boolean));
@@ -172,7 +177,7 @@ describe("every entry under a released heading is IN that release (core#202)", (
 
   // ---- THE CLAIM.
 
-  it("every entry resolves to a commit (an unresolvable entry is UNMEASURED, never a pass)", { timeout: 15_000 }, () => {
+  it("every entry resolves to a commit (an unresolvable entry is UNMEASURED, never a pass)", { timeout: COLD_CLONE_TIMEOUT_MS }, () => {
     const unresolved: string[] = [];
     for (const s of sections) {
       for (const e of s.entries) {
@@ -182,7 +187,7 @@ describe("every entry under a released heading is IN that release (core#202)", (
     expect(unresolved, "these entries could not be traced to a commit, so their ancestry is unknown").toEqual([]);
   });
 
-  it("no entry under a released heading postdates its own tag, unless declared a backfill", { timeout: 15_000 }, () => {
+  it("no entry under a released heading postdates its own tag, unless declared a backfill", { timeout: COLD_CLONE_TIMEOUT_MS }, () => {
     const violations: string[] = [];
     const backfills: string[] = [];
     for (const s of sections) {
