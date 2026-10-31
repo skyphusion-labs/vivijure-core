@@ -9,7 +9,7 @@ const FILM = "film-mix-1158";
 const SILENT = `renders/${FILM}/film.mp4`;
 const BED = "out/bed.mp3";
 
-function setup(mixStatus: number, over: Record<string, unknown> = {}) {
+function setup(mixStatus: number, over: Record<string, unknown> = {}, mixUrl = "https://audio-mix.test") {
   let stored = JSON.stringify({
     film_id: FILM, project: "p", phase: "mux", created_at: 0, scenes: [{ shot_id: "s1", prompt: "x", seconds: 6 }],
     silent_film_key: SILENT, audio_key: BED, bundle_key: "b", beats_read: true,
@@ -30,7 +30,7 @@ function setup(mixStatus: number, over: Record<string, unknown> = {}) {
       presignPut: async (k: string) => `https://p/${k}`,
     },
     VIDEO_FINISH_URL: "https://video-finish.test",
-    AUDIO_MIX_URL: "https://audio-mix.test",
+    AUDIO_MIX_URL: mixUrl,
     MEDIA_FINISH_TOKEN: "t",
   };
   vi.stubGlobal("fetch", async (url: unknown) => {
@@ -59,5 +59,25 @@ describe("a refused mix on a film with spoken lines", () => {
     expect(entry?.detail).toBe("audio-mix answered 413");
     expect(entry?.kept).toMatch(/voices/);
     expect(entry?.kept).toMatch(/music bed is not in the film/);
+  });
+});
+
+describe("no audio-mix door on the host", () => {
+  it("a film with spoken lines keeps its voices, and says the bed is lost", async () => {
+    const { env, urls, read } = setup(413, {}, "");
+    await advanceFilmJob(env, FILM, []);
+    const j = read();
+    expect(j.film_key).toBe(SILENT);
+    expect(urls.some((u) => u.includes("video-finish"))).toBe(false);
+    const entry = (j.finish_incomplete ?? []).find((e) => e.stage === "mix");
+    expect(entry?.code).toBe("unavailable");
+    expect(entry?.kept).toMatch(/music bed is not in the film/);
+  });
+
+  it("CONTROL: a film with no spoken lines still gets its bed", async () => {
+    const { env, urls, read } = setup(413, { dialogue_audio: undefined, dialogue_lines: undefined }, "");
+    await advanceFilmJob(env, FILM, []);
+    expect(urls.some((u) => u.includes("video-finish"))).toBe(true);
+    expect(read().film_key).toBeUndefined();
   });
 });
