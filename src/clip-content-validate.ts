@@ -8,8 +8,9 @@
 // fetches them (the /finish presign pattern).
 //
 // Posture (warn-and-degrade default, #523's false-positive concern -- deliberately-abstract films exist):
-//   - "corrupt": the container is CONFIDENT (the clip's first frame does not resemble its conditioning
-//     keyframe -- the #35 signature). FAIL the shot with the real reason, before finish/upscale spend.
+//   - "corrupt": the clip's first frame does not resemble its conditioning keyframe. With the noise metric
+//     agreeing (the #35 signature), FAIL the shot before finish/upscale spend. Without it, the clip is real
+//     and only opens differently, so it is delivered with a degrade marker (vivijure-cf#1153).
 //   - "suspect": the weaker content-only heuristic (chromatic-noise signature) fired. WARN: record a
 //     degrade marker; the film still completes. Never a hard fail on the heuristic alone.
 //   - "ok" / "skip": pass. "skip" = the tier is not installed (self-host), the container was unreachable,
@@ -134,9 +135,23 @@ export async function contentValidateClip(env: Env, clipKey: string, keyframeKey
   return { verdict: r.verdict, reason: r.reason, metrics: r.metrics, keyframe_similarity: r.keyframe_similarity };
 }
 
+/** The same line video-finish's inspect_core.py draws (CHROMA_STRUCTURE_MAX): noise measured about 6.0,
+ *  good clips at most 2.5. */
+export const NOISE_CHROMA_STRUCTURE_RATIO = 4.0;
+
+/** vivijure-cf#1153: a "corrupt" verdict means only that the FIRST frame differs from the keyframe. That is
+ *  what latent noise (#35) looks like, and it is also what real clips look like: a reference door does not
+ *  open on its still, and a provider can open on an invented shot and then cut to it. Measured:
+ *  film-7e6a4d3a lost 19 paid clips to a good clip at similarity 0.149. So a mismatch fails a shot only when
+ *  the noise metric agrees. With no metric, nothing shows it is real, and the verdict stands. */
+export function isKeyframeMismatchOnly(v: Pick<ContentVerdict, "metrics">): boolean {
+  const ratio = v.metrics?.chroma_structure_ratio;
+  return typeof ratio === "number" && Number.isFinite(ratio) && ratio <= NOISE_CHROMA_STRUCTURE_RATIO;
+}
+
 /** #523 Layer 2 pass over a clip job's done clips, at the film finish gate. For each structurally-valid
- *  (Layer 1) done clip not yet content-checked, ask the container: a "corrupt" verdict FAILS the shot with
- *  the real reason BEFORE finish/upscale spend (honest failure); a "suspect" verdict records a warn/degrade
+ *  (Layer 1) done clip not yet content-checked, ask the container: a "corrupt" verdict with the noise metric
+ *  agreeing FAILS the shot BEFORE finish/upscale spend; a keyframe mismatch alone or a "suspect" verdict records a warn/degrade
  *  marker and lets the film complete; "ok"/"skip" pass. Idempotent per shot (content_validated). Emits one
  *  `clip.content_validate` structured event per shot. Returns true iff it changed any shot; the CALLER owns
  *  the job-doc write. A no-op (returns false immediately) when the video-finish tier is not installed. */
@@ -188,10 +203,15 @@ export async function contentValidateDoneClips(
       ...(v.metrics ? { metrics: v.metrics } : {}),
       ...(v.reason ? { reason: v.reason } : {}),
     });
-    if (v.verdict === "corrupt") {
+    if (v.verdict === "corrupt" && !isKeyframeMismatchOnly(v)) {
       shot.status = "failed";
       shot.error = `clip failed content validation: ${v.reason ?? "does not resemble its keyframe"}`;
       shot.poll = undefined;
+      changed = true;
+    } else if (v.verdict === "corrupt") {
+      // vivijure-cf#1153: real pixels that differ from the keyframe. Deliver it and say so.
+      shot.content_validated = "suspect";
+      shot.content_degraded = v.reason ?? "first frame does not resemble its keyframe";
       changed = true;
     } else if (v.verdict === "suspect") {
       shot.content_degraded = v.reason ?? "chromatic-noise signature"; // warn-and-degrade: film still completes
@@ -213,7 +233,7 @@ export async function contentValidateDoneClips(
  *  Counts the population Layer 2 covers: DONE shots that produced a clip. */
 export function contentValidationView(
   job: ClipJob,
-): { checked: number; unmeasured: number; reasons: string[] } | undefined {
+): { checked: number; unmeasured: number; reasons: string[]; degraded?: { shot_id: string; reason: string }[] } | undefined {
   const covered = job.shots.filter((s) => s.status === "done" && s.clip_key);
   const checked = covered.filter((s) => s.content_validated && s.content_validated !== "skip").length;
   const blocked = covered.filter(
@@ -228,5 +248,9 @@ export function contentValidationView(
     seen.add(r);
     reasons.push(r);
   }
-  return { checked, unmeasured: blocked.length, reasons };
+  // A degrade is never silent. Until vivijure-cf#1153 this marker was written and read by nothing.
+  const degraded = covered
+    .filter((s) => typeof s.content_degraded === "string" && s.content_degraded.length > 0)
+    .map((s) => ({ shot_id: s.shot_id, reason: s.content_degraded as string }));
+  return { checked, unmeasured: blocked.length, reasons, ...(degraded.length ? { degraded } : {}) };
 }

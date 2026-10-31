@@ -562,7 +562,7 @@ export interface FilmJob {
   // finalize write, which on the single-film path is the LAST writer of the tick. A field whose
   // whole purpose is to say "this did not run" cannot be the field that goes missing.
   // undefined = Layer 2 never ran (self-host with no VIDEO_FINISH_URL is exactly this, and honest).
-  content_validation?: { checked: number; unmeasured: number; reasons: string[] };
+  content_validation?: { checked: number; unmeasured: number; reasons: string[]; degraded?: { shot_id: string; reason: string }[] };
   finish_unavailable?: {
     at: "assemble" | "mux";      // which delegated step could not run
     reason: string;              // the honest cause (VIDEO_FINISH_URL unset, or unreachable-after-retry)
