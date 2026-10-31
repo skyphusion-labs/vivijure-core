@@ -158,6 +158,8 @@ export function classifyTransientFailure(error: string | undefined): "transient"
   // These are provider blips, not a bad prompt. A 400 (wrong resolution) stays deterministic.
   if (/\b7003\b/.test(e)) return "transient";
   if (/high load|cannot process your request|please try again later/i.test(e)) return "transient";
+  // A Durable Object restart under a module's workflow. The platform text itself says to retry (cf#1152).
+  if (/durable object instance is no longer active|reconnect or retry the request/i.test(e)) return "transient";
   return "deterministic";
 }
 
