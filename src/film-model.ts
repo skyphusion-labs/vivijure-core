@@ -2079,6 +2079,27 @@ export function findClipDurationShortfalls(
   return out;
 }
 
+/** Pure: the plan the duration gate compares against (vivijure-cf#1142). On a door whose clip length
+ *  follows its audio, the storyboard's seconds are not what the door was asked for: a 3s line on a 6s
+ *  shot makes a 3s clip, and that is correct. Such a shot is gated against its line's length, so a
+ *  truncated clip still fails. A longer line than the board keeps the board, and a shot with no measured
+ *  line keeps the board too. Every other door is unchanged. */
+export function plannedForDurationGate(
+  planned: Record<string, number>,
+  lineSeconds: Record<string, number> | undefined,
+  drivingAudio: boolean,
+): Record<string, number> {
+  if (!drivingAudio || !lineSeconds) return planned;
+  const out = { ...planned };
+  for (const [shot, line] of Object.entries(lineSeconds)) {
+    const board = out[shot];
+    if (typeof line === "number" && Number.isFinite(line) && line > 0 && typeof board === "number" && line < board) {
+      out[shot] = line;
+    }
+  }
+  return out;
+}
+
 /** Pure: build the caption-timeline durations map (#698) -- the ACTUAL assembled per-clip seconds win,
  *  the bundle plan fills any shot the container did not report, and captions.shotDuration falls back to
  *  the authored scene seconds for anything in neither. This is what times cues to the real cut instead of

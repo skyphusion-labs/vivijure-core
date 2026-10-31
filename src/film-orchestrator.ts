@@ -133,6 +133,7 @@ import {
   DEFAULT_DELIVERY_FPS,
   type DeliveryResolution,
   shareEndFrame,
+  plannedForDurationGate,
 } from "./film-model.js";
 import {
   admitAssemble,
@@ -3276,7 +3277,12 @@ async function enterAssemblePhase(
   // leaves the map empty and the gate no-ops (logged, not a false failure).
   if (Object.keys(actual).length > 0) {
     const bundleDurations = await readShotDurationsFromBundle(env, job.bundle_key);
-    const planned = resolvePlannedSeconds(job.scenes, bundleDurations);
+    const gateModules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
+    const planned = plannedForDurationGate(
+      resolvePlannedSeconds(job.scenes, bundleDurations),
+      job.dialogue_audio_seconds,
+      motionUsageForJob(job, gateModules)?.driving_audio === true,
+    );
     const fraction = resolveClipDurationFloor(
       typeof env.FILM_CLIP_DURATION_FLOOR === "string" ? env.FILM_CLIP_DURATION_FLOOR : undefined,
     );
