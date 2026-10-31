@@ -659,7 +659,14 @@ function fetcherFor(env: Record<string, unknown>, module: RegisteredModule): Fet
 // metadata (heavy artifacts live in R2, referenced by key). Oversized/unreadable -> throw, which
 // the callers turn into an honest ok:false degrade.
 const MAX_MODULE_RESPONSE_BYTES = 1024 * 1024; // 1MB
-async function readModuleJson(res: Response): Promise<unknown> {
+// image.generate is the one hook whose contract puts the artifact in the envelope (`image.bytes_b64`),
+// because that module holds no bucket by design (vivijure-cf#140). A 2K PNG does not fit in 1 MB, and
+// the failure came after the provider was paid (vivijure-cf#1141). Still a cap, just sized for its job.
+const MAX_IMAGE_RESPONSE_BYTES = 32 * 1024 * 1024; // 32MB
+function responseCapForHook(hook: unknown): number {
+  return hook === "image.generate" ? MAX_IMAGE_RESPONSE_BYTES : MAX_MODULE_RESPONSE_BYTES;
+}
+async function readModuleJson(res: Response, cap = MAX_MODULE_RESPONSE_BYTES): Promise<unknown> {
   const body = res.body;
   if (!body) return res.json(); // no stream (e.g. a test stub) -> fall back
   const reader = body.getReader();
@@ -670,9 +677,9 @@ async function readModuleJson(res: Response): Promise<unknown> {
     if (done) break;
     if (!value) continue;
     total += value.length;
-    if (total > MAX_MODULE_RESPONSE_BYTES) {
+    if (total > cap) {
       try { await reader.cancel(); } catch { /* ignore */ }
-      throw new Error(`response exceeded ${MAX_MODULE_RESPONSE_BYTES} bytes`);
+      throw new Error(`response exceeded ${cap} bytes`);
     }
     chunks.push(value);
   }
@@ -703,7 +710,7 @@ export async function invokeModule<I = unknown, O = unknown>(
   if (!res.ok) return { ok: false, error: `module /invoke -> ${res.status}` };
   let data: InvokeResponse<O>;
   try {
-    data = (await readModuleJson(res)) as InvokeResponse<O>;
+    data = (await readModuleJson(res, responseCapForHook((request as { hook?: unknown }).hook))) as InvokeResponse<O>;
   } catch (e) {
     return { ok: false, error: `module /invoke body rejected: ${(e as Error).message}` };
   }
