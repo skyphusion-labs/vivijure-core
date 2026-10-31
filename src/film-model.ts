@@ -365,6 +365,9 @@ export interface FilmJob {
   delivery_width?: number;
   delivery_height?: number;
   delivery_fps?: number;
+  /** vivijure-cf#1166: keep finished work whose inputs are proven identical: lines, clips and finish steps.
+   *  Off by default, because a plain resubmit asks for a new take. */
+  reuse_finished?: boolean;
   /** vivijure-cf#1144: the rate the finish chain produced, recorded with the frame. An operator
    *  delivery_fps still wins (resolveDeliveryFps). Absent is 24, which is also what a film already
    *  past assemble when this shipped was built at. Cleared by a retry that assembles again. */

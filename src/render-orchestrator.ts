@@ -127,7 +127,7 @@ import type {
 } from "./modules/types.js";
 import { validateClipArtifact } from "./clip-validate.js";
 import { contentValidateDoneClips } from "./clip-content-validate.js";
-import { clipProvenanceHash, chooseProvenanceMatch, headEtag, UNSTAMPED_SETTLE_MS, writeProv } from "./clip-provenance.js";
+import { clipProvenanceHash, chooseProvenanceMatch, headEtag, provVerdict, UNSTAMPED_SETTLE_MS, writeProv } from "./clip-provenance.js";
 import { BUCKET_KEYFRAME_MOTION_BACKENDS, ensureClipKeyframeInR2 } from "./stage-clip-keyframe.js";
 import { assertProjectKey } from "./key-safety.js";
 
@@ -375,14 +375,32 @@ export async function listAllClipsByShotId(
  *  a stamp failure never fails the render (a missing sidecar falls back to the freshness-floored path). */
 async function stampClipProvenance(env: Env, project: string, shot: ClipShot): Promise<void> {
   if (!shot.clip_key) return;
-  const hash = await clipProvenanceHash({
+  await writeProv(env, shot.clip_key, await shotProvenanceHash(env, shot));
+}
+
+/** The one statement of what a clip was made from. Stamp, reclaim and the reuse check must agree. */
+async function shotProvenanceHash(env: Env, shot: ClipShot): Promise<string> {
+  return clipProvenanceHash({
     motion_backend: shot.motion_backend,
     config: shot.config,
     keyframe_etag: await headEtag(env, shot.keyframe_key),
     prompt: shot.prompt,
     seconds: shot.seconds,
+    last_keyframe_etag: await headEtag(env, shot.last_keyframe_key),
+    audio_etag: await headEtag(env, shot.audio_key),
+    voice_ref_etag: await headEtag(env, shot.voice_ref_key),
   });
-  await writeProv(env, shot.clip_key, hash);
+}
+
+/** vivijure-cf#1166: a finished clip this exact shot already paid for. Only a sidecar that PROVES the same
+ *  inputs counts. An unstamped clip may be a live sibling's, and guessing here ships the wrong clip. */
+async function provenClipKey(env: Env, shot: ClipShot, candidates: string[]): Promise<string | null> {
+  if (!candidates.length) return null;
+  const expected = await shotProvenanceHash(env, shot);
+  for (const key of candidates) {
+    if ((await provVerdict(env, key, expected)) === "match") return key;
+  }
+  return null;
 }
 
 /** Start a clip job: resolve the motion.backend module per shot, submit, persist poll tokens. */
@@ -394,12 +412,19 @@ export async function startClipJob(
     motion_backend?: string;
     config?: Record<string, unknown>;
     module_configs?: Record<string, Record<string, unknown>>;
+    /** vivijure-cf#1166: keep a clip whose provenance proves the same inputs, and do not pay for it again.
+     *  Off by default, because a plain resubmit asks for a new take. */
+    reuse_proven?: boolean;
   },
   preModules?: RegisteredModule[],
 ): Promise<ClipJob> {
   const envRec = env as unknown as Record<string, unknown>;
   const modules = preModules ?? await discoverModules(envRec);
   const serving = servingForHook(modules, "motion.backend");
+  // One listing for the whole job, so reuse adds one read per film and not one per shot.
+  const existingClips = args.reuse_proven
+    ? await listAllClipsByShotId(env, args.project, args.shots.map((s) => s.shot_id))
+    : new Map<string, string[]>();
   const defaultMb = args.motion_backend
     ? serving.find((m) => m.name === args.motion_backend) ?? null
     : serving[0] ?? null;
@@ -440,6 +465,15 @@ export async function startClipJob(
         shots.push(shot);
         continue;
       }
+    }
+    const proven = await provenClipKey(env, shot, existingClips.get(shot.shot_id) ?? []);
+    if (proven) {
+      shot.status = "done";
+      shot.clip_key = proven;
+      shot.reused = true;
+      console.log(`clip job ${job_id}: ${shot.shot_id} reused ${proven}, no door invoked (cf#1166)`);
+      shots.push(shot);
+      continue;
     }
     try {
       await archiveExistingClipTakes(env, args.project, shot);
@@ -739,13 +773,7 @@ export async function reclaimClipsFromR2(env: Env, job: ClipJob): Promise<number
   for (const shot of notDone) {
     const keys = candidates.get(shot.shot_id);
     if (!keys || !keys.length) continue;
-    const expected = await clipProvenanceHash({
-      motion_backend: shot.motion_backend,
-      config: shot.config,
-      keyframe_etag: await headEtag(env, shot.keyframe_key),
-      prompt: shot.prompt,
-      seconds: shot.seconds,
-    });
+    const expected = await shotProvenanceHash(env, shot);
     const chosen = await chooseProvenanceMatch(env, expected, keys, orphaned);
     if (!chosen) continue; // no clip PROVEN identical-config -> re-render (never adopt a mismatched clip)
     shot.status = "done";
