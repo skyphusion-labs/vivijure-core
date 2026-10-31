@@ -111,11 +111,26 @@ export const CONTAINER_IMAGE_RESERVE_BYTES = 2_000_000_000;
  */
 export const CONTAINER_DEFAULT_FPS = 24;
 
-/** The largest predicted film the container can finalize on its ephemeral disk. */
+/**
+ * The largest object one presigned PUT can write to R2.
+ *
+ * R2 documents 5 GiB less 5 MiB for a single-part upload. The container writes each film with one PUT
+ * (`_put_file`, containers/video-finish/app.py). Read from the R2 limits page, not tested against R2.
+ * The container holds the same number as MAX_FILM_BYTES and refuses above it.
+ */
+export const R2_SINGLE_PUT_BYTES = 5_363_466_240;
+
+/**
+ * The largest predicted film the container can finalize AND deliver.
+ *
+ * The lower of the disk budget and one PUT (vivijure-cf#1133). The disk budget alone allows 6.85 GB, so
+ * a film between the two did all its work and then failed at upload.
+ */
 export function assembleFilmByteCeiling(): number {
   const reserved =
     CONTAINER_BATCH_PEAK_BYTES + CONTAINER_AUDIO_BED_BYTES + CONTAINER_IMAGE_RESERVE_BYTES;
-  return Math.max(0, Math.floor((CONTAINER_DISK_BYTES - reserved) / FINALIZE_FILM_COPIES));
+  const disk = Math.max(0, Math.floor((CONTAINER_DISK_BYTES - reserved) / FINALIZE_FILM_COPIES));
+  return Math.min(disk, R2_SINGLE_PUT_BYTES);
 }
 
 /** Predicted normalized bytes for `seconds` of video at a delivery target. */
@@ -232,7 +247,8 @@ export function admitAssemble(input: AssembleAdmissionInput): AssembleAdmission 
     `Over by ${gb(over)}. Budget: ${gb(CONTAINER_DISK_BYTES)} ephemeral disk (standard-4), less ` +
     `${gb(CONTAINER_BATCH_PEAK_BYTES)} batch working set, ${gb(CONTAINER_AUDIO_BED_BYTES)} audio ` +
     `bed and ${gb(CONTAINER_IMAGE_RESERVE_BYTES)} image reserve, divided by ` +
-    `${FINALIZE_FILM_COPIES} full-length copies resident at finalize. ` +
+    `${FINALIZE_FILM_COPIES} full-length copies resident at finalize, and no more than ` +
+    `${gb(R2_SINGLE_PUT_BYTES)}, the most one upload carries. ` +
     `Basis: ${basis.measured} measured, ${basis.planned} planned, ${basis.unknown} unknown. ` +
     `This delivery target admits at most ${allowedSeconds}s; reduce the film, or lower ` +
     `delivery_width/delivery_height` +

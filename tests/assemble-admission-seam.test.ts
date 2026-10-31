@@ -93,7 +93,7 @@ function film(n: number, seconds: number, over: object = {}) {
 describe("cf#815 the gate FIRES at the seam: nothing is presigned, nothing is submitted", () => {
   it("an over-size film fails terminally having minted ZERO presigned URLs", async () => {
     // 80 shots x 120s = 160 minutes at 1920x1080@24. cf#813's measured ceiling puts that around
-    // 13.4 GB of normalized video against a ~6.85 GB finalize budget.
+    // 13.4 GB of normalized video against a ~5.36 GB ceiling.
     const h = seamEnv(film(80, 120));
     h.installVf({ ok: true, key: OUT, durationSeconds: 9600, shots: 80 });
     const r = await advanceFilmJob(h.env, FILM);
@@ -167,9 +167,9 @@ describe("cf#815 CONTROL at the seam: a legitimate large film still assembles", 
     // Symmetry with the measured-wins refusal above: measured evidence must be able to RESCUE a
     // film as well as refuse one, or "measured wins" is only half implemented.
     //
-    // 80 shots PLANNED at 100s = 8000s, which predicts ~11.2 GB and is refused. The clips actually
-    // delivered 1320 frames at 24 fps = 55s each, so the real film is 4400s and predicts ~6.2 GB,
-    // which is admitted. 55s also clears the #697 duration gate's floor (50% of the 100s plan), so
+    // 80 shots PLANNED at 80s = 6400s, which predicts ~9.0 GB and is refused. The clips actually
+    // delivered 1056 frames at 24 fps = 44s each, so the real film is 3520s and predicts ~4.9 GB,
+    // which is admitted. 44s also clears the #697 duration gate's floor (50% of the 80s plan), so
     // that separate gate stays out of this assertion -- an earlier draft of this fixture used 8s
     // against a 200s plan and was failed by #697 for a 96% truncation, which is #697 working
     // correctly and says nothing about admission.
@@ -177,13 +177,13 @@ describe("cf#815 CONTROL at the seam: a legitimate large film still assembles", 
     const clipJob = {
       job_id: CLIP_JOB,
       shots: ids.map((shot_id) => ({
-        shot_id, status: "done", seconds: 100, delivered_frames: 1320, delivered_fps: 24, // 55s real
+        shot_id, status: "done", seconds: 80, delivered_frames: 1056, delivered_fps: 24, // 44s real
       })),
     };
-    const h = seamEnv(film(80, 100, { clip_job_id: CLIP_JOB }), clipJob);
+    const h = seamEnv(film(80, 80, { clip_job_id: CLIP_JOB }), clipJob);
     h.installVf({
-      ok: true, key: OUT, durationSeconds: 4400, shots: 80,
-      clipDurations: Array.from({ length: 80 }, () => 55.0),
+      ok: true, key: OUT, durationSeconds: 3520, shots: 80,
+      clipDurations: Array.from({ length: 80 }, () => 44.0),
     });
     const r = await advanceFilmJob(h.env, FILM);
 
