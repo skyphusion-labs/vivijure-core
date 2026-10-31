@@ -201,7 +201,7 @@ import { getCastById, markLoraReady } from "./cast-db.js";
 import { claimFilmAdvance, releaseFilmAdvance, type FilmAdvanceClaim } from "./film-advance-lease.js";
 import { withD1Retry } from "./d1-retry.js";
 import { deriveLoraDestKey } from "./lora-keys.js";
-import { keyframeProvenanceHash, writeProv, provVerdict } from "./clip-provenance.js";
+import { keyframeProvenanceHash, lineProvenanceHash, writeProv, provVerdict } from "./clip-provenance.js";
 export * from "./film-model.js";
 
 /** Cheap existence check for an R2 object (HEAD, no body). Used to derive assemble
@@ -494,6 +494,7 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
     project: job.project, shots,
     motion_backend: job.motion_backend ?? undefined,
     config: job.motion_config,
+    reuse_proven: job.reuse_finished,
   }, preModules);
   job.clip_job_id = clip.job_id;
   job.phase = "clips";
@@ -801,8 +802,27 @@ async function mintSilenceForShot(env: Env, job: FilmJob, shotId: string): Promi
   });
 }
 
-async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
+/** vivijure-cf#1166: the lines this film still has to buy. A clip driven by a line is only reusable if the
+ *  line's audio is byte-identical, and a provider need not repeat itself, so the WAV must be kept too. */
+async function linesStillToSynthesize(env: Env, job: FilmJob, dialogueModule: RegisteredModule | undefined): Promise<DialogueLine[]> {
   const lines = linedDialogueShots(job.dialogue_lines);
+  if (!job.reuse_finished || !dialogueModule) return lines;
+  const remaining: DialogueLine[] = [];
+  for (const line of lines) {
+    const key = dialogueAudioKey(job.project, line.shot_id);
+    const expected = await lineProvenanceHash({ provider: dialogueModule.name, voice: line.voice_id, text: line.text });
+    if ((await provVerdict(env, key, expected)) === "match") {
+      (job.dialogue_audio ??= {})[line.shot_id] = key;
+    } else {
+      remaining.push(line);
+    }
+  }
+  return remaining;
+}
+
+async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
+  const dialogueModule = servingForHook(preModules, "dialogue")[0];
+  const lines = await linesStillToSynthesize(env, job, dialogueModule);
   // Nothing to synthesize. Do not call the dialogue provider. finalize's existing
   // loop mints silence (or a native-audio neighborhood mark) for every unlined shot.
   if (lines.length === 0) {
@@ -810,7 +830,6 @@ async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: Registe
     return;
   }
   const envRec = env as unknown as Record<string, unknown>;
-  const dialogueModule = servingForHook(preModules, "dialogue")[0];
   const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
   if (!fetcher) {
     job.phase = "failed";
@@ -854,9 +873,12 @@ async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: Regis
     job.error = incompleteFilmError("dialogue", lined.length - holes.length, lined.length, holes);
     return;
   }
+  const provider = servingForHook(preModules, "dialogue")[0]?.name;
   for (const l of lined) {
     const key = job.dialogue_audio![l.shot_id];
     await normalizeStoredLineWav(env, job, l.shot_id, key);
+    // After the normalize, so the sidecar describes the bytes a clip is driven by (cf#1166).
+    if (provider) await writeProv(env, key, await lineProvenanceHash({ provider, voice: l.voice_id, text: l.text }));
   }
   const usage = motionUsageForJob(job, preModules);
   const linedIds = new Set(lined.map((l) => l.shot_id));
@@ -1545,6 +1567,8 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     const binding = fs.chain[fs.idx];
     const stepMod = finishModByBinding.get(binding);
     const dialogueAudioKey = job.dialogue_audio?.[fs.shot_id];
+    // vivijure-cf#1166: this step already ran on these exact inputs. Its .hash sidecar is the proof.
+    if (job.reuse_finished && !fs.poll && await adoptFinishStepFromR2(env, job, fs, modules)) continue;
     // Defense-in-depth: never invoke an audio-consuming finish module without dialogue audio (legacy
     // jobs may still list lip-sync in chain). Fold a local noop so no RunPod lip-sync worker is touched.
     if (stepMod?.finish_consumes_audio && !dialogueAudioKey && !fs.poll) {
@@ -3415,6 +3439,8 @@ export async function startFilmFromKeyframes(
     per_shot_motion?: Record<string, string>;
     motion_config?: Record<string, unknown>;
     motion_configs?: Record<string, Record<string, unknown>>;
+    /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
+    reuse_finished?: boolean;
     finish_config?: Record<string, Record<string, unknown>>;
     /** cf#537: which finish modules this render wants. Omitted = the default-participation set. */
     finish_select?: HookSelection;
@@ -3465,6 +3491,7 @@ export async function startFilmFromKeyframes(
     voice_lock: typeof args.voice_lock === "string" ? args.voice_lock.trim() || undefined : undefined,
     voice_ref_keys: args.voice_ref_keys && Object.keys(args.voice_ref_keys).length ? args.voice_ref_keys : undefined,
     finish_config: args.finish_config ?? {},
+    reuse_finished: args.reuse_finished || undefined,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
     speech_config: args.speech_config ?? {},
@@ -3534,6 +3561,7 @@ export async function startFilmFromKeyframes(
     motion_backend: args.motion_backend,
     config: args.motion_config,
     module_configs: args.motion_configs,
+    reuse_proven: job.reuse_finished,
   }, modules);
   job.clip_job_id = clip.job_id;
   job.phase = summarizeJob(clip).failed === clip.shots.length ? "failed" : "clips";
@@ -3551,6 +3579,8 @@ export async function startFilmJob(
   args: {
     project: string; bundle_key: string; scenes: FilmScene[];
     motion_backend?: string; keyframe_backend?: string; keyframe_config?: Record<string, unknown>; motion_config?: Record<string, unknown>;
+    /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
+    reuse_finished?: boolean;
     finish_config?: Record<string, Record<string, unknown>>;
     /** cf#537: which finish modules this render wants. Omitted = the default-participation set. */
     finish_select?: HookSelection;
@@ -3624,6 +3654,7 @@ export async function startFilmJob(
     keyframe_backend: kf ? kf.name : null,
     keyframe_config: args.keyframe_config ?? {},
     finish_config: args.finish_config ?? {},
+    reuse_finished: args.reuse_finished || undefined,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
     speech_config: args.speech_config ?? {},

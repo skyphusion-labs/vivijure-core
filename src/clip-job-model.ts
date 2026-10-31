@@ -23,6 +23,8 @@ export interface ClipShot extends ClipShotInput {
   binding?: string | null;
   runpod_job_id?: string;
   cancel_sent?: boolean;
+  /** vivijure-cf#1166: this clip came from an earlier run with proven identical inputs. No door was invoked. */
+  reused?: boolean;
   validated?: "pass" | "fail" | "skip";
   /** core#310: why Layer 1 COULD NOT RUN on this shot, when it could not.
    *

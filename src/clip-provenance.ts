@@ -51,15 +51,28 @@ export async function clipProvenanceHash(input: {
   keyframe_etag: string | null;
   prompt: string;
   seconds: number;
+  /** vivijure-cf#1166: the other inputs that change a clip. Each joins the hash only when the shot has it,
+   *  so a sidecar written for a shot without them still matches. */
+  last_keyframe_etag?: string | null;
+  audio_etag?: string | null;
+  voice_ref_etag?: string | null;
 }): Promise<string> {
-  const payload = {
+  const payload: Record<string, unknown> = {
     motion_backend: input.motion_backend ?? null,
     config: input.config ?? {},
     keyframe_etag: input.keyframe_etag,
     prompt: input.prompt,
     seconds: input.seconds,
   };
+  if (input.last_keyframe_etag) payload.last_keyframe_etag = input.last_keyframe_etag;
+  if (input.audio_etag) payload.audio_etag = input.audio_etag;
+  if (input.voice_ref_etag) payload.voice_ref_etag = input.voice_ref_etag;
   return sha256Hex(canonicalJson(payload));
+}
+
+/** vivijure-cf#1166: the provenance value for a spoken line: the provider, the voice and the words. */
+export async function lineProvenanceHash(input: { provider: string; voice: unknown; text: string }): Promise<string> {
+  return sha256Hex(canonicalJson({ provider: input.provider, voice: input.voice ?? null, text: input.text }));
 }
 
 /**
