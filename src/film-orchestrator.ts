@@ -132,6 +132,7 @@ import {
   resolveMeasuredDelivery,
   DEFAULT_DELIVERY_FPS,
   type DeliveryResolution,
+  shareEndFrame,
 } from "./film-model.js";
 import {
   admitAssemble,
@@ -189,7 +190,7 @@ import {
 import { finishStepInputHash } from "./finish-hash.js";
 import { presignR2Get, presignR2Put, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
-import { readBundleStoryboardYaml } from "./bundle-storyboard.js";
+import { readBundleShotSlots, readBundleStoryboardYaml } from "./bundle-storyboard.js";
 import { contentValidateDoneClips, contentValidationView } from "./clip-content-validate.js";
 import { buildCaptionCues } from "./captions.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
@@ -421,6 +422,16 @@ async function afterKeyframeOutput(env: Env, job: FilmJob, kfOut: KeyframeOutput
   await advanceToClips(env, job, kfOut, modules);
 }
 
+/** The shot whose start still closes shot `i`, or undefined for a hard cut (vivijure-cf#1140). */
+function endFrameShot<T extends { shot_id: string }>(
+  matched: T[],
+  i: number,
+  slotsByShot: Record<string, string[]>,
+): T | undefined {
+  const next = matched[i + 1];
+  return next && shareEndFrame(slotsByShot[matched[i].shot_id], slotsByShot[next.shot_id]) ? next : undefined;
+}
+
 /** Internal: presign each matched keyframe -> start the clip job, advancing the film to phase=clips. A
  *  keyframe module that reports completion with a PARTIAL set (fewer keyframes than scenes) advances
  *  delivering what rendered, but records a LOUD keyframes_incomplete degrade rather than silently
@@ -436,9 +447,10 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
     return;
   }
   const shots: ClipShotInput[] = [];
+  const slotsByShot = await readBundleShotSlots(env, job.bundle_key);
   for (let i = 0; i < matched.length; i++) {
     const m = matched[i];
-    const next = matched[i + 1];
+    const next = endFrameShot(matched, i, slotsByShot);
     const keyframe_url = await presignR2Get(env, m.keyframe_key, 1800); // 30min: covers a long cloud i2v job
     const last_keyframe_url = next
       ? await presignR2Get(env, next.keyframe_key, 1800)
@@ -3377,9 +3389,10 @@ export async function startFilmFromKeyframes(
     return job;
   }
   const shots: ClipShotInput[] = [];
+  const slotsByShot = await readBundleShotSlots(env, job.bundle_key);
   for (let i = 0; i < matched.length; i++) {
     const m = matched[i];
-    const next = matched[i + 1];
+    const next = endFrameShot(matched, i, slotsByShot);
     const keyframe_url = await presignR2Get(env, m.keyframe_key, 1800);
     const last_keyframe_url = next
       ? await presignR2Get(env, next.keyframe_key, 1800)

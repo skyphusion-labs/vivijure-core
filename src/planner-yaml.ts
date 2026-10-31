@@ -75,6 +75,9 @@ export interface ParsedBundleScene {
   // emitScene dialogue block (#307). Absent on a silent shot. Lets the film path derive dialogue_lines
   // for a bundle-only render (no D1 project, no explicit dialogue_lines arg).
   dialogue?: { slot: string; text: string };
+  // Which cast slots appear in this shot (vivijure-cf#1140). Absent when the storyboard did not say,
+  // which is not the same as an empty list: `character_slots: []` means no people.
+  character_slots?: string[];
 }
 
 /** Extract { shot_id, prompt, seconds } from an emitted storyboard.yaml. */
@@ -87,6 +90,7 @@ export function parseStoryboardScenes(yaml: string, defaultSeconds = 4): ParsedB
   let curTarget: number | null = null;
   let curDlgSlot: string | null = null;
   let curDlgText: string | null = null;
+  let curSlots: string[] | null = null;
   const flush = (): void => {
     if (idx === 0 || !curPrompt) return;
     const shot = curId || `shot_${String(idx).padStart(2, "0")}`;
@@ -96,6 +100,7 @@ export function parseStoryboardScenes(yaml: string, defaultSeconds = 4): ParsedB
       seconds: curTarget !== null && curTarget > 0 ? curTarget : defaultSeconds,
     };
     if (curDlgSlot && curDlgText) scene.dialogue = { slot: curDlgSlot, text: curDlgText };
+    if (curSlots) scene.character_slots = curSlots;
     out.push(scene);
   };
   for (const line of yaml.split(/\r?\n/)) {
@@ -111,12 +116,18 @@ export function parseStoryboardScenes(yaml: string, defaultSeconds = 4): ParsedB
       curTarget = null;
       curDlgSlot = null;
       curDlgText = null;
+      curSlots = null;
       curPrompt = promptM[1].replace(/\\(.)/g, "$1");
       continue;
     }
     const idM = line.match(/^ {4}id:\s*"((?:[^"\\]|\\.)*)"\s*$/);
     if (idM) {
       curId = idM[1].replace(/\\(.)/g, "$1");
+      continue;
+    }
+    const slotsM = line.match(/^ {4}character_slots:\s*\[([^\]]*)\]\s*$/);
+    if (slotsM) {
+      curSlots = slotsM[1].split(",").map((x) => x.trim()).filter((x) => x.length > 0);
       continue;
     }
     const tsM = line.match(/^ {4}target_seconds:\s*([0-9]+(?:\.[0-9]+)?)\s*$/);

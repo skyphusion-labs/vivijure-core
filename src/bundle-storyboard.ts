@@ -76,3 +76,17 @@ export async function readBundleScenes(env: Env, bundleKey: string, defaultSecon
   if (!yaml) return [];
   return parseStoryboardScenes(yaml, defaultSeconds);
 }
+
+/** Cast slots per shot, for the end-frame decision. Best effort: an unreadable bundle yields an empty
+ *  map, which leaves every shot on the existing behavior and never fails a film at clips. */
+export async function readBundleShotSlots(env: Env, bundleKey: string): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  try {
+    for (const scene of await readBundleScenes(env, bundleKey)) {
+      if (scene.character_slots) out[scene.shot_id] = scene.character_slots;
+    }
+  } catch {
+    return {};
+  }
+  return out;
+}

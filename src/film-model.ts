@@ -697,6 +697,17 @@ export function pairLastKeyframeKeys<T extends { shot_id: string; keyframe_key: 
   });
 }
 
+/** Whether the next shot's start still may be this shot's end frame (vivijure-cf#1140). An end frame
+ *  pulls the clip toward that still, so across a cut to different people the first character leaves
+ *  the screen before the cut. Same people: yes. Different people: no, a hard cut. If either shot does
+ *  not say who is in it, nothing proves a cut, so continuity stays as it was. */
+export function shareEndFrame(current?: readonly string[], next?: readonly string[]): boolean {
+  if (!current || !next) return true;
+  const a = new Set(current);
+  const b = new Set(next);
+  return a.size === b.size && [...a].every((slot) => b.has(slot));
+}
+
 export interface FinishSummary {
   total: number;
   done: number;
