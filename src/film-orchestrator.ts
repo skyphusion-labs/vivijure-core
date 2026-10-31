@@ -128,9 +128,11 @@ import {
   captionDurations,
   finishTargetFrame,
   predictScaledFrame,
+  DEFAULT_DELIVERY_FPS,
+  predictDeliveryFps,
+  resolveDeliveryFps,
   resolveDeliveryResolution,
   resolveMeasuredDelivery,
-  DEFAULT_DELIVERY_FPS,
   type DeliveryResolution,
   shareEndFrame,
   plannedForDurationGate,
@@ -1396,7 +1398,10 @@ export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<Delivery
   const measured = await Promise.all(worked.map(async (fs) => {
     const r = await validateClipArtifact(env, fs.clip_key, 0).catch(() => null);
     const w = Number(r?.checks.width), h = Number(r?.checks.height);
-    return w > 0 && h > 0 ? { fs, width: w - (w % 2), height: h - (h % 2) } : { fs };
+    // vivijure-cf#1144: frames over the picture's own length. mvhd is only the fallback, since audio can outlast the picture.
+    const frames = Number(r?.checks.frames), seconds = Number(r?.checks.video_duration_s ?? r?.checks.duration_s);
+    const fps = frames > 0 && seconds > 0 ? Math.round(frames / seconds) : undefined;
+    return w > 0 && h > 0 ? { fs, fps, width: w - (w % 2), height: h - (h % 2) } : { fs, fps };
   }));
   for (const m of measured) {
     if (m.width && m.height) dims.set(m.fs.shot_id, { width: m.width, height: m.height });
@@ -1406,6 +1411,21 @@ export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<Delivery
   for (const m of measured) {
     if (m.width && m.height && m.width * m.height > delivery.width * delivery.height) {
       note(m.fs, `finished clip is ${m.width}x${m.height}, delivered at ${delivery.width}x${delivery.height}`);
+    }
+  }
+  // vivijure-cf#1144: the film ships at the rate interpolation produced. Only an interpolated shot sets it,
+  // so a film with no interpolation stays at the default whatever its door delivered. Clips at a lower
+  // rate repeat frames at assemble, which loses nothing.
+  const interpolated = measured.filter((m) =>
+    m.fps && [...(m.fs.applied ?? []), ...(m.fs.adopted ?? [])].some((t) => t.startsWith("interpolate:")));
+  const produced = Math.max(DEFAULT_DELIVERY_FPS, ...interpolated.map((m) => m.fps as number));
+  if (produced > DEFAULT_DELIVERY_FPS) job.assemble_fps = produced;
+  // Same rule as the frame, for time: frames above the delivery rate do not reach the film, and the
+  // summary has to say so. One frame per second of slack absorbs rounding.
+  const deliveryFps = resolveDeliveryFps(job);
+  for (const m of measured) {
+    if (m.fps && m.fps > deliveryFps + 1) {
+      note(m.fs, `finished clip is ${m.fps} fps, delivered at ${deliveryFps} fps`);
     }
   }
   if (delivery.decided) job.assemble_frame = { width: delivery.width, height: delivery.height };
@@ -1468,7 +1488,8 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       clipCount: (job.finish_shots ?? []).length,
       width: frame.width,
       height: frame.height,
-      fps: DEFAULT_DELIVERY_FPS,
+      fps: predictDeliveryFps(job, (job.finish_shots ?? []).map((s) =>
+        s.chain.map((binding, i) => ({ binding, config: s.configs?.[i] as Record<string, unknown> | undefined })))),
       basis: budgetSeconds,
     });
     if (admission.admitted) return null;
@@ -2031,6 +2052,8 @@ export interface RunFilmFinishInput {
   delivery_fps?: number;
   // core#389: the frame assemble built, which beats re-reading the pre-finish clip doc.
   assemble_frame?: { width: number; height: number };
+  // vivijure-cf#1144: the rate assemble built. A title card at another rate cannot join the film.
+  assemble_fps?: number;
   // The clip doc assemble already measured. Absent (scatter, a caller with no clip
   // job) leaves the seed on the operator target or the unmeasured default.
   clip_job_id?: string;
@@ -2119,7 +2142,7 @@ async function filmFinishSeed(
   return {
     width: delivery.width,
     height: delivery.height,
-    fps: input.delivery_fps ?? DEFAULT_DELIVERY_FPS,
+    fps: resolveDeliveryFps(input),
     film_key: inKey,
     video_url: videoUrl,
     output_url: outputUrl,
@@ -2656,6 +2679,7 @@ async function applyFilmFinish(env: Env, job: FilmJob, preModules?: RegisteredMo
     delivery_width: job.delivery_width,
     delivery_height: job.delivery_height,
     delivery_fps: job.delivery_fps,
+    assemble_fps: job.assemble_fps,
     assemble_frame: job.assemble_frame,
     clip_job_id: job.clip_job_id,
     film_key: job.film_key,
@@ -3178,6 +3202,7 @@ async function enterAssemblePhase(
   // against it and a budget built on a default is a different claim from one built on a
   // measurement.
   const delivery = await resolveFilmFrame(env, job);
+  const deliveryFps = resolveDeliveryFps(job);
   let payload: FinishPayload = {
     clips: [],
     outputUrl: "https://invalid.invalid/assemble",
@@ -3185,6 +3210,7 @@ async function enterAssemblePhase(
     keepClipAudio,
     width: delivery.width,
     height: delivery.height,
+    fps: deliveryFps,
   };
   // Before admission and presign: a film waiting for a slot pays no R2 reads on each sweep tick.
   if (!job.assemble_poll) {
@@ -3208,7 +3234,7 @@ async function enterAssemblePhase(
       clipCount: finalClips.length,
       width: delivery.width,
       height: delivery.height,
-      fps: DEFAULT_DELIVERY_FPS,
+      fps: deliveryFps,
       basis: resolveAssembleSeconds(
         finalClips,
         measuredSecs,
@@ -3336,6 +3362,48 @@ async function enterAssemblePhase(
 
 
 /** Start a film at the clips phase using existing keyframe keys (finalize / cloud / hybrid). */
+/**
+ * vivijure-cf#1144: the assemble budget, asked at submit, before keyframes and clips are paid for.
+ *
+ * Without this, a film that interpolation made too big fails at assemble with its clips and finish
+ * already bought. The assemble gate stays and has the last word, because it holds the measured frame
+ * and rate. This one has no clip yet, so the frame is the operator target or the 1920x1080 target a
+ * finish chain aims at, and the rate assumes a 24 fps source.
+ *
+ * A film that stops at keyframes or clips is not priced: it never assembles. A keyframes-only film is
+ * priced when it comes back through startFilmFromKeyframes.
+ */
+async function submitBudgetRefusal(env: Env, job: FilmJob, modules: RegisteredModule[]): Promise<string | null> {
+  if (job.keyframes_only || job.clips_only) return null;
+  const picked = selectForChain(servingForHook(modules, "finish"), "finish", job.finish_select).modules;
+  const configs = resolveFinishConfigs(picked, job.finish_config);
+  const fps = predictDeliveryFps(job, [picked.map((m, i) => ({ binding: m.binding, config: configs[i] }))]);
+  const bundleDurations = await readShotDurationsFromBundle(env, job.bundle_key).catch(() => ({}));
+  const frame = finishTargetFrame(job, undefined);
+  const scenes = job.scenes ?? [];
+  const admission = admitAssemble({
+    clipCount: scenes.length,
+    width: frame.width,
+    height: frame.height,
+    fps,
+    basis: resolveAssembleSeconds(scenes, new Map(), resolvePlannedSeconds(scenes, bundleDurations)),
+  });
+  if (admission.admitted) return null;
+  emitStructuredEvent({
+    ev: "assemble.refused",
+    stage: "submit",
+    film_id: job.film_id,
+    clips: scenes.length,
+    seconds: Math.round(admission.basis.seconds * 1000) / 1000,
+    predicted_bytes: admission.predictedBytes,
+    ceiling_bytes: admission.ceilingBytes,
+    allowed_seconds: admission.allowedSeconds,
+    basis: admission.basis,
+    reason: admission.reason,
+  });
+  return admission.reason ?? "film refused at submit: it cannot fit the assemble budget";
+}
+
 export async function startFilmFromKeyframes(
   env: Env,
   args: {
@@ -3422,6 +3490,13 @@ export async function startFilmFromKeyframes(
   }
   job.keyframes = matched.map((m) => ({ shot_id: m.shot_id, keyframe_key: m.keyframe_key }));
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
+  const refusal = await submitBudgetRefusal(env, job, modules);
+  if (refusal) {
+    job.error = refusal;
+    await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
+    await putFilm(env, job);
+    return job;
+  }
   if (wantsPreClipDialogue(job, modules)) {
     await submitPreClipDialogue(env, job, modules);
     if (job.phase === "failed") await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
@@ -3566,6 +3641,7 @@ export async function startFilmJob(
     quality_tier: args.quality_tier,
   };
   const fetcher = kf ? resolveFetcher(envRec, kf.binding) : null;
+  const budgetRefusal = kf && fetcher ? await submitBudgetRefusal(env, job, modules) : null;
   if (!kf || !fetcher) {
     job.phase = "failed";
     job.error = pairErr
@@ -3573,6 +3649,9 @@ export async function startFilmJob(
       : kf
         ? `keyframe module ${kf.name} (${kf.binding}) is not bound`
         : (explicitKeyframeChoice ? `keyframe module ${explicitKeyframeChoice} not installed` : "no keyframe module installed");
+  } else if (budgetRefusal) {
+    job.phase = "failed";
+    job.error = budgetRefusal;
   } else {
     const config = validateConfig(kf.config_schema, args.keyframe_config);
     const shotIds = scenes.map((s) => s.shot_id);
@@ -3768,6 +3847,7 @@ async function retryFilmFinishLocked(
     // Clearing the measured durations is what makes assemble concat again and not adopt the old film.
     job.actual_clip_durations = undefined;
     job.assemble_frame = undefined;
+    job.assemble_fps = undefined;
     job.silent_film_key = undefined;
   }
 

@@ -672,6 +672,7 @@ describe("retryFilmFinish", () => {
     const job = baseJob({
       finish_shots: [shot("s1"), shot("s2")] as never,
       actual_clip_durations: { s1: 4 },
+      assemble_fps: 48,
       silent_film_key: "s", mux_output_key: "m", film_finish_base_key: FILM,
       finish_incomplete: [{ stage: "finish", step: "MODULE_U", shot_id: "s2", code: "refused", kept: "the clip without this step", at: 1 }],
       clip_job_id: "c",
@@ -684,6 +685,7 @@ describe("retryFilmFinish", () => {
     expect(after.finish_shots![0]).toMatchObject({ status: "done", idx: 2 });
     expect(after.finish_shots![1]).toMatchObject({ status: "pending", idx: 0, chain: ["MODULE_U"], configs: [{ b: 2 }], clip_key: "c/s2.mp4" });
     expect(after.actual_clip_durations).toBeUndefined();
+    expect(after.assemble_fps).toBeUndefined(); // vivijure-cf#1144: the retried chain can produce another rate
     expect(after.film_key).toBeUndefined();
     expect(after.clip_job_id).toBe("c");
   });

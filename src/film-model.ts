@@ -365,6 +365,10 @@ export interface FilmJob {
   delivery_width?: number;
   delivery_height?: number;
   delivery_fps?: number;
+  /** vivijure-cf#1144: the rate the finish chain produced, recorded with the frame. An operator
+   *  delivery_fps still wins (resolveDeliveryFps). Absent is 24, which is also what a film already
+   *  past assemble when this shipped was built at. Cleared by a retry that assembles again. */
+  assemble_fps?: number;
   /** core#389: the frame assemble built, recorded the first time it is worked out, so a later tick,
    *  and film.finish, read one answer. Cleared by a retry that assembles again. */
   assemble_frame?: { width: number; height: number };
@@ -1781,9 +1785,8 @@ export const DEFAULT_DELIVERY_WIDTH = 1920;
  *  defaulting independently at two consumers. Sourced here so it is a decision, and carried on every
  *  seed so those `?? 24` arms stop being what picks it.
  *
- *  NOT derived from a clip's measured `delivered_fps` or a step's `out_fps`: those are what the
- *  footage IS, and this is what the film SHIPS AT. Deriving a target from a measurement is the same
- *  conflation that would assemble a 1080p film at the upscale's 2560x1440. */
+ *  This is the rate of a film with no interpolation, whatever its door delivered. A film whose finish
+ *  chain interpolated ships at the rate the chain produced (vivijure-cf#1144), see resolveDeliveryFps. */
 export const DEFAULT_DELIVERY_FPS = 24;
 export const DEFAULT_DELIVERY_HEIGHT = 1080;
 
@@ -1874,6 +1877,36 @@ export function selectDeliveryFromMeasured(
 function positiveInt(n: unknown): number {
   const v = Number(n);
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+
+/** vivijure-cf#1144: the one answer to "what rate does this film ship at". An operator rate wins, then
+ *  the rate the finish chain produced, then the default. */
+export function resolveDeliveryFps(job: { delivery_fps?: unknown; assemble_fps?: unknown }): number {
+  return positiveInt(job?.delivery_fps) || positiveInt(job?.assemble_fps) || DEFAULT_DELIVERY_FPS;
+}
+
+/** The factor one finish step multiplies the frame rate by, read from the same config the step runs on.
+ *  Same reading as the `interpolate:Nx` applied tag. A step that does not interpolate is 1. */
+export function finishStepRateFactor(binding: string, config: Record<string, unknown> | undefined): number {
+  if (!/RIFE/i.test(binding) || config?.interpolate === false) return 1;
+  const factor = Number(config?.interpolation_factor ?? 2);
+  return Number.isFinite(factor) && factor > 1 ? factor : 1;
+}
+
+/** The rate a film will ship at, worked out before its finish chain has run, so it can be priced first.
+ *  `chains` holds each shot's steps. Assumes a 24 fps source, because no clip exists yet. The measured
+ *  rate replaces this at assemble. */
+export function predictDeliveryFps(
+  job: { delivery_fps?: unknown },
+  chains: ReadonlyArray<ReadonlyArray<{ binding: string; config?: Record<string, unknown> }>>,
+): number {
+  const explicit = positiveInt(job?.delivery_fps);
+  if (explicit) return explicit;
+  let factor = 1;
+  for (const chain of chains) {
+    factor = Math.max(factor, chain.reduce((f, step) => f * finishStepRateFactor(step.binding, step.config), 1));
+  }
+  return DEFAULT_DELIVERY_FPS * factor;
 }
 
 /** Resolve a film's delivery target. BOTH axes or neither: a half-supplied target is an upstream
