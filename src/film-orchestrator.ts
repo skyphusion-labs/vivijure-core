@@ -3596,6 +3596,22 @@ async function deleteArtifacts(env: Env, keys: (string | undefined)[], keep: (st
   }
 }
 
+/** core#399: a step that runs again must not keep its last result. `applied` is what the summary reads, so a
+ *  stale `passthrough:` tag there reports a degrade after the step has succeeded. Other steps' tags stay. The
+ *  ledger is emptied because it reconciles 1:1 to `chain`, which the retry has just replaced. */
+function forgetRetriedSteps(fs: FinishShot, steps: string[]): void {
+  const applied = [...(fs.applied ?? [])];
+  for (const entry of fs.ledger ?? []) {
+    if (!steps.includes(entry.binding)) continue;
+    for (const tag of entry.tags) {
+      const i = applied.indexOf(tag);
+      if (i >= 0) applied.splice(i, 1);
+    }
+  }
+  fs.applied = applied.filter((t) => !t.startsWith("passthrough:"));
+  fs.ledger = undefined;
+}
+
 /** Why a retry started nothing, present only when `retried` is empty (vivijure-cf#1114).
  *  busy: the film is advancing or still running, so the caller may try again.
  *  nothing_to_retry: it names no missing step, or it was cancelled.
@@ -3707,6 +3723,7 @@ async function retryFilmFinishLocked(
     const missed = entries.filter((e) => e.stage === "speech" && e.shot_id === ss.shot_id).map((e) => e.step);
     if (missed.length === 0) continue;
     const configs = missed.map((b) => ss.configs?.[ss.chain.indexOf(b)] ?? {});
+    ss.applied = (ss.applied ?? []).filter((t) => !t.startsWith("passthrough:"));
     Object.assign(ss, { chain: missed, configs, idx: 0, status: "pending", poll: undefined, degraded: undefined, error: undefined, attempts: 0, wait: undefined, hold_cycles: 0 });
   }
   const consumesAudio = new Set(modules.filter((m) => m.finish_consumes_audio).map((m) => m.binding));
@@ -3719,6 +3736,7 @@ async function retryFilmFinishLocked(
     }
     if (missed.length === 0) continue;
     const configs = missed.map((b) => fs.configs?.[fs.chain.indexOf(b)] ?? {});
+    forgetRetriedSteps(fs, missed);
     Object.assign(fs, { chain: missed, configs, idx: 0, status: "pending", poll: undefined, degraded: undefined, error: undefined, attempts: 0, wait: undefined, hold_cycles: 0 });
   }
   if (job.master && has("master")) {

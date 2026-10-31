@@ -7,11 +7,14 @@ import {
   FINISH_TRANSPORT_HOLD_MAX_SECONDS,
   type HoldableStep,
   acceptHeldStep,
+  applyFinishOutputOrRefuse,
+  finishShotLedgerReconciles,
   holdStep,
   phaseCeilingVerdict,
   stampFilmProgress,
   stepFailureOf,
   summarizeFilm,
+  summarizeFinish,
 } from "../src/film-model.js";
 import { ASSEMBLE_CAPACITY_MAX_WAIT_SECONDS, decodeAssembleWait, encodeAssembleWait } from "../src/video-finish-assemble.js";
 import { sweepUnresolvedJobs } from "../src/render-sweep.js";
@@ -796,6 +799,58 @@ describe("retryFilmFinish", () => {
       const r = await retryFilmFinish(e, "film-1");
       expect(r?.retried).toHaveLength(1);
       expect(r?.not_started).toBeUndefined();
+    });
+  });
+
+  describe("a retried step does not keep its last result (core#399)", () => {
+    const named = { stage: "finish" as const, step: "MODULE_R", shot_id: "s1", code: "unclassified", kept: "k", at: 1 };
+    const shot = (over: Record<string, unknown> = {}) => ({
+      shot_id: "s1", clip_key: "renders/p1/clips/s1.mp4", chain: ["MODULE_R"], configs: [{}], idx: 1, status: "done",
+      applied: ["passthrough:backend-soft-degrade"], degraded: ["backend-soft-degrade: deadline"],
+      ledger: [{ binding: "MODULE_R", tags: ["passthrough:backend-soft-degrade"], reused: false }], ...over,
+    });
+    const retried = async (fs: Record<string, unknown>) => {
+      quiet();
+      const job = baseJob({ finish_shots: [fs] as never, finish_incomplete: [named], clip_job_id: "c" });
+      const made = env({ DB: rowDb().DB }, { [filmJobDocKey("film-1")]: JSON.stringify(job) });
+      await retryFilmFinish(made.e, "film-1");
+      return JSON.parse(made.stored[filmJobDocKey("film-1")]) as FilmJob;
+    };
+
+    it("the measured case: the failed attempt's tag and reason are gone before the step runs", async () => {
+      const after = await retried(shot());
+      expect(after.finish_shots![0].applied).toEqual([]);
+      expect(after.finish_shots![0].ledger).toBeUndefined();
+      expect(summarizeFinish(after.finish_shots!).degraded).toBe(0);
+    });
+
+    it("then a success reads as clean", async () => {
+      const after = await retried(shot());
+      applyFinishOutputOrRefuse(after.finish_shots![0], { shot_id: "s1", clip_key: "renders/p1/clips/s1_r.mp4", out_fps: 48, frames: 193, applied: ["interpolate:2x"] }, "p1");
+      const fs = after.finish_shots![0];
+      expect(fs.applied).toEqual(["interpolate:2x"]);
+      expect(summarizeFinish([fs])).toMatchObject({ done: 1, degraded: 0, reasons: [] });
+      expect(finishShotLedgerReconciles(fs)).toBe(true);
+    });
+
+    it("another step's work stays", async () => {
+      const after = await retried(shot({
+        chain: ["MODULE_U", "MODULE_R"], configs: [{}, {}], idx: 2,
+        applied: ["upscale:2x", "passthrough:backend-soft-degrade"],
+        ledger: [{ binding: "MODULE_U", tags: ["upscale:2x"], reused: false }, { binding: "MODULE_R", tags: ["passthrough:backend-soft-degrade"], reused: false }],
+      }));
+      expect(after.finish_shots![0].applied).toEqual(["upscale:2x"]);
+      expect(after.finish_shots![0].chain).toEqual(["MODULE_R"]);
+    });
+
+    it("a job doc with no ledger still loses the passthrough tag", async () => {
+      const after = await retried(shot({ ledger: undefined }));
+      expect(after.finish_shots![0].applied).toEqual([]);
+    });
+
+    it("a retry that fails restores the shot as it was", async () => {
+      const after = await retried(shot());
+      expect(JSON.parse(after.finish_retry_prior!).finish_shots[0].applied).toEqual(["passthrough:backend-soft-degrade"]);
     });
   });
 
