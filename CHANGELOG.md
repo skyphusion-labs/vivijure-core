@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.28.4
+
 ## [1.28.3] -- 2026-10-30
 
 **Fix: `clip_deliveries` reports the frames a clip has, not the frames it planned (vivijure-cf#1125).**

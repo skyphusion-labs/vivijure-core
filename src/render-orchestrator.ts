@@ -47,23 +47,70 @@ export function applyMeasuredFrames(shot: ClipShot, frames: number | null, durat
   return changed;
 }
 
-/** Reroll must not destroy the last take. Copy live clip objects aside before overwrite. */
+/** Takes kept for each clip key (core#395). Storage counts against the user, and nothing reads an older one. */
+export const MAX_CLIP_TAKES = 3;
+/** What a finish step writes beside a clip. It is rebuilt from the clip, so it is not worth a copy. */
+const FINISH_OUTPUT_RE = /_(up|bl|finished)\.[a-z0-9]+$/i;
+const CLIP_FILE_RE = /\.(mp4|webm)$/i;
+
+/** Pure: what this render is about to replace. The clip its own door writes when one exists. A door whose file
+ *  is named differently cannot be told from a first render, so then every door clip is copied, and the cap
+ *  below bounds that. A finish output is never copied. */
+export function clipsToArchive(keys: string[], shot: { shot_id: string; motion_backend?: string }): string[] {
+  const live = keys.filter((k) => CLIP_FILE_RE.test(k) && !CLIP_TAKE_RE.test(k) && !FINISH_OUTPUT_RE.test(k));
+  if (!shot.motion_backend) return live;
+  const own = `${shot.shot_id}_${shot.motion_backend}.`;
+  const exact = live.filter((k) => k.slice(k.lastIndexOf("/") + 1).startsWith(own));
+  return exact.length ? exact : live;
+}
+
+/** Pure: the takes to delete. All copies of a finish output, which older renders made, and for each clip all
+ *  but the newest MAX_CLIP_TAKES. A take's timestamp is in its name, so this needs no extra read. */
+export function takesToPrune(keys: string[], max: number = MAX_CLIP_TAKES): string[] {
+  const groups = new Map<string, { key: string; at: number }[]>();
+  for (const key of keys) {
+    const m = /^(.*)_take(\d+)(\.[a-z0-9]+)$/i.exec(key);
+    if (!m) continue;
+    const base = m[1] + m[3];
+    const list = groups.get(base) ?? [];
+    list.push({ key, at: Number(m[2]) });
+    groups.set(base, list);
+  }
+  const out: string[] = [];
+  for (const [base, list] of groups) {
+    list.sort((a, b) => b.at - a.at);
+    out.push(...list.slice(FINISH_OUTPUT_RE.test(base) ? 0 : max).map((t) => t.key));
+  }
+  return out;
+}
+
+/** Reroll must not destroy the last take. Copy the clip this render replaces aside before overwrite, and keep
+ *  the number of copies bounded (core#395). */
 export async function archiveExistingClipTakes(env: Env, project: string, shot: ClipShot): Promise<void> {
-  const prefix = `renders/${project}/clips/${shot.shot_id}`;
-  const listed = await env.R2_RENDERS.list({ prefix, limit: 20 });
+  const prefix = `renders/${project}/clips/${shot.shot_id}_`;
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const listed = await env.R2_RENDERS.list({ prefix, limit: 1000, ...(cursor ? { cursor } : {}) });
+    keys.push(...listed.objects.map((o) => o.key));
+    cursor = (listed as { truncated?: boolean; cursor?: string }).truncated ? (listed as { cursor?: string }).cursor : undefined;
+  } while (cursor);
   const now = Date.now();
   const takes = shot.takes ? shot.takes.slice() : [];
-  for (const obj of listed.objects) {
-    if (CLIP_TAKE_RE.test(obj.key)) continue;
-    if (!/\.(mp4|webm)$/i.test(obj.key)) continue;
-    const takeKey = obj.key.replace(/(\.[a-z0-9]+)$/i, `_take${now}$1`);
-    const body = await env.R2_RENDERS.get(obj.key);
+  const written: string[] = [];
+  for (const key of clipsToArchive(keys, shot)) {
+    const takeKey = key.replace(/(\.[a-z0-9]+)$/i, `_take${now}$1`);
+    const body = await env.R2_RENDERS.get(key);
     if (!body) continue;
     // The stream, not arrayBuffer(): a clip can be 256 MB and a Worker isolate has 128 MB (core#379).
     await env.R2_RENDERS.put(takeKey, body.body);
     takes.push({ key: takeKey, at: now });
+    written.push(takeKey);
   }
-  if (takes.length) shot.takes = takes;
+  const pruned = takesToPrune([...keys, ...written]);
+  for (const key of pruned) await env.R2_RENDERS.delete(key);
+  const kept = takes.filter((t) => !pruned.includes(t.key));
+  if (kept.length) shot.takes = kept;
 }
 import {
   summarizeJob,
