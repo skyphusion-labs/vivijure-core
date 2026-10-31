@@ -3,7 +3,15 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.28.4
+## [1.28.4] -- 2026-10-31
+
+**Fix: archived clip takes are bounded, and a render copies only what it replaces (#395).**
+
+Every render copied every live clip for the shot, finish outputs included, and nothing pruned. It now copies the clip its own door is about to replace, or every door clip when no file matches that door's name, and never a finish output. It keeps the newest 3 takes per clip and deletes older ones, including the finish output copies older renders left. Storage is freed the next time that shot renders. A deleted take is gone, and nothing in the product reads one.
+
+**Fix: a finish retry that succeeds no longer reads as degraded (#399).**
+
+A retried step kept the `passthrough:` tag from its failed attempt in `applied`, and the summary reads that tag, so `finish.degraded` stayed 1 after the step had worked. A retry now drops the retried step's earlier tags and empties the ledger, which reconciles to the new chain. Other steps' tags stay.
 
 ## [1.28.3] -- 2026-10-30
 
