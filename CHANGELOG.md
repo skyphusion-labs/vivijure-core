@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.28.5
+
 ## [1.28.4] -- 2026-10-31
 
 **Fix: archived clip takes are bounded, and a render copies only what it replaces (#395).**
