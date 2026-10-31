@@ -2864,12 +2864,21 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
 
   // #231: a dialogue + music film gets a PROPER multi-track mix first -- duck the music under the
   // dialogue + loudness-normalize via the audio-mix container -- then remux that single mixed track.
-  // A failed mix keeps the voices and names the bed as lost (vivijure-cf#1158). With AUDIO_MIX_URL unset
-  // this film still gets the bare bed. An audio-polish miss never fails a fully-rendered film (#249/#77).
+  // A failed or unavailable mix keeps the voices and names the bed as lost (vivijure-cf#1158). An
+  // audio-polish miss never fails a fully-rendered film (#249/#77).
   //
   // core#377: only before a submit, and only once. This used to run on every tick, polls included,
   // and a transient miss shipped the bare bed. It now holds, and a mix that is made is kept, so a film
   // waiting for a slot does not mix again on each attempt.
+  if (
+    !job.assemble_poll && !job.mix_done_key && !job.mix_skipped
+    && job.dialogue_audio && Object.keys(job.dialogue_audio).length > 0
+    && !mediaDoorReachable(env, "AUDIO_MIX_URL")
+  ) {
+    job.mix_skipped = true;
+    await keepVoicesOverBed(env, job, silentKey, "unavailable", "audio-mix tier not installed (AUDIO_MIX_URL unset)", preModules);
+    return;
+  }
   if (!job.assemble_poll && !job.mix_done_key && !job.mix_skipped && shouldMultiTrackMix(job, env)) {
     if (stepWaitHolding(job.mix_wait)) { job.phase = "mux"; job.error = undefined; return; }
     const mixed = await mixFilmAudio(env, job, silentKey, audioKey);
