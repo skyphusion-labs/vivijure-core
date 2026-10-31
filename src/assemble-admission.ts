@@ -235,6 +235,7 @@ export function admitAssemble(input: AssembleAdmissionInput): AssembleAdmission 
     `${FINALIZE_FILM_COPIES} full-length copies resident at finalize. ` +
     `Basis: ${basis.measured} measured, ${basis.planned} planned, ${basis.unknown} unknown. ` +
     `This delivery target admits at most ${allowedSeconds}s; reduce the film, or lower ` +
-    `delivery_width/delivery_height.`;
+    `delivery_width/delivery_height` +
+    (fps > CONTAINER_DEFAULT_FPS ? `, or lower the interpolation factor or delivery_fps.` : `.`);
   return { admitted: false, predictedBytes, ceilingBytes, allowedSeconds, basis, reason };
 }

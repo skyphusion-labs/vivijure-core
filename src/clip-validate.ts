@@ -39,6 +39,7 @@ export interface ClipValidateChecks {
   duration_s: number | null; // movie duration from mvhd (seconds), null if unread
   expected_s: number; // the requested shot seconds (context only, NOT gated: backends have fixed lengths)
   frames: number | null; // summed video-track sample count (stsz), null if unread
+  video_duration_s?: number | null; // video-track media duration (mdhd). An audio track can outlast the picture, so mvhd cannot give a frame rate.
   width: number | null;
   height: number | null;
   bytes: number; // full object size
@@ -86,6 +87,7 @@ export interface MoovInfo {
   durationS: number | null;
   hasVideoTrack: boolean;
   frames: number | null; // summed sample_count across video tracks
+  videoDurationS?: number | null; // the first video track's mdhd duration
   width: number | null;
   height: number | null;
 }
@@ -100,7 +102,7 @@ export function parseMoov(buf: Uint8Array, start = 0, end: number = buf.length):
   return info;
 }
 
-interface TrakCtx { inVideoTrak: boolean; trakWidth?: number; trakHeight?: number; }
+interface TrakCtx { inVideoTrak: boolean; trakWidth?: number; trakHeight?: number; mediaDurationS?: number; }
 function walk(buf: Uint8Array, start: number, end: number, info: MoovInfo, ctx: TrakCtx): void {
   let o = start;
   while (o + 8 <= end) {
@@ -116,11 +118,17 @@ function walk(buf: Uint8Array, start: number, end: number, info: MoovInfo, ctx: 
         info.hasVideoTrack = true;
         if (tctx.trakWidth != null && info.width == null) info.width = tctx.trakWidth;
         if (tctx.trakHeight != null && info.height == null) info.height = tctx.trakHeight;
+        if (tctx.mediaDurationS != null && info.videoDurationS == null) info.videoDurationS = tctx.mediaDurationS;
       }
     } else if (CONTAINER_BOXES.has(h.type)) {
       walk(buf, payloadStart, boxEnd, info, ctx);
     } else if (h.type === "mvhd") {
       readMvhd(buf, payloadStart, boxEnd, info);
+    } else if (h.type === "mdhd") {
+      // Before hdlr in the file, so it is held on the track and kept only if the track proves to be video.
+      const holder: MoovInfo = { durationS: null, hasVideoTrack: false, frames: null, width: null, height: null };
+      readMvhd(buf, payloadStart, boxEnd, holder); // mdhd opens with the same version, times, timescale, duration
+      if (holder.durationS != null) ctx.mediaDurationS = holder.durationS;
     } else if (h.type === "tkhd") {
       readTkhd(buf, payloadStart, boxEnd, ctx);
     } else if (h.type === "hdlr") {
@@ -257,6 +265,7 @@ async function probeMp4Artifact(env: Env, key: string, expectedSeconds: number):
           checks.duration_s = info.durationS;
           checks.video_track = info.hasVideoTrack;
           checks.frames = info.frames;
+          checks.video_duration_s = info.videoDurationS ?? null;
           checks.width = info.width;
           checks.height = info.height;
         }
