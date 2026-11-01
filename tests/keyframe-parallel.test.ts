@@ -80,6 +80,7 @@ function harness(opts: {
           const payload = opts.poll
             ? opts.poll(token, n)
             : { ok: true, pending: true, wait: "running" };
+          if (payload instanceof Response) return payload;
           return new Response(JSON.stringify(payload), { headers: { "content-type": "application/json" } });
         }
         if (path.endsWith("/cancel")) {
@@ -265,4 +266,90 @@ describe("keyframe parallel start/advance", () => {
     expect(r?.job.error).toMatch(/incomplete film -- keyframes/);
     expect(h.cancels).toEqual(["kf-poll-0", "kf-poll-1"]);
   });
+});
+
+describe("a keyframe poll that fails in transport", () => {
+  const five = () => new Response("boom", { status: 500 });
+  const pending = { ok: true, pending: true, wait: "running" };
+
+  it("one 500 on a sibling keeps the film, the token and the other's output", async () => {
+    const h = harness({
+      keyframeParallel: "2",
+      poll: (token) => token === "kf-poll-0" ? { ok: true, output: kfOut(["shot_01", "shot_02", "shot_03"]) } : five(),
+    });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    const doc = h.read(started.film_id);
+    expect(doc.phase).toBe("keyframe");
+    expect(doc.keyframe_polls).toEqual(["kf-poll-1"]);
+    expect(doc.keyframe_job_ids).toEqual(["rp-1"]);
+    expect(doc.keyframe_poll_attempts).toBe(1);
+    expect((doc.keyframe_partials ?? []).map((k) => k.shot_id)).toEqual(["shot_01", "shot_02", "shot_03"]);
+    expect(h.cancels).toEqual([]);
+  });
+
+  it("three ticks in a row fail the film by name and stop its jobs", async () => {
+    const h = harness({ keyframeParallel: "2", poll: () => five() });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.read(started.film_id).phase).toBe("keyframe");
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    const doc = h.read(started.film_id);
+    expect(doc.phase).toBe("failed");
+    expect(doc.error).toMatch(/module \/poll -> 500.*persisted through 3 consecutive polls/);
+    expect(h.cancels.length).toBeGreaterThan(0);
+  });
+
+  it("a clean tick resets the count", async () => {
+    let tick = 0;
+    const h = harness({ keyframeParallel: "1", poll: () => { tick += 1; return tick % 3 === 0 ? pending : five(); } });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    for (let i = 0; i < 8; i++) await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.read(started.film_id).phase).toBe("keyframe");
+  });
+
+  it("a clean parallel tick resets the count", async () => {
+    let tick = 0;
+    const h = harness({ keyframeParallel: "2", poll: () => { tick += 1; return tick % 6 < 4 && tick % 6 > 0 ? five() : pending; } });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.read(started.film_id).keyframe_poll_attempts).toBe(1);
+    for (let i = 0; i < 2; i++) await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.read(started.film_id).phase).toBe("keyframe");
+    expect(h.read(started.film_id).keyframe_polls?.length).toBe(2);
+  });
+
+  it("the single-job path tolerates the same and fails at three", async () => {
+    const h = harness({ keyframeParallel: "1", poll: () => five() });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    const mid = h.read(started.film_id);
+    expect(mid.phase).toBe("keyframe");
+    expect(mid.keyframe_poll).toBe("kf-poll-0");
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.read(started.film_id).error).toMatch(/persisted through 3/);
+    expect(h.cancels).toEqual(["kf-poll-0"]);
+  });
+
+  it("a dead job is not a transport failure: waiting would never recover it", async () => {
+    const h = harness({ keyframeParallel: "1", poll: () => ({ ok: false, error: "provider job died: high load (7003)" }) });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.read(started.film_id).phase).toBe("failed");
+    expect(h.cancels).toEqual(["kf-poll-0"]);
+  });
+
+  for (const parallel of ["1", "2"]) {
+    it(`a real failure a module reports still fails at once (parallel ${parallel})`, async () => {
+      const h = harness({ keyframeParallel: parallel, poll: () => ({ ok: false, error: "keyframe: bad LoRA" }) });
+      const started = await startFilmJob(h.env, START, [kfMod]);
+      await advanceFilmJob(h.env, started.film_id, [kfMod]);
+      const doc = h.read(started.film_id);
+      expect(doc.phase).toBe("failed");
+      expect(doc.error).toBe("keyframe: bad LoRA");
+    });
+  }
 });

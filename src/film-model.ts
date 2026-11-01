@@ -431,6 +431,8 @@ export interface FilmJob {
   // Parallel keyframe invokes: one film job, N contiguous shot_id chunks. The N=1 path still uses
   // only keyframe_poll / keyframe_job_id so a leftover single token keeps the old poll path.
   keyframe_polls?: string[];
+  // Consecutive ticks in which a keyframe poll failed in transport. Reset by a tick with none.
+  keyframe_poll_attempts?: number;
   keyframe_job_ids?: string[];
   // Chunks that already returned output while sibling chunks are still polling. Merged once
   // every poll finishes (last-write-wins on a duplicate shot_id).
