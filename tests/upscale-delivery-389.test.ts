@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { advanceFilmJob, filmJobDocKey, resolveAssembleDelivery, resolveFilmFrame, type FilmJob } from "../src/film-orchestrator.js";
+import { advanceFilmJob, filmJobDocKey, resolveAssembleDelivery, resolveFilmFrame, type FilmJob, frameFitNote } from "../src/film-orchestrator.js";
 import { clipJobDocKey, finishTargetFrame, predictScaledFrame, summarizeFinish } from "../src/film-model.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 import type { RegisteredModule } from "../src/modules/types.js";
@@ -136,6 +136,43 @@ describe("the frame assemble builds", () => {
     const s = summarizeFinish(j.finish_shots!);
     expect(s.degraded).toBe(1);
     expect(s.reasons[0]).toBe("finished clip is 2688x1536, delivered at 1344x768");
+  });
+
+  it("a clip a little over the target is not a limit: 1936 into 1920", async () => {
+    const { e } = env({ "renders/p/clips/s1_up.mp4": mp4(1936, 1080) }, { [CLIP_DOC]: clipDoc(832, 464) });
+    const j = job({ delivery_width: 1920, delivery_height: 1080, finish_shots: [shot()] as never });
+    await resolveFilmFrame(e, j);
+    expect(summarizeFinish(j.finish_shots!).degraded).toBe(0);
+  });
+
+  it("just past the tolerance it is named", async () => {
+    const { e } = env({ "renders/p/clips/s1_up.mp4": mp4(1980, 1080) }, { [CLIP_DOC]: clipDoc(832, 464) });
+    const j = job({ delivery_width: 1920, delivery_height: 1080, finish_shots: [shot()] as never });
+    await resolveFilmFrame(e, j);
+    expect(summarizeFinish(j.finish_shots!).degraded).toBe(1);
+  });
+
+  describe("frameFitNote", () => {
+    it.each([
+      [1936, 1080, 1920, 1080, null],
+      [1920, 1080, 1920, 1080, null],
+      [832, 464, 1920, 1080, null],
+      [1080, 1920, 1920, 1080, "finished clip is 1080x1920, delivered at 1920x1080"],
+      [1440, 1440, 1920, 1080, "finished clip is 1440x1440, delivered at 1920x1080"],
+      [2096, 1000, 1920, 1080, "finished clip is 2096x1000, delivered at 1920x1080"],
+      [2688, 1536, 1344, 768, "finished clip is 2688x1536, delivered at 1344x768"],
+      [832, 464, 720, 1280, "finished clip is 832x464, delivered at 720x1280"],
+      [720, 402, 720, 1280, "finished clip is 720x402, shown at 720x402 in a 720x1280 frame"],
+    ])("%dx%d into %dx%d", (w, h, dw, dh, want) => {
+      expect(frameFitNote(w, h, dw, dh)).toBe(want);
+    });
+  });
+
+  it("a vertical clip in a pinned landscape film is named on the film", async () => {
+    const { e } = env({ "renders/p/clips/s1_up.mp4": mp4(1080, 1920) }, { [CLIP_DOC]: clipDoc(832, 464) });
+    const j = job({ delivery_width: 1920, delivery_height: 1080, finish_shots: [shot()] as never });
+    await resolveFilmFrame(e, j);
+    expect(summarizeFinish(j.finish_shots!).reasons[0]).toBe("finished clip is 1080x1920, delivered at 1920x1080");
   });
 
   it("a finished clip that cannot be measured is named, and never reads as delivered", async () => {

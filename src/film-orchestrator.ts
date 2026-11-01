@@ -1378,8 +1378,8 @@ export async function measuredClipDimensions(
  * The delivery target for ASSEMBLE: what the doors actually produced, not a constant.
  *
  * cf#813. The assemble seam used to call `resolveDeliveryResolution(job)` and nothing else, and
- * since nothing in either repo ever sets `delivery_width` / `delivery_height` on a job, that is
- * 1920x1080 on every film in production. Meanwhile the source dimensions were ALREADY measured on
+ * unless a film start set `delivery_width` / `delivery_height` on the job, that was
+ * 1920x1080 on every film. Meanwhile the source dimensions were ALREADY measured on
  * every done clip, ALREADY persisted, and ALREADY read back one function away -- just never at this
  * seam. This reads them.
  *
@@ -1412,6 +1412,21 @@ export async function resolveAssembleDelivery(env: Env, job: FilmJob): Promise<D
  * the finish summary reads: an operator target below the clip, and a finished clip that could not be
  * measured. Recorded once on the job, so later ticks pay no R2 reads and film.finish reads the same.
  */
+/** What a person should be told when a clip does not fill the film's frame. The clip is scaled to fit inside and
+ *  padded, so what matters is how much it shrinks and how much of the frame is picture, not its area: a 1080x1920 clip
+ *  has the same area as a 1920x1080 film and is drawn 608 px wide. Within 2% is one aspect rounded into another, as
+ *  832x464 at height 1080 is 1936 wide, and is no limit. This note reaches the film's report (vivijure-cf#1223). */
+const FRAME_FIT_TOLERANCE = 0.98;
+const FRAME_PICTURE_MIN = 0.9;
+export function frameFitNote(w: number, h: number, dw: number, dh: number): string | null {
+  const fit = Math.min(dw / w, dh / h);
+  if (fit < FRAME_FIT_TOLERANCE) return `finished clip is ${w}x${h}, delivered at ${dw}x${dh}`;
+  const pw = Math.round(w * fit), ph = Math.round(h * fit);
+  if ((pw * ph) / (dw * dh) < FRAME_PICTURE_MIN) return `finished clip is ${w}x${h}, shown at ${pw}x${ph} in a ${dw}x${dh} frame`;
+  return null;
+}
+
+
 export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<DeliveryResolution> {
   const explicit = resolveDeliveryResolution(job);
   if (job.assemble_frame && !explicit.decided) return resolveMeasuredDelivery(job, [job.assemble_frame]);
@@ -1438,9 +1453,9 @@ export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<Delivery
   }
   const delivery = resolveMeasuredDelivery(job, [...dims.values()]);
   for (const m of measured) {
-    if (m.width && m.height && m.width * m.height > delivery.width * delivery.height) {
-      note(m.fs, `finished clip is ${m.width}x${m.height}, delivered at ${delivery.width}x${delivery.height}`);
-    }
+    if (!m.width || !m.height) continue;
+    const note_ = frameFitNote(m.width, m.height, delivery.width, delivery.height);
+    if (note_) note(m.fs, note_);
   }
   // vivijure-cf#1144: the film ships at the rate interpolation produced. Only an interpolated shot sets it,
   // so a film with no interpolation stays at the default whatever its door delivered. Clips at a lower
@@ -3615,6 +3630,10 @@ export async function startFilmJob(
   args: {
     project: string; bundle_key: string; scenes: FilmScene[];
     motion_backend?: string; keyframe_backend?: string; keyframe_config?: Record<string, unknown>; motion_config?: Record<string, unknown>;
+    /** The frame this film is delivered at, both or neither. Parts of a long film set it, because the join
+     *  refuses films of different frames. Absent, the frame comes from the measured clips. */
+    delivery_width?: number;
+    delivery_height?: number;
     /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
     reuse_finished?: boolean;
     /** With reuse_finished: shots whose clip is bought again though its inputs are proven the same. An unchanged
@@ -3696,6 +3715,8 @@ export async function startFilmJob(
     keyframe_backend: kf ? kf.name : null,
     keyframe_config: args.keyframe_config ?? {},
     finish_config: args.finish_config ?? {},
+    delivery_width: args.delivery_width,
+    delivery_height: args.delivery_height,
     reuse_finished: args.reuse_finished || undefined,
     retake_shots: args.retake_shots?.length ? args.retake_shots : undefined,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
