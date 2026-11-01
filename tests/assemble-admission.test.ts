@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   admitAssemble,
   assembleFilmByteCeiling,
+  R2_SINGLE_PUT_BYTES,
   predictNormalizedBytes,
   resolveAssembleSeconds,
   CONTAINER_DEFAULT_FPS,
@@ -83,6 +84,34 @@ describe("cf#815 the threshold is NOT MAX_CLIPS x MAX_CLIP_BYTES", () => {
     // to 1 the ceiling doubles, so the multiplier is asserted rather than assumed.
     expect(FINALIZE_FILM_COPIES).toBe(2);
     expect(assembleFilmByteCeiling() * FINALIZE_FILM_COPIES).toBeLessThan(CONTAINER_DISK_BYTES);
+  });
+});
+
+describe("vivijure-cf#1133 admission stops at what one upload carries", () => {
+  it("the ceiling is the R2 single PUT limit, which sits under the disk budget", () => {
+    expect(R2_SINGLE_PUT_BYTES).toBe(5 * 1024 ** 3 - 5 * 1024 ** 2);
+    expect(assembleFilmByteCeiling()).toBe(R2_SINGLE_PUT_BYTES);
+  });
+
+  it("refuses a film that fits the disk and not one upload, and says why", () => {
+    // 1920x1080 at 24 fps predicts about 1.40 MB/s, so 70 minutes is about 5.9 GB: under the 6.85 GB
+    // disk budget, over one PUT.
+    const seconds = 70 * 60;
+    const r = admitAssemble({
+      width: 1920, height: 1080, fps: 24, clipCount: 80,
+      basis: { seconds, measured: 80, planned: 0, unknown: 0 },
+    });
+    expect(r.predictedBytes).toBeGreaterThan(R2_SINGLE_PUT_BYTES);
+    expect(r.admitted).toBe(false);
+    expect(r.admitted ? "" : r.reason).toContain("the most one upload carries");
+  });
+
+  it("still admits a film just under it", () => {
+    const r = admitAssemble({
+      width: 1920, height: 1080, fps: 24, clipCount: 80,
+      basis: { seconds: 60 * 60, measured: 80, planned: 0, unknown: 0 },
+    });
+    expect(r.admitted).toBe(true);
   });
 });
 
