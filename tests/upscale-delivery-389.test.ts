@@ -138,6 +138,20 @@ describe("the frame assemble builds", () => {
     expect(s.reasons[0]).toBe("finished clip is 2688x1536, delivered at 1344x768");
   });
 
+  it("a clip a little over the target is not a limit: 1936 into 1920", async () => {
+    const { e } = env({ "renders/p/clips/s1_up.mp4": mp4(1936, 1080) }, { [CLIP_DOC]: clipDoc(832, 464) });
+    const j = job({ delivery_width: 1920, delivery_height: 1080, finish_shots: [shot()] as never });
+    await resolveFilmFrame(e, j);
+    expect(summarizeFinish(j.finish_shots!).degraded).toBe(0);
+  });
+
+  it("just past the tolerance it is named", async () => {
+    const { e } = env({ "renders/p/clips/s1_up.mp4": mp4(1980, 1080) }, { [CLIP_DOC]: clipDoc(832, 464) });
+    const j = job({ delivery_width: 1920, delivery_height: 1080, finish_shots: [shot()] as never });
+    await resolveFilmFrame(e, j);
+    expect(summarizeFinish(j.finish_shots!).degraded).toBe(1);
+  });
+
   it("a finished clip that cannot be measured is named, and never reads as delivered", async () => {
     const { e } = env({}, { [CLIP_DOC]: clipDoc(1344, 768) });
     const j = job({ finish_shots: [shot()] as never });

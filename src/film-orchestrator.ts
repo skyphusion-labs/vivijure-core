@@ -1412,6 +1412,8 @@ export async function resolveAssembleDelivery(env: Env, job: FilmJob): Promise<D
  * the finish summary reads: an operator target below the clip, and a finished clip that could not be
  * measured. Recorded once on the job, so later ticks pay no R2 reads and film.finish reads the same.
  */
+const FRAME_NOTE_TOLERANCE = 1.02;
+
 export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<DeliveryResolution> {
   const explicit = resolveDeliveryResolution(job);
   if (job.assemble_frame && !explicit.decided) return resolveMeasuredDelivery(job, [job.assemble_frame]);
@@ -1438,7 +1440,9 @@ export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<Delivery
   }
   const delivery = resolveMeasuredDelivery(job, [...dims.values()]);
   for (const m of measured) {
-    if (m.width && m.height && m.width * m.height > delivery.width * delivery.height) {
+    // Within 2% is rounding of one aspect into another: 832x464 scaled to height 1080 is 1936 wide, and a film at 1920
+    // loses nothing a person would call a limit. A note here reads as a limit on the film's report (vivijure-cf#1223).
+    if (m.width && m.height && m.width * m.height > delivery.width * delivery.height * FRAME_NOTE_TOLERANCE) {
       note(m.fs, `finished clip is ${m.width}x${m.height}, delivered at ${delivery.width}x${delivery.height}`);
     }
   }
