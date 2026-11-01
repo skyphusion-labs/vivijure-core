@@ -262,6 +262,56 @@ describe("the end frame in a clip's proof", () => {
   });
 });
 
+describe("a clip stamped when the end frame was in the proof", () => {
+  const firstLast = (name = "door"): RegisteredModule => ({ ...motion(name), usage: { first_last: true } } as unknown as RegisteredModule);
+  const ids = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9"];
+  const board = () => ids.map((id, i) => shot(id, ids[i + 1] ? { last_keyframe_key: `renders/p/keyframes/${ids[i + 1]}.png`, last_keyframe_url: "https://g/e" } : {}));
+
+  /** Stamps the way the old code did: the same door, judged as using end frames. */
+  async function stamped() {
+    quiet();
+    const h = clipHarness();
+    seedKeyframes(h, ...ids);
+    h.mods = [firstLast()];
+    await run(h, board());
+    expect(h.invokes).toHaveLength(10);
+    h.mods = [motion()];
+    h.invokes.length = 0;
+    return h;
+  }
+
+  it("a one-shot retake buys one clip, not the part", async () => {
+    const h = await stamped();
+    await run(h, board(), { retake_shots: ["s3"] });
+    expect(h.invokes.map((i) => i.shot)).toEqual(["s3"]);
+  });
+
+  it("nothing changed buys nothing", async () => {
+    const h = await stamped();
+    await run(h, board());
+    expect(h.invokes).toEqual([]);
+  });
+
+  it("if that end frame did change, that one clip fails its old proof, once", async () => {
+    const h = await stamped();
+    h.store.set("renders/p/keyframes/s4.png", new TextEncoder().encode("a new still"));
+    await run(h, board(), { retake_shots: ["s4"] });
+    expect(h.invokes.map((i) => i.shot).sort()).toEqual(["s3", "s4"]);
+    h.invokes.length = 0;
+    await run(h, board());
+    expect(h.invokes, "stamped now without the end frame").toEqual([]);
+  });
+
+  it("CONTROL: a door that uses end frames does not take the old stamp for a changed frame", async () => {
+    quiet();
+    const h = await stamped();
+    h.mods = [firstLast()];
+    h.store.set("renders/p/keyframes/s4.png", new TextEncoder().encode("a new still"));
+    await run(h, board());
+    expect(h.invokes.map((i) => i.shot).sort(), "s3 ends on s4, and s4 starts on it").toEqual(["s3", "s4"]);
+  });
+});
+
 describe("held_end_frames through a film", () => {
   it("the named shot keeps the end frame it is given, and the others take the next still", async () => {
     quiet();
