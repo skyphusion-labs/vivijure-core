@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startClipJob, type ClipShotInput } from "../src/render-orchestrator.js";
+import { reclaimClipsFromR2, startClipJob, type ClipShotInput } from "../src/render-orchestrator.js";
 import { advanceFilmJob, startFilmFromKeyframes, type FilmJob } from "../src/film-orchestrator.js";
 import { filmJobDocKey } from "../src/film-model.js";
 import { provKey } from "../src/clip-provenance.js";
@@ -141,6 +141,69 @@ describe("a retake of one shot", () => {
     h.invokes.length = 0;
     await run(h, [shot("s1")], { retake_shots: ["nope"] });
     expect(h.invokes).toEqual([]);
+  });
+});
+
+describe("reclaim during a retake never takes the old clip", () => {
+  const KEY = "renders/p/clips/s1_door.mp4";
+  /** The first take, uploaded before the retake starts, then a retake whose new clip has not landed. */
+  async function retakeInFlight(over: { failArchive?: boolean } = {}) {
+    quiet();
+    const h = clipHarness();
+    seedKeyframes(h, "s1");
+    await run(h, [shot("s1")]);
+    const oldBytes = h.store.get(KEY);
+    const uploaded = new Map<string, number>([[KEY, Date.now() - 60_000]]);
+    const r2 = (h.env as unknown as { R2_RENDERS: Record<string, unknown> }).R2_RENDERS;
+    const list = r2.list as (a: { prefix: string }) => Promise<{ objects: Array<{ key: string; uploaded: Date }>; truncated: boolean }>;
+    r2.list = async (a: { prefix: string }) => {
+      const out = await list(a);
+      return { ...out, objects: out.objects.map((o) => ({ ...o, uploaded: new Date(uploaded.get(o.key) ?? 0) })) };
+    };
+    if (over.failArchive) {
+      const put = r2.put as (k: string, v: unknown) => Promise<void>;
+      r2.put = async (k: string, v: unknown) => {
+        if (k.includes("_take")) throw new Error("copy failed");
+        return put(k, v);
+      };
+    }
+    h.fail.add("s1"); // The door is called and does not land, so the old clip is still at its key.
+    const job = await run(h, [shot("s1")], { retake_shots: ["s1"] });
+    h.store.set(KEY, oldBytes as Uint8Array);
+    job.shots[0].status = "pending";
+    job.shots[0].error = undefined;
+    return { h, job, uploaded };
+  }
+
+  it("the old proven clip stays listed and is not adopted", async () => {
+    const { h, job } = await retakeInFlight();
+    expect(h.store.has(KEY), "the instrument: the old clip is really there").toBe(true);
+    expect(await reclaimClipsFromR2(h.env, job)).toBe(0);
+    expect(job.shots[0].status).toBe("pending");
+    expect(job.shots[0].clip_key).toBeUndefined();
+  });
+
+  it("the same when the archive copy failed, because reclaim does not depend on it", async () => {
+    const { h, job } = await retakeInFlight({ failArchive: true });
+    expect([...h.store.keys()].filter((k) => k.includes("_take")), "the archive really failed").toEqual([]);
+    expect(await reclaimClipsFromR2(h.env, job)).toBe(0);
+    expect(job.shots[0].status).toBe("pending");
+  });
+
+  it("a failed take is not rescued by the old clip", async () => {
+    const { h, job } = await retakeInFlight();
+    job.shots[0].status = "failed";
+    expect(await reclaimClipsFromR2(h.env, job)).toBe(0);
+    expect(job.shots[0].status).toBe("failed");
+  });
+
+  it("the new take wins once it lands", async () => {
+    const { h, job, uploaded } = await retakeInFlight();
+    h.store.set(KEY, new TextEncoder().encode("the new take"));
+    uploaded.set(KEY, Date.now() + 1000);
+    expect(await reclaimClipsFromR2(h.env, job)).toBe(1);
+    expect(job.shots[0].status).toBe("done");
+    expect(job.shots[0].clip_key).toBe(KEY);
   });
 });
 
