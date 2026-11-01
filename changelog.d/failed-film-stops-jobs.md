@@ -1,0 +1,3 @@
+### fix(film): a film that fails asks its GPU jobs to cancel
+
+A failed film left its jobs running, and paying. It now asks them to cancel once, for keyframe, clip and finish jobs, as a user cancel does, and a failed finish retry asks for its steps. This covers a throw in a tick and every other way a film fails in `advanceFilmJob`. A module with no cancel logs that its job runs on: every cloud clip door except `infinitetalk`, once that module is deployed. A storage error that also blocks reading the doc now throws and leaves the film for the next tick, where it used to fail the row and strand the film.

@@ -4045,6 +4045,11 @@ async function settleFinishRetry(env: Env, job: FilmJob, preModules?: Registered
     await fireNotify(env, job, preModules);
     return;
   }
+  // The retry failed and the film goes back to what it had. Restoring drops the tokens of steps still running.
+  if (!cancelled) {
+    await cancelInFlightChainSteps(env, job, preModules ?? await discoverModules(envRec)).catch((e) =>
+      console.warn(`film ${job.film_id}: could not ask a failed finish retry's steps to cancel (${(e as Error).message})`));
+  }
   const named = (job.finish_incomplete ?? []).map((e) => `${e.step}: ${e.detail ?? e.code}`).join("; ");
   const reason = cancelled ?? job.error ?? (named || "the retry did not finish");
   // The attempt's own artifacts, and never anything the restored job still names.
@@ -4112,6 +4117,26 @@ async function cancelInFlightChainSteps(env: Env, job: FilmJob, modules: Registe
 }
 
 /** Mark an in-flight film job cancelled. Terminal jobs are returned unchanged. */
+/** A film that failed by itself asks what it started to cancel, or those jobs keep running and keep paying
+ *  (core#425). Measured: 2653 s and 604 s of GPU after a film failed. Asked, not stopped: a module with no cancel
+ *  logs that its job runs on, and a cancel can fail. A user cancel does this in cancelFilmJob. Best effort, and it
+ *  never changes the film's own failure. A finish retry is settled by settleFinishRetry, which asks for its steps.
+ *  Returns true when the doc changed and needs writing. */
+async function askJobsOfFailedFilmToCancel(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<boolean> {
+  if (job.jobs_cancel_asked || job.cancelled || job.finish_retry_prior) return false;
+  job.jobs_cancel_asked = true;
+  try {
+    const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
+    await cancelInFlightChainSteps(env, job, modules);
+    // The film has left the keyframe phase by now. The tokens are still on the doc.
+    await cancelInFlightKeyframe(env, job, modules, { anyPhase: true });
+    if (job.clip_job_id) await cancelInFlightClips(env, job.clip_job_id, modules);
+  } catch (e) {
+    console.warn(`film ${job.film_id}: could not ask its GPU jobs to cancel after failing (${(e as Error).message})`);
+  }
+  return true;
+}
+
 export async function cancelFilmJob(env: Env, filmId: string): Promise<FilmJob | null> {
   const obj = await env.R2_RENDERS.get(filmKey(filmId));
   if (!obj) return null;
@@ -4493,9 +4518,10 @@ export async function cancelInFlightKeyframe(
   env: Env,
   job: FilmJob,
   preModules?: RegisteredModule[],
+  opts: { anyPhase?: boolean } = {},
 ): Promise<void> {
   const polls = inFlightKeyframePolls(job);
-  if (job.phase !== "keyframe" || !polls.length || !job.keyframe_binding) return;
+  if ((job.phase !== "keyframe" && !opts.anyPhase) || !polls.length || !job.keyframe_binding) return;
   const envRec = env as unknown as Record<string, unknown>;
   const modules = preModules ?? await discoverModules(envRec);
   const kf = modules.find((m) => m.binding === job.keyframe_binding) ?? null;
@@ -4514,15 +4540,22 @@ export async function cancelInFlightKeyframe(
     }
     return;
   }
+  const left: string[] = [];
   for (let i = 0; i < polls.length; i++) {
     const jobId = jobIdForKeyframePoll(job, i);
-    const r = await cancelModule(fetcher, { poll: polls[i] });
+    let r = await cancelModule(fetcher, { poll: polls[i] });
+    // One more try costs nothing, and a job this leaves behind keeps paying.
+    if (!r.ok && /-> 5\d\d|unreachable/.test(r.error)) r = await cancelModule(fetcher, { poll: polls[i] });
+    if (!r.ok) left.push(polls[i]);
     if (r.ok) {
       console.warn(`film ${job.film_id}: cancelled in-flight keyframe RunPod job ${jobId} via ${kf.name} (#327)`);
     } else {
       console.warn(`film ${job.film_id}: keyframe cancel FAILED (${r.error}) -- RunPod job ${jobId} left running (ORPHAN) (#327)`);
     }
   }
+  // A token is dropped once its job has been told, so nothing asks again and nothing reads it as in flight.
+  if (Array.isArray(job.keyframe_polls) && job.keyframe_polls.length) job.keyframe_polls = left;
+  else if (!left.length) job.keyframe_poll = undefined;
 }
 
 /** Recover a keyframe phase whose module poll has gone stale (RunPod GC'd the finished job) by adopting
@@ -4722,18 +4755,39 @@ async function claimAdvanceOrFailOpen(env: Env, filmId: string): Promise<FilmAdv
 
 /** #53: persist phase=failed on the R2 job doc when advance throws mid-tick. Best-effort: a corrupt
  *  doc falls back to D1-only via markRenderFailedByJobId (the #32 SyntaxError path). */
-async function persistFilmJobFailed(env: Env, filmId: string, error: string): Promise<FilmJob | null> {
+/** A film doc, or a SyntaxError: text that parses into something with no phase is as corrupt as text that does not,
+ *  and no later tick will mend it. */
+function parseFilmDoc(text: string): FilmJob {
+  const job = JSON.parse(text) as FilmJob | null;
+  if (!job || typeof job !== "object" || typeof job.phase !== "string") throw new SyntaxError("the job doc is not a film");
+  return job;
+}
+
+/** True when this film's row has not moved for a whole phase deadline. A successful tick moves it, so storage that
+ *  has blocked every tick for this long is not passing, and waiting longer only re-sends the same cancels. Without
+ *  a database to ask, it keeps waiting. */
+async function deferralExpired(env: Env, filmId: string): Promise<boolean> {
+  try {
+    const row = await env.DB.prepare("SELECT updated_at FROM renders WHERE job_id = ?").bind(filmId).first<{ updated_at: number }>();
+    return !!row && Date.now() / 1000 - row.updated_at >= PHASE_HARD_DEADLINE_SECONDS;
+  } catch {
+    return false;
+  }
+}
+
+async function persistFilmJobFailed(env: Env, filmId: string, error: string): Promise<FilmJob | null | undefined> {
   try {
     const obj = await env.R2_RENDERS.get(filmKey(filmId));
     if (!obj) return null;
-    const job = JSON.parse(await obj.text()) as FilmJob;
+    const job = parseFilmDoc(await obj.text());
     if (job.phase === "done" || job.phase === "failed") return job;
     job.phase = "failed";
     job.error = error.slice(0, 2000);
     await putFilm(env, job);
     return job;
-  } catch {
-    return null;
+  } catch (e) {
+    // A corrupt doc will never read, so it fails in D1 alone. A storage error may pass, so say that we do not know.
+    return e instanceof SyntaxError ? null : undefined;
   }
 }
 
@@ -4757,7 +4811,12 @@ export async function advanceFilmJob(
   const claim = await claimAdvanceOrFailOpen(env, filmId);
   if (!claim.won) return readFilmJobReadOnly(env, filmId);
   try {
-    return await advanceFilmJobLocked(env, filmId, preModules);
+    const advanced = await advanceFilmJobLocked(env, filmId, preModules);
+    if (advanced?.job.phase === "failed" && await askJobsOfFailedFilmToCancel(env, advanced.job, preModules)) {
+      // Best effort: the film has already failed for its own reason, and a write error must not replace that.
+      await putFilm(env, advanced.job).catch((e) => console.warn(`film ${filmId}: ${(e as Error).message}`));
+    }
+    return advanced;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // #32: a corrupt / truncated R2 job doc makes JSON.parse throw on EVERY advance tick, so the render
@@ -4776,6 +4835,16 @@ export async function advanceFilmJob(
     const error = `advance failed: ${msg}`;
     console.error(JSON.stringify({ ev: "film.advance_failed", film_id: filmId, error: msg }));
     const job = await persistFilmJobFailed(env, filmId, error);
+    // Storage could not say. Failing the row now would stop the sweep, the only thing that will drive this film
+    // again, and strand its jobs paying with no one able to read their tokens (core#425). Leave it to the next tick.
+    if (job === undefined && !(await deferralExpired(env, filmId))) {
+      console.warn(JSON.stringify({ ev: "film.advance_deferred", film_id: filmId, error: msg }));
+      throw e;
+    }
+    if (job?.phase === "failed" && await askJobsOfFailedFilmToCancel(env, job, preModules)) {
+      // Best effort: the storage that failed this tick may still be failing.
+      await putFilm(env, job).catch((e) => console.warn(`film ${filmId}: ${(e as Error).message}`));
+    }
     await markRenderFailedByJobId(env, filmId, error);
     await finishQueueCall(env, filmId, "forget", (q) => q.forget(filmId));
     if (job?.finish_retry_prior) {
@@ -4802,7 +4871,7 @@ async function advanceFilmJobLocked(
 ): Promise<{ job: FilmJob; clipJob: ClipJob | null } | null> {
   const obj = await env.R2_RENDERS.get(filmKey(filmId));
   if (!obj) return null;
-  const job = JSON.parse(await obj.text()) as FilmJob;
+  const job = parseFilmDoc(await obj.text());
   if (job.cancelled) return { job, clipJob: null };
   const envRec = env as unknown as Record<string, unknown>;
   const entryPhase = job.phase;
