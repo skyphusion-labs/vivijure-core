@@ -354,6 +354,21 @@ describe("through a whole film", () => {
     expect(h.store.get("renders/p/dialogue/shot_02.wav")).toBe(wav);
   });
 
+  it("a re-run from keyframes keeps the frame, the titles and the cast on the job", async () => {
+    quiet();
+    const h = filmHarness();
+    const job = await startFilmFromKeyframes(h.env, {
+      project: "p", bundle_key: "bundles/p.tar.gz", scenes: SCENES,
+      keyframes: SCENES.map((s) => ({ shot_id: s.shot_id, keyframe_key: `renders/p/keyframes/${s.shot_id}.png` })),
+      motion_backend: "talk", derive_mode: "finalized", idempotency_key: `k-${Math.random()}`,
+      delivery_width: 832, delivery_height: 464, delivery_fps: 24,
+      film_titles: { title: { text: "T" } }, cast_loras: { A: 7 },
+    } as never, [talking, dialogue]);
+    expect([job.delivery_width, job.delivery_height, job.delivery_fps]).toEqual([832, 464, 24]);
+    expect(job.film_titles).toEqual({ title: { text: "T" } });
+    expect(job.cast_loras).toEqual({ A: 7 });
+  });
+
   it("a retake with a new line buys that line and that clip alone", async () => {
     quiet();
     const h = filmHarness();

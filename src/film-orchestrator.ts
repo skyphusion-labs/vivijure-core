@@ -3454,6 +3454,13 @@ export async function startFilmFromKeyframes(
     derive_mode: "finalized" | "cloud-finalized";
     parent_render_id?: number;
     audio_key?: string;
+    /** A re-run of a film that was pinned must stay pinned, or it no longer joins with its siblings. */
+    delivery_width?: number;
+    delivery_height?: number;
+    delivery_fps?: number;
+    film_titles?: FilmJob["film_titles"];
+    /** Kept so a re-run names the same cast. No keyframe is drawn here, so no adapter is loaded. */
+    cast_loras?: FilmJob["cast_loras"];
     // vivijure-cf#334: the per-shot dialogue batch, exactly as startFilmJob takes it. Before this the
     // parameter did not exist and the job literal never set the field, so EVERY caller of this function
     // (render-from-keyframes, finalize, animate-cloud, animate-hybrid) was structurally incapable of a
@@ -3509,6 +3516,11 @@ export async function startFilmFromKeyframes(
     derive_mode: args.derive_mode,
     parent_render_id: args.parent_render_id,
     audio_key: stagedAudio,
+    delivery_width: args.delivery_width,
+    delivery_height: args.delivery_height,
+    delivery_fps: args.delivery_fps,
+    film_titles: args.film_titles,
+    cast_loras: args.cast_loras && Object.keys(args.cast_loras).length ? args.cast_loras : undefined,
     // Same undefined-when-empty shape startFilmJob persists, so a silent film has no key rather than
     // an empty array, and the two start paths produce byte-comparable job docs.
     dialogue_lines: dialogueLines && dialogueLines.length ? dialogueLines : undefined,
