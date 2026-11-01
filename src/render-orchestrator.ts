@@ -441,6 +441,13 @@ export async function startClipJob(
     const shot: ClipShot = { ...sh, status: "pending" };
     const mbName = sh.motion_backend ?? args.motion_backend ?? defaultMb?.name;
     const mb = mbName ? serving.find((m) => m.name === mbName) ?? null : defaultMb;
+    // A door that does not use an end frame must not have one in its proof, or a new still on the next shot
+    // would buy this clip again for a frame the door never read.
+    const endFrameUsed = mb?.usage?.first_last === true;
+    if (!endFrameUsed) {
+      delete shot.last_keyframe_key;
+      delete shot.last_keyframe_url;
+    }
     const binding = mb ? mb.binding : null;
     shot.binding = binding;
     shot.motion_backend = mb?.name ?? undefined;
@@ -455,7 +462,7 @@ export async function startClipJob(
       shots.push(shot);
       continue;
     }
-    let motionInput: ClipShotInput = sh;
+    let motionInput: ClipShotInput = endFrameUsed ? sh : { ...sh, last_keyframe_key: undefined, last_keyframe_url: undefined };
     if (mb.name && BUCKET_KEYFRAME_MOTION_BACKENDS.has(mb.name)) {
       try {
         motionInput = await ensureClipKeyframeInR2(env, args.project, sh);
