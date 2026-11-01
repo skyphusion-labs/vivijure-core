@@ -355,7 +355,7 @@ describe("a keyframe poll that fails in transport", () => {
   }
 });
 
-describe("core#425 a failed film stops its GPU jobs", () => {
+describe("core#425 a failed film asks its GPU jobs to cancel", () => {
   const pending = { ok: true, pending: true, wait: "running" };
   const stmt = { run: async () => ({ meta: { changes: 1 } }), first: async () => ({ one: 1 }), all: async () => ({ results: [] }) };
   const harnessWithDb = (opts: Parameters<typeof harness>[0]) => {
@@ -373,7 +373,7 @@ describe("core#425 a failed film stops its GPU jobs", () => {
     const doc = h.read(started.film_id);
     expect(doc.phase).toBe("failed");
     expect(doc.error).toMatch(/advance failed: list/);
-    expect(doc.jobs_stopped).toBe(true);
+    expect(doc.jobs_cancel_asked).toBe(true);
     expect([...h.cancels].sort()).toEqual(["kf-poll-0", "kf-poll-1"]);
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
     expect(h.cancels).toHaveLength(2);
@@ -420,7 +420,7 @@ describe("core#425 a failed film stops its GPU jobs", () => {
     h.objects.set(clipJobDocKey("clips-1"), JSON.stringify(clipDoc));
     h.objects.set(filmJobDocKey(started.film_id), JSON.stringify({ ...doc, clip_job_id: "clips-1" }));
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
-    expect(h.read(started.film_id).jobs_stopped).toBe(true);
+    expect(h.read(started.film_id).jobs_cancel_asked).toBe(true);
     expect(h.cancels).toContain("clip-poll-1");
   });
 
@@ -431,17 +431,119 @@ describe("core#425 a failed film stops its GPU jobs", () => {
     h.objects.set(filmJobDocKey(started.film_id), JSON.stringify({ ...h.read(started.film_id), clip_job_id: "clips-1" }));
     const r = await advanceFilmJob(h.env, started.film_id, [kfMod]);
     expect(r?.job.error, "the tick reports the film, not a corrupt doc").toBe("keyframe: bad LoRA");
-    expect(h.read(started.film_id).jobs_stopped).toBe(true);
+    expect(h.read(started.film_id).jobs_cancel_asked).toBe(true);
   });
 
-  it("a user cancel is not stopped twice", async () => {
+  const finishDoc = (doc: FilmJob, over: object = {}) => ({
+    ...doc, phase: "finish", keyframe_poll: undefined, keyframe_polls: undefined,
+    finish_shots: [{ shot_id: "shot_01", clip_key: "renders/film/clips/a.mp4", chain: ["MODULE_KEYFRAME"], configs: [{}], idx: 0, status: "pending", applied: [], poll: "fs-1" }],
+    ...over,
+  });
+  const failNextDocWrite = (h: ReturnType<typeof harnessWithDb>, filmId: string) => {
+    const r2 = (h.env as unknown as { R2_RENDERS: { put: (k: string, v: string) => Promise<void> } }).R2_RENDERS;
+    const put = r2.put.bind(r2);
+    let once = true;
+    r2.put = async (k, v) => {
+      if (once && k === filmJobDocKey(filmId)) { once = false; throw new Error("put: internal (10001)"); }
+      await put(k, v);
+    };
+  };
+
+  it("a running finish step is asked to cancel", async () => {
+    const h = harnessWithDb({ keyframeParallel: "1", poll: () => pending });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    h.objects.set(filmJobDocKey(started.film_id), JSON.stringify(finishDoc(h.read(started.film_id))));
+    failNextDocWrite(h, started.film_id);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.read(started.film_id).phase).toBe("failed");
+    expect(h.cancels).toEqual(["fs-1"]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.cancels, "asked once").toEqual(["fs-1"]);
+  });
+
+  it("a finish retry that fails cancels its step and keeps the film the user has", async () => {
+    const h = harnessWithDb({ keyframeParallel: "1", poll: () => pending });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    const base = h.read(started.film_id);
+    const prior = { ...base, phase: "done", film_key: "renders/film/film.mp4", keyframe_poll: undefined, keyframe_polls: undefined };
+    h.objects.set(filmJobDocKey(started.film_id), JSON.stringify(finishDoc(base, { finish_retry_prior: JSON.stringify(prior) })));
+    failNextDocWrite(h, started.film_id);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    const doc = h.read(started.film_id);
+    expect(h.cancels, "the retry's own step").toEqual(["fs-1"]);
+    expect(doc.phase).toBe("done");
+    expect(doc.film_key).toBe("renders/film/film.mp4");
+  });
+
+  it("a storage error that also blocks the read leaves the film for the next tick, and it recovers", async () => {
+    const h = harnessWithDb({ keyframeParallel: "1", poll: () => pending });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    const r2 = (h.env as unknown as { R2_RENDERS: { get: (k: string) => Promise<unknown> } }).R2_RENDERS;
+    const get = r2.get.bind(r2);
+    const down = () => { r2.get = async () => { throw new Error("get: internal (10001)"); }; };
+    down();
+    await expect(advanceFilmJob(h.env, started.film_id, [kfMod])).rejects.toThrow("10001");
+    expect(h.cancels).toEqual([]);
+    r2.get = get;
+    expect(h.read(started.film_id).phase).toBe("keyframe");
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.read(started.film_id).phase).toBe("keyframe");
+  });
+
+  it("a write error after the film failed does not replace its reason", async () => {
+    const h = harnessWithDb({ keyframeParallel: "1", poll: () => ({ ok: false, error: "keyframe: bad LoRA" }) });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    const r2 = (h.env as unknown as { R2_RENDERS: { put: (k: string, v: string) => Promise<void> } }).R2_RENDERS;
+    const put = r2.put.bind(r2);
+    r2.put = async (k, v) => { if (k === filmJobDocKey(started.film_id) && v.includes("jobs_cancel_asked")) throw new Error("put: internal (10001)"); await put(k, v); };
+    const bound: unknown[] = [];
+    const stmt = { run: async () => ({ meta: { changes: 1 } }), first: async () => ({ one: 1 }), all: async () => ({ results: [] }) };
+    (h.env as unknown as { DB: unknown }).DB = { prepare: () => ({ ...stmt, bind: (...a: unknown[]) => { bound.push(...a); return stmt; } }), batch: async () => [] };
+    const r = await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(r?.job.error).toBe("keyframe: bad LoRA");
+    expect(bound.join(" "), "the D1 row keeps the real reason too").not.toContain("advance failed");
+  });
+
+  it("a cancel that got a 503 is tried once more, and a token is dropped once told", async () => {
+    const h = harnessWithDb({ keyframeParallel: "1", poll: () => pending });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    const env = h.env as unknown as { R2_RENDERS: { list: () => Promise<unknown> }; MODULE_KEYFRAME: { fetch: (u: string, i?: RequestInit) => Promise<Response> } };
+    env.R2_RENDERS.list = async () => { throw new Error("list: internal (10001)"); };
+    const real = env.MODULE_KEYFRAME.fetch;
+    let cancels = 0;
+    env.MODULE_KEYFRAME.fetch = async (u, i) => {
+      if (String(u).endsWith("/cancel") && (cancels += 1) === 1) return new Response("", { status: 503 });
+      return real(u, i);
+    };
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(cancels).toBe(2);
+    expect(h.read(started.film_id).keyframe_poll).toBeUndefined();
+  });
+
+  it("a cancel a module refuses keeps its token, and is not tried again", async () => {
+    const h = harnessWithDb({ keyframeParallel: "1", poll: () => pending });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    const env = h.env as unknown as { R2_RENDERS: { list: () => Promise<unknown> }; MODULE_KEYFRAME: { fetch: (u: string, i?: RequestInit) => Promise<Response> } };
+    env.R2_RENDERS.list = async () => { throw new Error("list: internal (10001)"); };
+    const real = env.MODULE_KEYFRAME.fetch;
+    let cancels = 0;
+    env.MODULE_KEYFRAME.fetch = async (u, i) => {
+      if (String(u).endsWith("/cancel")) { cancels += 1; return new Response(JSON.stringify({ ok: false, error: "no" }), { headers: { "content-type": "application/json" } }); }
+      return real(u, i);
+    };
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(cancels).toBe(1);
+    expect(h.read(started.film_id).keyframe_poll).toBe("kf-poll-0");
+  });
+
+  it("a user cancel is not asked twice", async () => {
     const h = harnessWithDb({ keyframeParallel: "1", poll: () => pending });
     const started = await startFilmJob(h.env, START, [kfMod]);
     await cancelFilmJob(h.env, started.film_id);
     const before = h.cancels.length;
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
     expect(h.cancels).toHaveLength(before);
-    expect(h.read(started.film_id).jobs_stopped).toBeUndefined();
+    expect(h.read(started.film_id).jobs_cancel_asked).toBeUndefined();
   });
 
   it("a film failing with a running clip job stops that too", async () => {

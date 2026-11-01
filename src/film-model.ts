@@ -431,10 +431,8 @@ export interface FilmJob {
   // Parallel keyframe invokes: one film job, N contiguous shot_id chunks. The N=1 path still uses
   // only keyframe_poll / keyframe_job_id so a leftover single token keeps the old poll path.
   keyframe_polls?: string[];
-  // Set once a failed film has asked its GPU jobs to stop, so it asks only once.
-  jobs_stopped?: boolean;
-  // Set once the keyframe jobs were asked to cancel, so they are asked only once.
-  keyframe_cancel_sent?: boolean;
+  // Set once a failed film has asked its GPU jobs to cancel, so it asks only once. Asked, not stopped.
+  jobs_cancel_asked?: boolean;
   // Consecutive ticks in which a keyframe poll failed in transport. Reset by a tick with none.
   keyframe_poll_attempts?: number;
   keyframe_job_ids?: string[];
