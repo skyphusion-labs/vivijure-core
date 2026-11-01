@@ -244,6 +244,18 @@ describe("the end frame in a clip's proof", () => {
     seedEnds(h);
     const job = await run(h, [endShot("e-old")]);
     expect(job.shots[0].last_keyframe_key).toBeUndefined();
+    const sent = (h.env as unknown as { MODULE_DOOR: { fetch: unknown } }).MODULE_DOOR;
+    const real = sent.fetch as (u: string, i?: RequestInit) => Promise<Response>;
+    let input: Record<string, unknown> = {};
+    sent.fetch = async (u: string, i?: RequestInit) => {
+      input = (JSON.parse(String(i?.body)) as { input: Record<string, unknown> }).input;
+      return real(u, i);
+    };
+    await run(h, [endShot("e-old")], { reuse_proven: false });
+    expect(input.shot_id, "the instrument: the door was called").toBe("s1");
+    expect(input.last_keyframe_key).toBeUndefined();
+    expect(input.last_keyframe_url).toBeUndefined();
+    sent.fetch = real;
     h.invokes.length = 0;
     await run(h, [endShot("e-new")]);
     expect(h.invokes).toEqual([]);
