@@ -175,6 +175,9 @@ import {
   finishedClipFileMatchesShot,
   listClipsByShotId,
   reclaimClipsFromR2,
+  CLIP_POLL_MAX_ATTEMPTS,
+  classifyTransientFailure,
+  isClipPollTransportError,
   validateDoneClips,
   type ClipShotInput,
   type ClipJob,
@@ -4392,6 +4395,24 @@ async function startParallelKeyframes(
   parkKeyframePartials(job, outputs);
 }
 
+/** True when a keyframe poll error is one a later tick can get past: the module's own 5xx, or a transport failure.
+ *  Same test as a clip poll (#719). A module that reports a real failure still fails the film at once. */
+function isKeyframePollTransient(error: string | undefined): boolean {
+  return classifyTransientFailure(error) === "transient" && isClipPollTransportError(error);
+}
+
+/** Counts one tick with a transient keyframe poll failure. Returns the failure text once it has lasted
+ *  CLIP_POLL_MAX_ATTEMPTS consecutive ticks, otherwise null and the film carries on waiting. */
+function countKeyframePollFailure(job: FilmJob, error: string | undefined): string | null {
+  const attempts = (job.keyframe_poll_attempts ?? 0) + 1;
+  if (attempts < CLIP_POLL_MAX_ATTEMPTS) {
+    job.keyframe_poll_attempts = attempts;
+    return null;
+  }
+  job.keyframe_poll_attempts = undefined;
+  return `${error} (persisted through ${attempts} consecutive polls)`;
+}
+
 async function pollParallelKeyframes(
   env: Env,
   job: FilmJob,
@@ -4404,10 +4425,20 @@ async function pollParallelKeyframes(
   const newOutputs: KeyframeOutput[] = [];
   let wait: "accepted" | "running" | undefined;
   let fail: string | undefined;
+  let transient: string | undefined;
 
   for (let i = 0; i < polls.length; i++) {
     const p = await pollModule<KeyframeOutput>(fetcher, { poll: polls[i] });
-    if (!p.ok) { fail = p.error; break; }
+    if (!p.ok) {
+      if (isKeyframePollTransient(p.error)) {
+        transient = p.error;
+        still.push(polls[i]);
+        stillIds.push(job.keyframe_job_ids?.[i] ?? "");
+        continue;
+      }
+      fail = p.error;
+      break;
+    }
     if ((p as { pending?: boolean }).pending) {
       still.push(polls[i]);
       stillIds.push(job.keyframe_job_ids?.[i] ?? "");
@@ -4420,6 +4451,11 @@ async function pollParallelKeyframes(
     const v = hookOutputViolation(job.keyframe_binding ?? "keyframe", "keyframe", out);
     if (v) { fail = v; break; }
     newOutputs.push(out);
+  }
+
+  if (!fail) {
+    if (transient) fail = countKeyframePollFailure(job, transient) ?? undefined;
+    else job.keyframe_poll_attempts = undefined;
   }
 
   if (fail) {
@@ -4799,14 +4835,19 @@ async function advanceFilmJobLocked(
     if (!fetcher) { job.phase = "failed"; job.error = "keyframe module no longer bound"; }
     else {
       const p = await pollModule<KeyframeOutput>(fetcher, { poll: job.keyframe_poll });
-      if (!p.ok) { job.phase = "failed"; job.error = p.error; }
+      if (!p.ok) {
+        const lasting = isKeyframePollTransient(p.error) ? countKeyframePollFailure(job, p.error) : p.error;
+        if (lasting !== null) { job.phase = "failed"; job.error = lasting; }
+      }
       else if (!(p as { pending?: boolean }).pending) {
+        job.keyframe_poll_attempts = undefined;
         job.keyframe_wait = undefined;
         const out = (p as { output: KeyframeOutput }).output;
         const v = hookOutputViolation(job.keyframe_binding ?? "keyframe", "keyframe", out);
         if (v) { job.phase = "failed"; job.error = v; }
         else await afterKeyframeOutput(env, job, out, modules);
       } else {
+        job.keyframe_poll_attempts = undefined;
         // cf#307: surface module wait phase (accepted vs running) so the poll view can distinguish
         // cold start from sampling. Modules that omit wait leave keyframe_wait cleared.
         const wait = (p as { wait?: string }).wait;
