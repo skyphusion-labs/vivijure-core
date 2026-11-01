@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FilmNotStartedError, startFilmJob } from "../src/film-orchestrator.js";
+import { FilmNotStartedError, startFilmFromKeyframes, startFilmJob } from "../src/film-orchestrator.js";
 import { MODULE_API, type RegisteredModule } from "../src/modules/types.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
@@ -101,3 +101,68 @@ describe("a throw from the invoke itself", () => {
   });
 });
 
+describe("startFilmFromKeyframes gets the same treatment", () => {
+  const motion = {
+    name: "door", version: "1", api: MODULE_API, hooks: ["motion.backend"], binding: "MODULE_DOOR", config_schema: {},
+    ui: { order: 1, section: "motion", locality: "cloud" }, cancelable: true,
+  } as unknown as RegisteredModule;
+  function clipHarness(failJobWrites: number) {
+    const h = harness(failJobWrites);
+    const calls = { invoke: 0, cancel: 0 };
+    const docs = new Map<string, string>();
+    const r2 = (h.env as unknown as { R2_RENDERS: Record<string, unknown> }).R2_RENDERS;
+    const put = r2.put as (k: string, v: unknown) => Promise<void>;
+    r2.put = async (k: string, v: unknown) => {
+      await put(k, v);
+      if (typeof v === "string") docs.set(k, v);
+    };
+    r2.get = async (k: string) => {
+      const v = docs.get(k);
+      return v === undefined ? null : { text: async () => v };
+    };
+    (h.env as unknown as Record<string, unknown>).MODULE_DOOR = {
+      fetch: async (u: string) => {
+        if (String(u).includes("cancel")) {
+          calls.cancel += 1;
+          return json({ ok: true });
+        }
+        calls.invoke += 1;
+        return json({ ok: true, pending: true, poll: "tok" });
+      },
+    };
+    return { ...h, clips: calls };
+  }
+  const from = (over: Record<string, unknown> = {}) => ({
+    project: "p", bundle_key: "bundles/p.tar.gz", motion_backend: "door", derive_mode: "finalized",
+    scenes: [{ shot_id: "shot_01", prompt: "x", seconds: 3 }],
+    keyframes: [{ shot_id: "shot_01", keyframe_key: "renders/p/k1.png" }],
+    idempotency_key: `k-${Math.random()}`, ...over,
+  });
+
+  it("a throw before any door is FilmNotStartedError", async () => {
+    const h = clipHarness(0);
+    (h.env as unknown as { R2_RENDERS: Record<string, unknown> }).R2_RENDERS.get = async () => { throw new Error("R2 read"); };
+    (h.env as unknown as { R2_RENDERS: Record<string, unknown> }).R2_RENDERS.head = async () => { throw new Error("R2 head"); };
+    const e = await startFilmFromKeyframes(h.env, from({ audio_key: "staged/a.wav" }) as never, [motion]).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(FilmNotStartedError);
+    expect(h.clips.invoke).toBe(0);
+  });
+
+  it("a job write that keeps failing cancels the clips, and is not read as nothing started", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const h = clipHarness(99);
+    const e = await startFilmFromKeyframes(h.env, from() as never, [motion]).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(Error);
+    expect(e).not.toBeInstanceOf(FilmNotStartedError);
+    expect((e as Error).message).toMatch(/could not be written/);
+    expect(h.clips.invoke).toBe(1);
+    expect(h.clips.cancel, "a clip nothing can find must not keep spending").toBe(1);
+  });
+
+  it("one failed write is retried, and nothing is cancelled", async () => {
+    const h = clipHarness(1);
+    const job = await startFilmFromKeyframes(h.env, from() as never, [motion]);
+    expect(job.phase).toBe("clips");
+    expect(h.clips.cancel).toBe(0);
+  });
+});

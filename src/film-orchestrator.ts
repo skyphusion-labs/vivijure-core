@@ -3489,6 +3489,9 @@ export async function startFilmFromKeyframes(
     filmId,
   );
   if (guard.duplicate) return guard.duplicate;
+  // vivijure-core#421: as in startFilmJob, a throw before any door is called spent nothing.
+  let invokeAttempted = false;
+  try {
   const scenes = coerceSceneIds(args.scenes ?? []);
   // Join the lines onto the SAME coerced ids as the scenes, exactly as startFilmJob does (#563): a
   // caller supplying its own scene ids otherwise strands the TTS audio under keys no consumer reads.
@@ -3546,9 +3549,10 @@ export async function startFilmFromKeyframes(
     return job;
   }
   if (wantsPreClipDialogue(job, modules)) {
+    invokeAttempted = true;
     await submitPreClipDialogue(env, job, modules);
     if (job.phase === "failed") await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
-    await putFilm(env, job);
+    await writeStartedFilm(env, job, modules);
     return job;
   }
   const shots: ClipShotInput[] = [];
@@ -3576,6 +3580,7 @@ export async function startFilmFromKeyframes(
       ...(await voiceRefOnShot(env, job.voice_ref_keys, m.shot_id)),
     });
   }
+  invokeAttempted = true;
   const clip = await startClipJob(env, {
     project: args.project,
     shots,
@@ -3591,8 +3596,13 @@ export async function startFilmFromKeyframes(
     job.error = "every clip submission failed";
     await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
   }
-  await putFilm(env, job);
+  await writeStartedFilm(env, job, modules);
   return job;
+  } catch (e) {
+    if (invokeAttempted) throw e;
+    await releaseFilmSubmitClaim(env, guard.claimKey, filmId);
+    throw new FilmNotStartedError(e instanceof Error ? e.message : String(e), { cause: e });
+  }
 }
 
 /** Start a film job: resolve the keyframe module, submit the project preview, persist the poll token. */
@@ -3788,7 +3798,12 @@ async function writeStartedFilm(env: Env, job: FilmJob, modules: RegisteredModul
   await cancelInFlightKeyframe(env, job, modules).catch((e) => {
     console.warn(`film ${job.film_id}: cancel after a failed job write also failed: ${String(e)}`);
   });
-  throw new Error(`film ${job.film_id}: the job could not be written, and cancelling its keyframe job was attempted: ${last instanceof Error ? last.message : String(last)}`);
+  if (job.clip_job_id) {
+    await cancelInFlightClips(env, job.clip_job_id, modules).catch((e) => {
+      console.warn(`film ${job.film_id}: clip cancel after a failed job write also failed: ${String(e)}`);
+    });
+  }
+  throw new Error(`film ${job.film_id}: the job could not be written, and cancelling its work was attempted: ${last instanceof Error ? last.message : String(last)}`);
 }
 
 /** Every film.finish artifact a chain could have written under `base`. */
