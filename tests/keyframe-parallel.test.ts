@@ -7,7 +7,7 @@ import {
   startFilmJob,
   type FilmJob,
 } from "../src/film-orchestrator.js";
-import { filmJobDocKey } from "../src/film-model.js";
+import { filmJobDocKey, PHASE_HARD_DEADLINE_SECONDS } from "../src/film-model.js";
 import type { RegisteredModule } from "../src/modules/types.js";
 
 const kfMod = {
@@ -46,6 +46,7 @@ function harness(opts: {
   keyframeParallel?: string;
   invoke?: (shotIds: string[], n: number) => unknown;
   poll?: (token: string, n: number) => unknown;
+  listKeys?: string[];
 }) {
   const objects = new Map<string, string>();
   const invokes: InvokeRec[] = [];
@@ -98,7 +99,10 @@ function harness(opts: {
         return { text: async () => v };
       },
       async list() {
-        return { objects: [], truncated: false };
+        return {
+          objects: (opts.listKeys ?? []).map((key) => ({ key, uploaded: new Date() })),
+          truncated: false,
+        };
       },
     },
   };
@@ -242,6 +246,23 @@ describe("keyframe parallel start/advance", () => {
     const job = await startFilmJob(h.env, START, [kfMod]);
     expect(job.keyframe_polls).toHaveLength(2);
     await cancelInFlightKeyframe(h.env, job, [kfMod]);
+    expect(h.cancels).toEqual(["kf-poll-0", "kf-poll-1"]);
+  });
+
+  it("a film failing at the ceiling with a partial set stops the keyframe jobs still running", async () => {
+    const h = harness({
+      keyframeParallel: "2",
+      listKeys: ["renders/neon/keyframes/shot_01.png"],
+    });
+    const job = await startFilmJob(h.env, START, [kfMod]);
+    const old = Date.now() - (PHASE_HARD_DEADLINE_SECONDS + 60) * 1000;
+    await (h.env as unknown as { R2_RENDERS: { put(k: string, v: string): Promise<void> } }).R2_RENDERS.put(
+      filmJobDocKey(job.film_id),
+      JSON.stringify({ ...job, created_at: old, phase_started_at: old }),
+    );
+    const r = await advanceFilmJob(h.env, job.film_id, [kfMod]);
+    expect(r?.job.phase).toBe("failed");
+    expect(r?.job.error).toMatch(/incomplete film -- keyframes/);
     expect(h.cancels).toEqual(["kf-poll-0", "kf-poll-1"]);
   });
 });
