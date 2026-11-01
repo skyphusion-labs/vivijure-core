@@ -331,6 +331,7 @@ describe("a keyframe poll that fails in transport", () => {
     expect(mid.keyframe_poll).toBe("kf-poll-0");
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
     expect(h.read(started.film_id).error).toMatch(/persisted through 3/);
+    expect(h.cancels).toEqual(["kf-poll-0"]);
   });
 
   it("a dead job is not a transport failure: waiting would never recover it", async () => {
@@ -338,6 +339,7 @@ describe("a keyframe poll that fails in transport", () => {
     const started = await startFilmJob(h.env, START, [kfMod]);
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
     expect(h.read(started.film_id).phase).toBe("failed");
+    expect(h.cancels).toEqual(["kf-poll-0"]);
   });
 
   for (const parallel of ["1", "2"]) {

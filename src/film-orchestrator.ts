@@ -4837,7 +4837,12 @@ async function advanceFilmJobLocked(
       const p = await pollModule<KeyframeOutput>(fetcher, { poll: job.keyframe_poll });
       if (!p.ok) {
         const lasting = isKeyframePollTransient(p.error) ? countKeyframePollFailure(job, p.error) : p.error;
-        if (lasting !== null) { job.phase = "failed"; job.error = lasting; }
+        if (lasting !== null) {
+          // Before the phase moves: the cancel only runs for a film still in keyframe.
+          await cancelInFlightKeyframe(env, job, modules);
+          job.phase = "failed";
+          job.error = lasting;
+        }
       }
       else if (!(p as { pending?: boolean }).pending) {
         job.keyframe_poll_attempts = undefined;
