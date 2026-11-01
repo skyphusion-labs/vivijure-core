@@ -3616,6 +3616,10 @@ export async function startFilmJob(
     project: string; bundle_key: string; scenes: FilmScene[];
     motion_backend?: string; keyframe_backend?: string; keyframe_config?: Record<string, unknown>; motion_config?: Record<string, unknown>;
     /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
+    /** The frame this film is delivered at, both or neither. Parts of a long film set it, because the join
+     *  refuses films of different frames. Absent, the frame comes from the measured clips. */
+    delivery_width?: number;
+    delivery_height?: number;
     reuse_finished?: boolean;
     /** With reuse_finished: shots whose clip is bought again though its inputs are proven the same. An unchanged
      *  line is kept, so the new take has the same audio. Finish follows the clip, so it runs again by itself. */
@@ -3696,6 +3700,8 @@ export async function startFilmJob(
     keyframe_backend: kf ? kf.name : null,
     keyframe_config: args.keyframe_config ?? {},
     finish_config: args.finish_config ?? {},
+    delivery_width: args.delivery_width,
+    delivery_height: args.delivery_height,
     reuse_finished: args.reuse_finished || undefined,
     retake_shots: args.retake_shots?.length ? args.retake_shots : undefined,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.

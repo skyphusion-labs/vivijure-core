@@ -3,6 +3,7 @@ import {
   advanceFilmJob,
   cancelInFlightKeyframe,
   partitionContiguous,
+  resolveFilmFrame,
   resolveKeyframeParallel,
   startFilmJob,
   type FilmJob,
@@ -353,3 +354,25 @@ describe("a keyframe poll that fails in transport", () => {
     });
   }
 });
+
+describe("a film start keeps the frame it was asked for", () => {
+  it("is on the job, and the film is delivered at it", async () => {
+    const h = harness({ keyframeParallel: "1" });
+    const started = await startFilmJob(h.env, { ...START, delivery_width: 1920, delivery_height: 1080 }, [kfMod]);
+    const doc = h.read(started.film_id);
+    expect([doc.delivery_width, doc.delivery_height]).toEqual([1920, 1080]);
+    // Clips measured at another frame do not move it: this is what let parts on different doors differ.
+    const frame = await resolveFilmFrame(h.env, { ...doc, assemble_frame: { width: 1936, height: 1080 } });
+    expect(frame).toMatchObject({ width: 1920, height: 1080, decided: true });
+  });
+
+  it("CONTROL: with no frame asked for, none is invented, and measured clips decide", async () => {
+    const h = harness({ keyframeParallel: "1" });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    const doc = h.read(started.film_id);
+    expect("delivery_width" in doc).toBe(false);
+    const frame = await resolveFilmFrame(h.env, { ...doc, assemble_frame: { width: 1936, height: 1080 } });
+    expect(frame).toMatchObject({ width: 1936, height: 1080 });
+  });
+});
+
