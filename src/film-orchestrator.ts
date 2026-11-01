@@ -4776,11 +4776,31 @@ async function claimAdvanceOrFailOpen(env: Env, filmId: string): Promise<FilmAdv
 
 /** #53: persist phase=failed on the R2 job doc when advance throws mid-tick. Best-effort: a corrupt
  *  doc falls back to D1-only via markRenderFailedByJobId (the #32 SyntaxError path). */
+/** A film doc, or a SyntaxError: text that parses into something with no phase is as corrupt as text that does not,
+ *  and no later tick will mend it. */
+function parseFilmDoc(text: string): FilmJob {
+  const job = JSON.parse(text) as FilmJob | null;
+  if (!job || typeof job !== "object" || typeof job.phase !== "string") throw new SyntaxError("the job doc is not a film");
+  return job;
+}
+
+/** True when this film's row has not moved for a whole phase deadline. A successful tick moves it, so storage that
+ *  has blocked every tick for this long is not passing, and waiting longer only re-sends the same cancels. Without
+ *  a database to ask, it keeps waiting. */
+async function deferralExpired(env: Env, filmId: string): Promise<boolean> {
+  try {
+    const row = await env.DB.prepare("SELECT updated_at FROM renders WHERE job_id = ?").bind(filmId).first<{ updated_at: number }>();
+    return !!row && Date.now() / 1000 - row.updated_at >= PHASE_HARD_DEADLINE_SECONDS;
+  } catch {
+    return false;
+  }
+}
+
 async function persistFilmJobFailed(env: Env, filmId: string, error: string): Promise<FilmJob | null | undefined> {
   try {
     const obj = await env.R2_RENDERS.get(filmKey(filmId));
     if (!obj) return null;
-    const job = JSON.parse(await obj.text()) as FilmJob;
+    const job = parseFilmDoc(await obj.text());
     if (job.phase === "done" || job.phase === "failed") return job;
     job.phase = "failed";
     job.error = error.slice(0, 2000);
@@ -4838,7 +4858,7 @@ export async function advanceFilmJob(
     const job = await persistFilmJobFailed(env, filmId, error);
     // Storage could not say. Failing the row now would stop the sweep, the only thing that will drive this film
     // again, and strand its jobs paying with no one able to read their tokens (core#425). Leave it to the next tick.
-    if (job === undefined) {
+    if (job === undefined && !(await deferralExpired(env, filmId))) {
       console.warn(JSON.stringify({ ev: "film.advance_deferred", film_id: filmId, error: msg }));
       throw e;
     }
@@ -4872,7 +4892,7 @@ async function advanceFilmJobLocked(
 ): Promise<{ job: FilmJob; clipJob: ClipJob | null } | null> {
   const obj = await env.R2_RENDERS.get(filmKey(filmId));
   if (!obj) return null;
-  const job = JSON.parse(await obj.text()) as FilmJob;
+  const job = parseFilmDoc(await obj.text());
   if (job.cancelled) return { job, clipJob: null };
   const envRec = env as unknown as Record<string, unknown>;
   const entryPhase = job.phase;
