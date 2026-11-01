@@ -370,6 +370,9 @@ export interface FilmJob {
   reuse_finished?: boolean;
   /** With reuse_finished: shots whose clip is bought again though its inputs are proven the same. */
   retake_shots?: string[];
+  /** Shot id -> the end frame it keeps, though the next shot has a new still. Its clip's proof holds, so it is
+   *  not bought again. The clip then ends on the old still, and a cut hides that. */
+  held_end_frames?: Record<string, string>;
   /** vivijure-cf#1144: the rate the finish chain produced, recorded with the frame. An operator
    *  delivery_fps still wins (resolveDeliveryFps). Absent is 24, which is also what a film already
    *  past assemble when this shipped was built at. Cleared by a retry that assembles again. */

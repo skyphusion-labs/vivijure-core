@@ -455,9 +455,8 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
     const m = matched[i];
     const next = endFrameShot(matched, i, slotsByShot);
     const keyframe_url = await presignR2Get(env, m.keyframe_key, 1800); // 30min: covers a long cloud i2v job
-    const last_keyframe_url = next
-      ? await presignR2Get(env, next.keyframe_key, 1800)
-      : undefined;
+    const endKey = next ? job.held_end_frames?.[m.shot_id] ?? next.keyframe_key : undefined;
+    const last_keyframe_url = endKey ? await presignR2Get(env, endKey, 1800) : undefined;
     const lineKey = job.dialogue_audio?.[m.shot_id];
     const audio_url = lineKey ? await presignR2Get(env, lineKey, 1800) : undefined;
     const wavSeconds = lineKey ? job.dialogue_audio_seconds?.[m.shot_id] : undefined;
@@ -478,7 +477,7 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
       keyframe_url,
       keyframe_key: m.keyframe_key,
       last_keyframe_url,
-      last_keyframe_key: next?.keyframe_key,
+      last_keyframe_key: endKey,
       prompt: composeMotionPrompt(m.prompt, {
         style_prefix: job.style_prefix,
         voice_lock: job.voice_lock,
@@ -3449,6 +3448,8 @@ export async function startFilmFromKeyframes(
     /** With reuse_finished: shots whose clip is bought again though its inputs are proven the same. An unchanged
      *  line is kept, so the new take has the same audio. Finish follows the clip, so it runs again by itself. */
     retake_shots?: string[];
+    /** Shot id -> the end frame it keeps, though the next shot has a new still. */
+    held_end_frames?: Record<string, string>;
     finish_config?: Record<string, Record<string, unknown>>;
     /** cf#537: which finish modules this render wants. Omitted = the default-participation set. */
     finish_select?: HookSelection;
@@ -3511,6 +3512,7 @@ export async function startFilmFromKeyframes(
     finish_config: args.finish_config ?? {},
     reuse_finished: args.reuse_finished || undefined,
     retake_shots: args.retake_shots?.length ? args.retake_shots : undefined,
+    held_end_frames: args.held_end_frames,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
     speech_config: args.speech_config ?? {},
@@ -3560,16 +3562,15 @@ export async function startFilmFromKeyframes(
   for (let i = 0; i < matched.length; i++) {
     const m = matched[i];
     const next = endFrameShot(matched, i, slotsByShot);
+    const endKey = next ? job.held_end_frames?.[m.shot_id] ?? next.keyframe_key : undefined;
     const keyframe_url = await presignR2Get(env, m.keyframe_key, 1800);
-    const last_keyframe_url = next
-      ? await presignR2Get(env, next.keyframe_key, 1800)
-      : undefined;
+    const last_keyframe_url = endKey ? await presignR2Get(env, endKey, 1800) : undefined;
     shots.push({
       shot_id: m.shot_id,
       keyframe_url,
       keyframe_key: m.keyframe_key,
       last_keyframe_url,
-      last_keyframe_key: next?.keyframe_key,
+      last_keyframe_key: endKey,
       prompt: composeMotionPrompt(m.prompt, {
         style_prefix: job.style_prefix,
         voice_lock: job.voice_lock,

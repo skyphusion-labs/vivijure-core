@@ -394,11 +394,18 @@ async function shotProvenanceHash(env: Env, shot: ClipShot): Promise<string> {
 
 /** vivijure-cf#1166: a finished clip this exact shot already paid for. Only a sidecar that PROVES the same
  *  inputs counts. An unstamped clip may be a live sibling's, and guessing here ships the wrong clip. */
-async function provenClipKey(env: Env, shot: ClipShot, candidates: string[]): Promise<string | null> {
+async function provenClipKey(env: Env, shot: ClipShot, candidates: string[], stampedEndFrame?: string): Promise<string | null> {
   if (!candidates.length) return null;
   const expected = await shotProvenanceHash(env, shot);
   for (const key of candidates) {
     if ((await provVerdict(env, key, expected)) === "match") return key;
+  }
+  // A clip stamped before a door's unused end frame left the proof still names it. If that frame has not
+  // changed, the clip is proven, and a one-shot retake must not buy the rest of its part.
+  if (!stampedEndFrame) return null;
+  const stamped = await shotProvenanceHash(env, { ...shot, last_keyframe_key: stampedEndFrame });
+  for (const key of candidates) {
+    if ((await provVerdict(env, key, stamped)) === "match") return key;
   }
   return null;
 }
@@ -441,6 +448,13 @@ export async function startClipJob(
     const shot: ClipShot = { ...sh, status: "pending" };
     const mbName = sh.motion_backend ?? args.motion_backend ?? defaultMb?.name;
     const mb = mbName ? serving.find((m) => m.name === mbName) ?? null : defaultMb;
+    // A door that does not use an end frame must not have one in its proof, or a new still on the next shot
+    // would buy this clip again for a frame the door never read.
+    const endFrameUsed = mb?.usage?.first_last === true;
+    if (!endFrameUsed) {
+      delete shot.last_keyframe_key;
+      delete shot.last_keyframe_url;
+    }
     const binding = mb ? mb.binding : null;
     shot.binding = binding;
     shot.motion_backend = mb?.name ?? undefined;
@@ -468,9 +482,10 @@ export async function startClipJob(
         continue;
       }
     }
+    if (!endFrameUsed) motionInput = { ...motionInput, last_keyframe_key: undefined, last_keyframe_url: undefined };
     const proven = args.retake_shots?.includes(shot.shot_id)
       ? null
-      : await provenClipKey(env, shot, existingClips.get(shot.shot_id) ?? []);
+      : await provenClipKey(env, shot, existingClips.get(shot.shot_id) ?? [], endFrameUsed ? undefined : sh.last_keyframe_key);
     if (proven) {
       shot.status = "done";
       shot.clip_key = proven;

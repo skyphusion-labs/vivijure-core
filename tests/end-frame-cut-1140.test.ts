@@ -61,6 +61,7 @@ describe("the motion door receives the decision", () => {
   const door = {
     name: "seedance", version: "0.1.0", api: "vivijure-module/2" as const, binding: "MODULE_SEEDANCE",
     hooks: ["motion.backend" as const], config_schema: {}, ui: { section: "motion", order: 6, locality: "cloud" as const },
+    usage: { first_last: true },
   } as unknown as RegisteredModule;
 
   const SHOTS = ["shot_01", "shot_02", "shot_03"];

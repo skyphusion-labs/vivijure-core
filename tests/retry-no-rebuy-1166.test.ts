@@ -207,6 +207,143 @@ describe("reclaim during a retake never takes the old clip", () => {
   });
 });
 
+describe("the end frame in a clip's proof", () => {
+  const firstLast = (name = "door"): RegisteredModule => ({ ...motion(name), usage: { first_last: true } } as unknown as RegisteredModule);
+  const endShot = (key: string) => shot("s1", { last_keyframe_key: key, last_keyframe_url: "https://g/e" });
+  const seedEnds = (h: ReturnType<typeof clipHarness>) => {
+    seedKeyframes(h, "s1");
+    h.store.set("e-old", new TextEncoder().encode("old end"));
+    h.store.set("e-new", new TextEncoder().encode("new end"));
+  };
+
+  it("a door that uses one pays when it changes", async () => {
+    quiet();
+    const h = clipHarness();
+    h.mods = [firstLast()];
+    seedEnds(h);
+    await run(h, [endShot("e-old")]);
+    h.invokes.length = 0;
+    await run(h, [endShot("e-new")]);
+    expect(h.invokes).toHaveLength(1);
+  });
+
+  it("the same door keeps the clip when the old end frame is held", async () => {
+    quiet();
+    const h = clipHarness();
+    h.mods = [firstLast()];
+    seedEnds(h);
+    await run(h, [endShot("e-old")]);
+    h.invokes.length = 0;
+    await run(h, [endShot("e-old")]);
+    expect(h.invokes).toEqual([]);
+  });
+
+  it("a door that does not use one keeps the clip when it changes, and is not sent one", async () => {
+    quiet();
+    const h = clipHarness();
+    seedEnds(h);
+    const job = await run(h, [endShot("e-old")]);
+    expect(job.shots[0].last_keyframe_key).toBeUndefined();
+    const sent = (h.env as unknown as { MODULE_DOOR: { fetch: unknown } }).MODULE_DOOR;
+    const real = sent.fetch as (u: string, i?: RequestInit) => Promise<Response>;
+    let input: Record<string, unknown> = {};
+    sent.fetch = async (u: string, i?: RequestInit) => {
+      input = (JSON.parse(String(i?.body)) as { input: Record<string, unknown> }).input;
+      return real(u, i);
+    };
+    await run(h, [endShot("e-old")], { reuse_proven: false });
+    expect(input.shot_id, "the instrument: the door was called").toBe("s1");
+    expect(input.last_keyframe_key).toBeUndefined();
+    expect(input.last_keyframe_url).toBeUndefined();
+    sent.fetch = real;
+    h.invokes.length = 0;
+    await run(h, [endShot("e-new")]);
+    expect(h.invokes).toEqual([]);
+  });
+});
+
+describe("a clip stamped when the end frame was in the proof", () => {
+  const firstLast = (name = "door"): RegisteredModule => ({ ...motion(name), usage: { first_last: true } } as unknown as RegisteredModule);
+  const ids = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9"];
+  const board = () => ids.map((id, i) => shot(id, ids[i + 1] ? { last_keyframe_key: `renders/p/keyframes/${ids[i + 1]}.png`, last_keyframe_url: "https://g/e" } : {}));
+
+  /** Stamps the way the old code did: the same door, judged as using end frames. */
+  async function stamped() {
+    quiet();
+    const h = clipHarness();
+    seedKeyframes(h, ...ids);
+    h.mods = [firstLast()];
+    await run(h, board());
+    expect(h.invokes).toHaveLength(10);
+    h.mods = [motion()];
+    h.invokes.length = 0;
+    return h;
+  }
+
+  it("a one-shot retake buys one clip, not the part", async () => {
+    const h = await stamped();
+    await run(h, board(), { retake_shots: ["s3"] });
+    expect(h.invokes.map((i) => i.shot)).toEqual(["s3"]);
+  });
+
+  it("nothing changed buys nothing", async () => {
+    const h = await stamped();
+    await run(h, board());
+    expect(h.invokes).toEqual([]);
+  });
+
+  it("if that end frame did change, that one clip fails its old proof, once", async () => {
+    const h = await stamped();
+    h.store.set("renders/p/keyframes/s4.png", new TextEncoder().encode("a new still"));
+    await run(h, board(), { retake_shots: ["s4"] });
+    expect(h.invokes.map((i) => i.shot).sort()).toEqual(["s3", "s4"]);
+    h.invokes.length = 0;
+    await run(h, board());
+    expect(h.invokes, "stamped now without the end frame").toEqual([]);
+  });
+
+  it("CONTROL: a door that uses end frames does not take the old stamp for a changed frame", async () => {
+    quiet();
+    const h = await stamped();
+    h.mods = [firstLast()];
+    h.store.set("renders/p/keyframes/s4.png", new TextEncoder().encode("a new still"));
+    await run(h, board());
+    expect(h.invokes.map((i) => i.shot).sort(), "s3 ends on s4, and s4 starts on it").toEqual(["s3", "s4"]);
+  });
+});
+
+describe("held_end_frames through a film", () => {
+  it("the named shot keeps the end frame it is given, and the others take the next still", async () => {
+    quiet();
+    const seen: Array<{ shot: string; last?: string }> = [];
+    const { store, r2 } = memR2();
+    for (const id of ["a", "b", "c"]) store.set(`k/${id}.png`, new TextEncoder().encode(id));
+    const door = { ...motion("door"), usage: { first_last: true } } as unknown as RegisteredModule;
+    const env = {
+      R2_RENDERS: r2,
+      PRESIGNER: { presignGet: async (k: string) => `https://g/${k}`, presignPut: async (k: string) => `https://p/${k}` },
+      MODULE_DOOR: {
+        fetch: async (_u: string, init?: RequestInit) => {
+          const input = (JSON.parse(String(init?.body)) as { input: { shot_id: string; last_keyframe_key?: string } }).input;
+          seen.push({ shot: input.shot_id, last: input.last_keyframe_key });
+          return json({ ok: true, output: { shot_id: input.shot_id, clip_key: `renders/p/clips/${input.shot_id}_door.mp4`, fps: 24, frames: 1 } });
+        },
+      },
+    } as unknown as Env;
+    await startFilmFromKeyframes(env, {
+      project: "p", bundle_key: "bundles/p.tar.gz", motion_backend: "door", derive_mode: "finalized", idempotency_key: `k-${Math.random()}`,
+      scenes: ["shot_01", "shot_02", "shot_03"].map((shot_id) => ({ shot_id, prompt: "x", seconds: 3 })),
+      keyframes: [{ shot_id: "shot_01", keyframe_key: "k/a.png" }, { shot_id: "shot_02", keyframe_key: "k/b.png" }, { shot_id: "shot_03", keyframe_key: "k/c.png" }],
+      held_end_frames: { shot_01: "k/old-b.png" },
+    } as never, [door]);
+    expect(seen).toEqual([
+      { shot: "shot_01", last: "k/old-b.png" },
+      { shot: "shot_02", last: "k/c.png" },
+      { shot: "shot_03", last: undefined },
+    ]);
+  });
+});
+
 describe("a clip is reused only on proof", () => {
   const twice = async (h: ReturnType<typeof clipHarness>, first: ClipShotInput, second: ClipShotInput) => {
     const made = await run(h, [first]);
@@ -256,6 +393,7 @@ describe("a clip is reused only on proof", () => {
   it("the end frame's bytes changed: pays", async () => {
     quiet();
     const h = withFiles();
+    h.mods = [{ ...motion("door"), usage: { first_last: true } } as unknown as RegisteredModule];
     const s = shot("s1", { last_keyframe_key: "renders/p/keyframes/s2.png" });
     await run(h, [s]);
     h.invokes.length = 0;
@@ -440,6 +578,16 @@ describe("through a whole film", () => {
     h.clips.length = 0;
     await submit(h, true, [LINES[0], { ...LINES[1], text: "changed" }], ["shot_02"]);
     expect(h.lines).toEqual([["shot_02"]]);
+    expect(h.clips).toEqual(["shot_02"]);
+  });
+
+  it("a new still on one shot does not buy the shot before it, on a door with no end frame", async () => {
+    quiet();
+    const h = filmHarness();
+    await submit(h, true);
+    h.clips.length = 0;
+    h.store.set("renders/p/keyframes/shot_02.png", new TextEncoder().encode("a new still"));
+    await submit(h, true, LINES, ["shot_02"]);
     expect(h.clips).toEqual(["shot_02"]);
   });
 
