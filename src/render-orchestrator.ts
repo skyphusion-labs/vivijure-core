@@ -415,6 +415,8 @@ export async function startClipJob(
     /** vivijure-cf#1166: keep a clip whose provenance proves the same inputs, and do not pay for it again.
      *  Off by default, because a plain resubmit asks for a new take. */
     reuse_proven?: boolean;
+    /** Shots that pay for a new clip even when an existing one is proven. */
+    retake_shots?: string[];
   },
   preModules?: RegisteredModule[],
 ): Promise<ClipJob> {
@@ -466,7 +468,9 @@ export async function startClipJob(
         continue;
       }
     }
-    const proven = await provenClipKey(env, shot, existingClips.get(shot.shot_id) ?? []);
+    const proven = args.retake_shots?.includes(shot.shot_id)
+      ? null
+      : await provenClipKey(env, shot, existingClips.get(shot.shot_id) ?? []);
     if (proven) {
       shot.status = "done";
       shot.clip_key = proven;

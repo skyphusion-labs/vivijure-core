@@ -119,6 +119,31 @@ describe("a retry after one failed shot", () => {
   });
 });
 
+describe("a retake of one shot", () => {
+  it("buys that shot's clip alone, though its inputs are proven the same", async () => {
+    quiet();
+    const h = clipHarness();
+    seedKeyframes(h, "s1", "s2", "s3");
+    await run(h, [shot("s1"), shot("s2"), shot("s3")]);
+    const before = h.store.get("renders/p/clips/s2_door.mp4");
+    h.invokes.length = 0;
+    const job = await run(h, [shot("s1"), shot("s2"), shot("s3")], { retake_shots: ["s2"] });
+    expect(h.invokes.map((i) => i.shot)).toEqual(["s2"]);
+    expect(job.shots.map((s) => !!s.reused)).toEqual([true, false, true]);
+    expect(h.store.get("renders/p/clips/s2_door.mp4")).not.toEqual(before);
+  });
+
+  it("names no other shot by accident: an unknown id buys nothing", async () => {
+    quiet();
+    const h = clipHarness();
+    seedKeyframes(h, "s1");
+    await run(h, [shot("s1")]);
+    h.invokes.length = 0;
+    await run(h, [shot("s1")], { retake_shots: ["nope"] });
+    expect(h.invokes).toEqual([]);
+  });
+});
+
 describe("a clip is reused only on proof", () => {
   const twice = async (h: ReturnType<typeof clipHarness>, first: ClipShotInput, second: ClipShotInput) => {
     const made = await run(h, [first]);
@@ -281,11 +306,11 @@ describe("through a whole film", () => {
     store.set("renders/p/keyframes/shot_02.png", new TextEncoder().encode("kf2"));
     return { store, env, lines, clips };
   }
-  const submit = async (h: ReturnType<typeof filmHarness>, reuse: boolean, dialogue_lines = LINES) => {
+  const submit = async (h: ReturnType<typeof filmHarness>, reuse: boolean, dialogue_lines = LINES, retake_shots?: string[]) => {
     const job = await startFilmFromKeyframes(h.env, {
       project: "p", bundle_key: "bundles/p.tar.gz", scenes: SCENES,
       keyframes: SCENES.map((s) => ({ shot_id: s.shot_id, keyframe_key: `renders/p/keyframes/${s.shot_id}.png`, prompt: s.prompt, seconds: s.seconds })),
-      motion_backend: "talk", dialogue_lines, reuse_finished: reuse, idempotency_key: `k-${Math.random()}`,
+      motion_backend: "talk", dialogue_lines, reuse_finished: reuse, retake_shots, idempotency_key: `k-${Math.random()}`,
     } as never, [talking, dialogue]);
     // A driving door buys its lines, then its clips, across ticks.
     for (let i = 0; i < 4; i++) await advanceFilmJob(h.env, job.film_id, [talking, dialogue]);
@@ -312,6 +337,30 @@ describe("through a whole film", () => {
     h.lines.length = 0;
     h.clips.length = 0;
     await submit(h, true, [LINES[0], { ...LINES[1], text: "changed" }]);
+    expect(h.lines).toEqual([["shot_02"]]);
+    expect(h.clips).toEqual(["shot_02"]);
+  });
+
+  it("a retake buys one clip and no lines, and the kept line drives it", async () => {
+    quiet();
+    const h = filmHarness();
+    await submit(h, true);
+    const wav = h.store.get("renders/p/dialogue/shot_02.wav");
+    h.lines.length = 0;
+    h.clips.length = 0;
+    await submit(h, true, LINES, ["shot_02"]);
+    expect(h.lines).toEqual([]);
+    expect(h.clips).toEqual(["shot_02"]);
+    expect(h.store.get("renders/p/dialogue/shot_02.wav")).toBe(wav);
+  });
+
+  it("a retake with a new line buys that line and that clip alone", async () => {
+    quiet();
+    const h = filmHarness();
+    await submit(h, true);
+    h.lines.length = 0;
+    h.clips.length = 0;
+    await submit(h, true, [LINES[0], { ...LINES[1], text: "changed" }], ["shot_02"]);
     expect(h.lines).toEqual([["shot_02"]]);
     expect(h.clips).toEqual(["shot_02"]);
   });
