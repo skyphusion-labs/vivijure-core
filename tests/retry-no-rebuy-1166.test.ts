@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startClipJob, type ClipShotInput } from "../src/render-orchestrator.js";
+import { reclaimClipsFromR2, startClipJob, type ClipShotInput } from "../src/render-orchestrator.js";
 import { advanceFilmJob, startFilmFromKeyframes, type FilmJob } from "../src/film-orchestrator.js";
 import { filmJobDocKey } from "../src/film-model.js";
 import { provKey } from "../src/clip-provenance.js";
@@ -116,6 +116,94 @@ describe("a retry after one failed shot", () => {
     await run(h, [shot("s1")], { reuse_proven: false });
     await run(h, [shot("s1")], { reuse_proven: false });
     expect(h.invokes).toHaveLength(2);
+  });
+});
+
+describe("a retake of one shot", () => {
+  it("buys that shot's clip alone, though its inputs are proven the same", async () => {
+    quiet();
+    const h = clipHarness();
+    seedKeyframes(h, "s1", "s2", "s3");
+    await run(h, [shot("s1"), shot("s2"), shot("s3")]);
+    const before = h.store.get("renders/p/clips/s2_door.mp4");
+    h.invokes.length = 0;
+    const job = await run(h, [shot("s1"), shot("s2"), shot("s3")], { retake_shots: ["s2"] });
+    expect(h.invokes.map((i) => i.shot)).toEqual(["s2"]);
+    expect(job.shots.map((s) => !!s.reused)).toEqual([true, false, true]);
+    expect(h.store.get("renders/p/clips/s2_door.mp4")).not.toEqual(before);
+  });
+
+  it("names no other shot by accident: an unknown id buys nothing", async () => {
+    quiet();
+    const h = clipHarness();
+    seedKeyframes(h, "s1");
+    await run(h, [shot("s1")]);
+    h.invokes.length = 0;
+    await run(h, [shot("s1")], { retake_shots: ["nope"] });
+    expect(h.invokes).toEqual([]);
+  });
+});
+
+describe("reclaim during a retake never takes the old clip", () => {
+  const KEY = "renders/p/clips/s1_door.mp4";
+  /** The first take, uploaded before the retake starts, then a retake whose new clip has not landed. */
+  async function retakeInFlight(over: { failArchive?: boolean } = {}) {
+    quiet();
+    const h = clipHarness();
+    seedKeyframes(h, "s1");
+    await run(h, [shot("s1")]);
+    const oldBytes = h.store.get(KEY);
+    const uploaded = new Map<string, number>([[KEY, Date.now() - 60_000]]);
+    const r2 = (h.env as unknown as { R2_RENDERS: Record<string, unknown> }).R2_RENDERS;
+    const list = r2.list as (a: { prefix: string }) => Promise<{ objects: Array<{ key: string; uploaded: Date }>; truncated: boolean }>;
+    r2.list = async (a: { prefix: string }) => {
+      const out = await list(a);
+      return { ...out, objects: out.objects.map((o) => ({ ...o, uploaded: new Date(uploaded.get(o.key) ?? 0) })) };
+    };
+    if (over.failArchive) {
+      const put = r2.put as (k: string, v: unknown) => Promise<void>;
+      r2.put = async (k: string, v: unknown) => {
+        if (k.includes("_take")) throw new Error("copy failed");
+        return put(k, v);
+      };
+    }
+    h.fail.add("s1"); // The door is called and does not land, so the old clip is still at its key.
+    const job = await run(h, [shot("s1")], { retake_shots: ["s1"] });
+    h.store.set(KEY, oldBytes as Uint8Array);
+    job.shots[0].status = "pending";
+    job.shots[0].error = undefined;
+    return { h, job, uploaded };
+  }
+
+  it("the old proven clip stays listed and is not adopted", async () => {
+    const { h, job } = await retakeInFlight();
+    expect(h.store.has(KEY), "the instrument: the old clip is really there").toBe(true);
+    expect(await reclaimClipsFromR2(h.env, job)).toBe(0);
+    expect(job.shots[0].status).toBe("pending");
+    expect(job.shots[0].clip_key).toBeUndefined();
+  });
+
+  it("the same when the archive copy failed, because reclaim does not depend on it", async () => {
+    const { h, job } = await retakeInFlight({ failArchive: true });
+    expect([...h.store.keys()].filter((k) => k.includes("_take")), "the archive really failed").toEqual([]);
+    expect(await reclaimClipsFromR2(h.env, job)).toBe(0);
+    expect(job.shots[0].status).toBe("pending");
+  });
+
+  it("a failed take is not rescued by the old clip", async () => {
+    const { h, job } = await retakeInFlight();
+    job.shots[0].status = "failed";
+    expect(await reclaimClipsFromR2(h.env, job)).toBe(0);
+    expect(job.shots[0].status).toBe("failed");
+  });
+
+  it("the new take wins once it lands", async () => {
+    const { h, job, uploaded } = await retakeInFlight();
+    h.store.set(KEY, new TextEncoder().encode("the new take"));
+    uploaded.set(KEY, Date.now() + 1000);
+    expect(await reclaimClipsFromR2(h.env, job)).toBe(1);
+    expect(job.shots[0].status).toBe("done");
+    expect(job.shots[0].clip_key).toBe(KEY);
   });
 });
 
@@ -281,11 +369,11 @@ describe("through a whole film", () => {
     store.set("renders/p/keyframes/shot_02.png", new TextEncoder().encode("kf2"));
     return { store, env, lines, clips };
   }
-  const submit = async (h: ReturnType<typeof filmHarness>, reuse: boolean, dialogue_lines = LINES) => {
+  const submit = async (h: ReturnType<typeof filmHarness>, reuse: boolean, dialogue_lines = LINES, retake_shots?: string[]) => {
     const job = await startFilmFromKeyframes(h.env, {
       project: "p", bundle_key: "bundles/p.tar.gz", scenes: SCENES,
       keyframes: SCENES.map((s) => ({ shot_id: s.shot_id, keyframe_key: `renders/p/keyframes/${s.shot_id}.png`, prompt: s.prompt, seconds: s.seconds })),
-      motion_backend: "talk", dialogue_lines, reuse_finished: reuse, idempotency_key: `k-${Math.random()}`,
+      motion_backend: "talk", dialogue_lines, reuse_finished: reuse, retake_shots, idempotency_key: `k-${Math.random()}`,
     } as never, [talking, dialogue]);
     // A driving door buys its lines, then its clips, across ticks.
     for (let i = 0; i < 4; i++) await advanceFilmJob(h.env, job.film_id, [talking, dialogue]);
@@ -312,6 +400,45 @@ describe("through a whole film", () => {
     h.lines.length = 0;
     h.clips.length = 0;
     await submit(h, true, [LINES[0], { ...LINES[1], text: "changed" }]);
+    expect(h.lines).toEqual([["shot_02"]]);
+    expect(h.clips).toEqual(["shot_02"]);
+  });
+
+  it("a retake buys one clip and no lines, and the kept line drives it", async () => {
+    quiet();
+    const h = filmHarness();
+    await submit(h, true);
+    const wav = h.store.get("renders/p/dialogue/shot_02.wav");
+    h.lines.length = 0;
+    h.clips.length = 0;
+    await submit(h, true, LINES, ["shot_02"]);
+    expect(h.lines).toEqual([]);
+    expect(h.clips).toEqual(["shot_02"]);
+    expect(h.store.get("renders/p/dialogue/shot_02.wav")).toBe(wav);
+  });
+
+  it("a re-run from keyframes keeps the frame, the titles and the cast on the job", async () => {
+    quiet();
+    const h = filmHarness();
+    const job = await startFilmFromKeyframes(h.env, {
+      project: "p", bundle_key: "bundles/p.tar.gz", scenes: SCENES,
+      keyframes: SCENES.map((s) => ({ shot_id: s.shot_id, keyframe_key: `renders/p/keyframes/${s.shot_id}.png` })),
+      motion_backend: "talk", derive_mode: "finalized", idempotency_key: `k-${Math.random()}`,
+      delivery_width: 832, delivery_height: 464, delivery_fps: 24,
+      film_titles: { title: { text: "T" } }, cast_loras: { A: 7 },
+    } as never, [talking, dialogue]);
+    expect([job.delivery_width, job.delivery_height, job.delivery_fps]).toEqual([832, 464, 24]);
+    expect(job.film_titles).toEqual({ title: { text: "T" } });
+    expect(job.cast_loras).toEqual({ A: 7 });
+  });
+
+  it("a retake with a new line buys that line and that clip alone", async () => {
+    quiet();
+    const h = filmHarness();
+    await submit(h, true);
+    h.lines.length = 0;
+    h.clips.length = 0;
+    await submit(h, true, [LINES[0], { ...LINES[1], text: "changed" }], ["shot_02"]);
     expect(h.lines).toEqual([["shot_02"]]);
     expect(h.clips).toEqual(["shot_02"]);
   });

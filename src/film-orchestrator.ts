@@ -495,6 +495,7 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
     motion_backend: job.motion_backend ?? undefined,
     config: job.motion_config,
     reuse_proven: job.reuse_finished,
+    retake_shots: job.retake_shots,
   }, preModules);
   job.clip_job_id = clip.job_id;
   job.phase = "clips";
@@ -3441,6 +3442,9 @@ export async function startFilmFromKeyframes(
     motion_configs?: Record<string, Record<string, unknown>>;
     /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
     reuse_finished?: boolean;
+    /** With reuse_finished: shots whose clip is bought again though its inputs are proven the same. An unchanged
+     *  line is kept, so the new take has the same audio. Finish follows the clip, so it runs again by itself. */
+    retake_shots?: string[];
     finish_config?: Record<string, Record<string, unknown>>;
     /** cf#537: which finish modules this render wants. Omitted = the default-participation set. */
     finish_select?: HookSelection;
@@ -3450,6 +3454,13 @@ export async function startFilmFromKeyframes(
     derive_mode: "finalized" | "cloud-finalized";
     parent_render_id?: number;
     audio_key?: string;
+    /** A re-run of a film that was pinned must stay pinned, or it no longer joins with its siblings. */
+    delivery_width?: number;
+    delivery_height?: number;
+    delivery_fps?: number;
+    film_titles?: FilmJob["film_titles"];
+    /** Kept so a re-run names the same cast. No keyframe is drawn here, so no adapter is loaded. */
+    cast_loras?: FilmJob["cast_loras"];
     // vivijure-cf#334: the per-shot dialogue batch, exactly as startFilmJob takes it. Before this the
     // parameter did not exist and the job literal never set the field, so EVERY caller of this function
     // (render-from-keyframes, finalize, animate-cloud, animate-hybrid) was structurally incapable of a
@@ -3492,6 +3503,7 @@ export async function startFilmFromKeyframes(
     voice_ref_keys: args.voice_ref_keys && Object.keys(args.voice_ref_keys).length ? args.voice_ref_keys : undefined,
     finish_config: args.finish_config ?? {},
     reuse_finished: args.reuse_finished || undefined,
+    retake_shots: args.retake_shots?.length ? args.retake_shots : undefined,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
     speech_config: args.speech_config ?? {},
@@ -3504,6 +3516,11 @@ export async function startFilmFromKeyframes(
     derive_mode: args.derive_mode,
     parent_render_id: args.parent_render_id,
     audio_key: stagedAudio,
+    delivery_width: args.delivery_width,
+    delivery_height: args.delivery_height,
+    delivery_fps: args.delivery_fps,
+    film_titles: args.film_titles,
+    cast_loras: args.cast_loras && Object.keys(args.cast_loras).length ? args.cast_loras : undefined,
     // Same undefined-when-empty shape startFilmJob persists, so a silent film has no key rather than
     // an empty array, and the two start paths produce byte-comparable job docs.
     dialogue_lines: dialogueLines && dialogueLines.length ? dialogueLines : undefined,
@@ -3562,6 +3579,7 @@ export async function startFilmFromKeyframes(
     config: args.motion_config,
     module_configs: args.motion_configs,
     reuse_proven: job.reuse_finished,
+    retake_shots: job.retake_shots,
   }, modules);
   job.clip_job_id = clip.job_id;
   job.phase = summarizeJob(clip).failed === clip.shots.length ? "failed" : "clips";
@@ -3581,6 +3599,9 @@ export async function startFilmJob(
     motion_backend?: string; keyframe_backend?: string; keyframe_config?: Record<string, unknown>; motion_config?: Record<string, unknown>;
     /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
     reuse_finished?: boolean;
+    /** With reuse_finished: shots whose clip is bought again though its inputs are proven the same. An unchanged
+     *  line is kept, so the new take has the same audio. Finish follows the clip, so it runs again by itself. */
+    retake_shots?: string[];
     finish_config?: Record<string, Record<string, unknown>>;
     /** cf#537: which finish modules this render wants. Omitted = the default-participation set. */
     finish_select?: HookSelection;
@@ -3655,6 +3676,7 @@ export async function startFilmJob(
     keyframe_config: args.keyframe_config ?? {},
     finish_config: args.finish_config ?? {},
     reuse_finished: args.reuse_finished || undefined,
+    retake_shots: args.retake_shots?.length ? args.retake_shots : undefined,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
     speech_config: args.speech_config ?? {},
