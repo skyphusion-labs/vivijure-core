@@ -4474,9 +4474,10 @@ async function recoverStalledKeyframePhase(env: Env, job: FilmJob, preModules: R
     return false;
   }
   if (dropped.length) {
+    // Cancel first: cancelInFlightKeyframe only acts on a film still in the keyframe phase.
+    await cancelInFlightKeyframe(env, job, preModules);
     job.phase = "failed";
     job.error = incompleteFilmError("keyframes", adopted.length, job.scenes.length, dropped);
-    await cancelInFlightKeyframe(env, job, preModules);
     console.warn(`film ${job.film_id}: ${job.error}`);
     return true;
   } else {
