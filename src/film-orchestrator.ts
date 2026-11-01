@@ -1378,8 +1378,8 @@ export async function measuredClipDimensions(
  * The delivery target for ASSEMBLE: what the doors actually produced, not a constant.
  *
  * cf#813. The assemble seam used to call `resolveDeliveryResolution(job)` and nothing else, and
- * since nothing in either repo ever sets `delivery_width` / `delivery_height` on a job, that is
- * 1920x1080 on every film in production. Meanwhile the source dimensions were ALREADY measured on
+ * unless a film start set `delivery_width` / `delivery_height` on the job, that was
+ * 1920x1080 on every film. Meanwhile the source dimensions were ALREADY measured on
  * every done clip, ALREADY persisted, and ALREADY read back one function away -- just never at this
  * seam. This reads them.
  *
@@ -1412,7 +1412,20 @@ export async function resolveAssembleDelivery(env: Env, job: FilmJob): Promise<D
  * the finish summary reads: an operator target below the clip, and a finished clip that could not be
  * measured. Recorded once on the job, so later ticks pay no R2 reads and film.finish reads the same.
  */
-const FRAME_NOTE_TOLERANCE = 1.02;
+/** What a person should be told when a clip does not fill the film's frame. The clip is scaled to fit inside and
+ *  padded, so what matters is how much it shrinks and how much of the frame is picture, not its area: a 1080x1920 clip
+ *  has the same area as a 1920x1080 film and is drawn 608 px wide. Within 2% is one aspect rounded into another, as
+ *  832x464 at height 1080 is 1936 wide, and is no limit. This note reaches the film's report (vivijure-cf#1223). */
+const FRAME_FIT_TOLERANCE = 0.98;
+const FRAME_PICTURE_MIN = 0.9;
+export function frameFitNote(w: number, h: number, dw: number, dh: number): string | null {
+  const fit = Math.min(dw / w, dh / h);
+  if (fit < FRAME_FIT_TOLERANCE) return `finished clip is ${w}x${h}, delivered at ${dw}x${dh}`;
+  const pw = Math.round(w * fit), ph = Math.round(h * fit);
+  if ((pw * ph) / (dw * dh) < FRAME_PICTURE_MIN) return `finished clip is ${w}x${h}, shown at ${pw}x${ph} in a ${dw}x${dh} frame`;
+  return null;
+}
+
 
 export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<DeliveryResolution> {
   const explicit = resolveDeliveryResolution(job);
@@ -1440,11 +1453,9 @@ export async function resolveFilmFrame(env: Env, job: FilmJob): Promise<Delivery
   }
   const delivery = resolveMeasuredDelivery(job, [...dims.values()]);
   for (const m of measured) {
-    // Within 2% is rounding of one aspect into another: 832x464 scaled to height 1080 is 1936 wide, and a film at 1920
-    // loses nothing a person would call a limit. A note here reads as a limit on the film's report (vivijure-cf#1223).
-    if (m.width && m.height && m.width * m.height > delivery.width * delivery.height * FRAME_NOTE_TOLERANCE) {
-      note(m.fs, `finished clip is ${m.width}x${m.height}, delivered at ${delivery.width}x${delivery.height}`);
-    }
+    if (!m.width || !m.height) continue;
+    const note_ = frameFitNote(m.width, m.height, delivery.width, delivery.height);
+    if (note_) note(m.fs, note_);
   }
   // vivijure-cf#1144: the film ships at the rate interpolation produced. Only an interpolated shot sets it,
   // so a film with no interpolation stays at the default whatever its door delivered. Clips at a lower
@@ -3619,11 +3630,11 @@ export async function startFilmJob(
   args: {
     project: string; bundle_key: string; scenes: FilmScene[];
     motion_backend?: string; keyframe_backend?: string; keyframe_config?: Record<string, unknown>; motion_config?: Record<string, unknown>;
-    /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
     /** The frame this film is delivered at, both or neither. Parts of a long film set it, because the join
      *  refuses films of different frames. Absent, the frame comes from the measured clips. */
     delivery_width?: number;
     delivery_height?: number;
+    /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
     reuse_finished?: boolean;
     /** With reuse_finished: shots whose clip is bought again though its inputs are proven the same. An unchanged
      *  line is kept, so the new take has the same audio. Finish follows the clip, so it runs again by itself. */
@@ -4055,6 +4066,11 @@ async function settleFinishRetry(env: Env, job: FilmJob, preModules?: Registered
     await fireNotify(env, job, preModules);
     return;
   }
+  // The retry failed and the film goes back to what it had. Restoring drops the tokens of steps still running.
+  if (!cancelled) {
+    await cancelInFlightChainSteps(env, job, preModules ?? await discoverModules(envRec)).catch((e) =>
+      console.warn(`film ${job.film_id}: could not ask a failed finish retry's steps to cancel (${(e as Error).message})`));
+  }
   const named = (job.finish_incomplete ?? []).map((e) => `${e.step}: ${e.detail ?? e.code}`).join("; ");
   const reason = cancelled ?? job.error ?? (named || "the retry did not finish");
   // The attempt's own artifacts, and never anything the restored job still names.
@@ -4122,6 +4138,26 @@ async function cancelInFlightChainSteps(env: Env, job: FilmJob, modules: Registe
 }
 
 /** Mark an in-flight film job cancelled. Terminal jobs are returned unchanged. */
+/** A film that failed by itself asks what it started to cancel, or those jobs keep running and keep paying
+ *  (core#425). Measured: 2653 s and 604 s of GPU after a film failed. Asked, not stopped: a module with no cancel
+ *  logs that its job runs on, and a cancel can fail. A user cancel does this in cancelFilmJob. Best effort, and it
+ *  never changes the film's own failure. A finish retry is settled by settleFinishRetry, which asks for its steps.
+ *  Returns true when the doc changed and needs writing. */
+async function askJobsOfFailedFilmToCancel(env: Env, job: FilmJob, preModules?: RegisteredModule[]): Promise<boolean> {
+  if (job.jobs_cancel_asked || job.cancelled || job.finish_retry_prior) return false;
+  job.jobs_cancel_asked = true;
+  try {
+    const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
+    await cancelInFlightChainSteps(env, job, modules);
+    // The film has left the keyframe phase by now. The tokens are still on the doc.
+    await cancelInFlightKeyframe(env, job, modules, { anyPhase: true });
+    if (job.clip_job_id) await cancelInFlightClips(env, job.clip_job_id, modules);
+  } catch (e) {
+    console.warn(`film ${job.film_id}: could not ask its GPU jobs to cancel after failing (${(e as Error).message})`);
+  }
+  return true;
+}
+
 export async function cancelFilmJob(env: Env, filmId: string): Promise<FilmJob | null> {
   const obj = await env.R2_RENDERS.get(filmKey(filmId));
   if (!obj) return null;
@@ -4503,9 +4539,10 @@ export async function cancelInFlightKeyframe(
   env: Env,
   job: FilmJob,
   preModules?: RegisteredModule[],
+  opts: { anyPhase?: boolean } = {},
 ): Promise<void> {
   const polls = inFlightKeyframePolls(job);
-  if (job.phase !== "keyframe" || !polls.length || !job.keyframe_binding) return;
+  if ((job.phase !== "keyframe" && !opts.anyPhase) || !polls.length || !job.keyframe_binding) return;
   const envRec = env as unknown as Record<string, unknown>;
   const modules = preModules ?? await discoverModules(envRec);
   const kf = modules.find((m) => m.binding === job.keyframe_binding) ?? null;
@@ -4524,15 +4561,22 @@ export async function cancelInFlightKeyframe(
     }
     return;
   }
+  const left: string[] = [];
   for (let i = 0; i < polls.length; i++) {
     const jobId = jobIdForKeyframePoll(job, i);
-    const r = await cancelModule(fetcher, { poll: polls[i] });
+    let r = await cancelModule(fetcher, { poll: polls[i] });
+    // One more try costs nothing, and a job this leaves behind keeps paying.
+    if (!r.ok && /-> 5\d\d|unreachable/.test(r.error)) r = await cancelModule(fetcher, { poll: polls[i] });
+    if (!r.ok) left.push(polls[i]);
     if (r.ok) {
       console.warn(`film ${job.film_id}: cancelled in-flight keyframe RunPod job ${jobId} via ${kf.name} (#327)`);
     } else {
       console.warn(`film ${job.film_id}: keyframe cancel FAILED (${r.error}) -- RunPod job ${jobId} left running (ORPHAN) (#327)`);
     }
   }
+  // A token is dropped once its job has been told, so nothing asks again and nothing reads it as in flight.
+  if (Array.isArray(job.keyframe_polls) && job.keyframe_polls.length) job.keyframe_polls = left;
+  else if (!left.length) job.keyframe_poll = undefined;
 }
 
 /** Recover a keyframe phase whose module poll has gone stale (RunPod GC'd the finished job) by adopting
@@ -4732,7 +4776,7 @@ async function claimAdvanceOrFailOpen(env: Env, filmId: string): Promise<FilmAdv
 
 /** #53: persist phase=failed on the R2 job doc when advance throws mid-tick. Best-effort: a corrupt
  *  doc falls back to D1-only via markRenderFailedByJobId (the #32 SyntaxError path). */
-async function persistFilmJobFailed(env: Env, filmId: string, error: string): Promise<FilmJob | null> {
+async function persistFilmJobFailed(env: Env, filmId: string, error: string): Promise<FilmJob | null | undefined> {
   try {
     const obj = await env.R2_RENDERS.get(filmKey(filmId));
     if (!obj) return null;
@@ -4742,8 +4786,9 @@ async function persistFilmJobFailed(env: Env, filmId: string, error: string): Pr
     job.error = error.slice(0, 2000);
     await putFilm(env, job);
     return job;
-  } catch {
-    return null;
+  } catch (e) {
+    // A corrupt doc will never read, so it fails in D1 alone. A storage error may pass, so say that we do not know.
+    return e instanceof SyntaxError ? null : undefined;
   }
 }
 
@@ -4767,7 +4812,12 @@ export async function advanceFilmJob(
   const claim = await claimAdvanceOrFailOpen(env, filmId);
   if (!claim.won) return readFilmJobReadOnly(env, filmId);
   try {
-    return await advanceFilmJobLocked(env, filmId, preModules);
+    const advanced = await advanceFilmJobLocked(env, filmId, preModules);
+    if (advanced?.job.phase === "failed" && await askJobsOfFailedFilmToCancel(env, advanced.job, preModules)) {
+      // Best effort: the film has already failed for its own reason, and a write error must not replace that.
+      await putFilm(env, advanced.job).catch((e) => console.warn(`film ${filmId}: ${(e as Error).message}`));
+    }
+    return advanced;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // #32: a corrupt / truncated R2 job doc makes JSON.parse throw on EVERY advance tick, so the render
@@ -4786,6 +4836,16 @@ export async function advanceFilmJob(
     const error = `advance failed: ${msg}`;
     console.error(JSON.stringify({ ev: "film.advance_failed", film_id: filmId, error: msg }));
     const job = await persistFilmJobFailed(env, filmId, error);
+    // Storage could not say. Failing the row now would stop the sweep, the only thing that will drive this film
+    // again, and strand its jobs paying with no one able to read their tokens (core#425). Leave it to the next tick.
+    if (job === undefined) {
+      console.warn(JSON.stringify({ ev: "film.advance_deferred", film_id: filmId, error: msg }));
+      throw e;
+    }
+    if (job?.phase === "failed" && await askJobsOfFailedFilmToCancel(env, job, preModules)) {
+      // Best effort: the storage that failed this tick may still be failing.
+      await putFilm(env, job).catch((e) => console.warn(`film ${filmId}: ${(e as Error).message}`));
+    }
     await markRenderFailedByJobId(env, filmId, error);
     await finishQueueCall(env, filmId, "forget", (q) => q.forget(filmId));
     if (job?.finish_retry_prior) {
