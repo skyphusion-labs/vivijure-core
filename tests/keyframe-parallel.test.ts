@@ -490,6 +490,42 @@ describe("core#425 a failed film asks its GPU jobs to cancel", () => {
     expect(h.read(started.film_id).phase).toBe("keyframe");
   });
 
+  for (const [name, text] of [["null", "null"], ["a number", "123"], ["a string", '"x"'], ["a list", "[]"], ["an empty object", "{}"]] as const) {
+    it(`a doc that parses to ${name} fails the row, once, and does not wait for a later tick`, async () => {
+      const h = harness({ keyframeParallel: "1", poll: () => pending });
+      const started = await startFilmJob(h.env, START, [kfMod]);
+      const bound: unknown[] = [];
+      const stmt = { run: async () => ({ meta: { changes: 1 } }), first: async () => ({ one: 1 }), all: async () => ({ results: [] }) };
+      (h.env as unknown as { DB: unknown }).DB = { prepare: () => ({ ...stmt, bind: (...a: unknown[]) => { bound.push(...a); return stmt; } }), batch: async () => [] };
+      h.objects.set(filmJobDocKey(started.film_id), text);
+      expect(await advanceFilmJob(h.env, started.film_id, [kfMod])).toBeNull();
+      expect(bound.join(" ")).toContain("job doc corrupt");
+    });
+  }
+
+  it("storage that stays down past a phase deadline fails the row, and stops", async () => {
+    const h = harness({ keyframeParallel: "1", poll: () => pending });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    const bound: unknown[] = [];
+    const old = { updated_at: Date.now() / 1000 - PHASE_HARD_DEADLINE_SECONDS - 1 };
+    const stmt = { run: async () => ({ meta: { changes: 1 } }), first: async () => ({ ...old, one: 1 }), all: async () => ({ results: [] }) };
+    (h.env as unknown as { DB: unknown }).DB = { prepare: () => ({ ...stmt, bind: (...a: unknown[]) => { bound.push(...a); return stmt; } }), batch: async () => [] };
+    const r2 = (h.env as unknown as { R2_RENDERS: { get: (k: string) => Promise<unknown> } }).R2_RENDERS;
+    r2.get = async () => { throw new Error("get: internal (10001)"); };
+    await expect(advanceFilmJob(h.env, started.film_id, [kfMod])).resolves.toBeNull();
+    expect(bound.join(" ")).toContain("advance failed");
+  });
+
+  it("before that deadline it keeps waiting", async () => {
+    const h = harness({ keyframeParallel: "1", poll: () => pending });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    const stmt = { run: async () => ({ meta: { changes: 1 } }), first: async () => ({ updated_at: Date.now() / 1000 - 60, one: 1 }), all: async () => ({ results: [] }) };
+    (h.env as unknown as { DB: unknown }).DB = { prepare: () => ({ ...stmt, bind: () => stmt }), batch: async () => [] };
+    const r2 = (h.env as unknown as { R2_RENDERS: { get: (k: string) => Promise<unknown> } }).R2_RENDERS;
+    r2.get = async () => { throw new Error("get: internal (10001)"); };
+    await expect(advanceFilmJob(h.env, started.film_id, [kfMod])).rejects.toThrow("10001");
+  });
+
   it("a write error after the film failed does not replace its reason", async () => {
     const h = harnessWithDb({ keyframeParallel: "1", poll: () => ({ ok: false, error: "keyframe: bad LoRA" }) });
     const started = await startFilmJob(h.env, START, [kfMod]);
