@@ -3,7 +3,87 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.28.5
+## [1.29.0] -- 2026-11-03
+
+### fix(assemble-admission): do not admit a film larger than one upload carries
+
+`assembleFilmByteCeiling` is now the lower of the disk budget and `R2_SINGLE_PUT_BYTES`, 5,363,466,240 bytes. The disk budget alone allowed 6.85 GB, and the container writes each film with one PUT, so a film between the two did all its work and then failed at upload. At 1920x1080 and 24 fps the predicted limit falls from about 82 minutes to about 64.
+
+**Fix: a cut to different people is a hard cut on a first_last door (vivijure-cf#1140).**
+
+The next shot's start still was sent as the end frame on every shot, so the clip morphed into the next shot and the first character left the screen before the cut. The end frame is now sent only when both shots hold the same `character_slots`. A shot that does not state its slots keeps the old behavior.
+
+**Fix: the module response cap fits an image on the image.generate hook (vivijure-cf#1141).**
+
+That hook carries the picture in its response, so a detailed image over about 786 KB failed after the provider was paid. The cap for that hook is now 32 MB. Every other hook stays at 1 MB.
+
+**Fix: the duration gate reads the line length on an audio-driven door (vivijure-cf#1142).**
+
+A door with `usage.driving_audio` makes a clip as long as its line, so a short line on a longer planned shot failed the finished film after every clip was paid for. Such a shot is now gated against the line's length. A truncated clip still fails, and every other door is unchanged.
+
+**Feature: a film ships at the rate its finish chain produced (vivijure-cf#1144).**
+
+A film with interpolation now delivers at the interpolated rate, for example 48 fps. A film with no interpolation stays at 24 fps. An explicit `delivery_fps` still wins, and the finish summary reports a clip above that rate. The assemble budget is now also asked at submit, at the predicted rate, so a film that cannot fit is refused before keyframes and clips are paid for.
+
+**Fix: the planner names the place in every shot (vivijure-cf#1145).**
+
+A keyframe is drawn from its own shot prompt, and `full_prompt` does not reach it, so a planned shot with no place landed somewhere the model invented. The planner prompt now requires a place in every scene, and its example shows it.
+
+**Fix: a Durable Object disconnect is retried, not terminal (vivijure-cf#1152).**
+
+The platform text says to retry, and the classifier read it as deterministic, so one disconnect failed a film and dropped its paid clips.
+
+**Fix: a good clip that opens differently no longer fails the film (vivijure-cf#1153).**
+
+The content gate failed a shot whenever its first frame differed from the keyframe. A reference door does not open on its still, and a provider can open on an invented shot, so one good clip could fail a film and drop its paid clips. A mismatch now fails only when the noise metric agrees. Otherwise the clip is delivered and named in `content_validation.degraded`, which also now reports the existing `suspect` degrade.
+
+**Fix: a refused mix keeps the voices, not the bed (vivijure-cf#1158).**
+
+When the mix could not be made, the bare bed replaced the film's audio, so a film with spoken lines shipped with music and captions and no voices. It now keeps the voices, and `finish_incomplete` names the bed as lost.
+
+**Fix: a host with no audio-mix door keeps the voices too (vivijure-cf#1158).**
+
+With `AUDIO_MIX_URL` unset, a film with spoken lines got the bare bed in place of its voices. It now keeps the voices, and `finish_incomplete` names the bed as lost. A film with no lines still gets its bed.
+
+**Fix: finish URLs last the whole queue (vivijure-cf#1161).**
+
+They lasted 30 minutes from submit, and a door running one clip at a time failed the later clips of a long film with a 403. They now last 6 hours.
+
+**Fix: a retry can keep what it already paid for (vivijure-cf#1166).**
+
+`startFilmJob` and `startFilmFromKeyframes` take `reuse_finished`. With it set, a clip, a spoken line or a finish step whose inputs are proven identical is kept, and no door is invoked. It is off by default, because a plain resubmit asks for a new take. Clip provenance now also covers the end frame, the driving audio and the voice sample.
+
+### fix(film): a throw from startFilmJob says whether work is out
+
+A throw before any module is invoked is now `FilmNotStartedError`, so a caller knows a retry is safe. After the invoke, the job write gets three tries. If it still fails, the keyframe job is cancelled, and the throw says so, instead of leaving a job nothing can find.
+
+### fix(film): a film start keeps the frame it was asked for
+
+`startFilmJob` took `delivery_width` and `delivery_height` and dropped them, so the frame came from the measured clips. Parts on different doors could differ, and the join refuses that. A film at InfiniteTalk's shape now goes out at 1920x1080 with bars of 4 and 6 px, where it was 1936x1080. A shot is noted when its clip shrinks by more than 2% to fit, or fills under 90% of the frame. The frame rate is still not pinned.
+
+### fix(film): a new still does not buy the shot before it
+
+A door that does not declare `usage.first_last` no longer gets an end frame, so none is in its clip's proof. For a door that does, `startFilmFromKeyframes` takes `held_end_frames`: the named shot keeps its old end frame, so its proof holds. A clip stamped earlier with that end frame still proves, if the frame has not changed.
+
+### fix(film): a film that fails asks its GPU jobs to cancel
+
+A failed film left its jobs running, and paying. It now asks them to cancel once, for keyframe, clip and finish jobs, as a user cancel does, and a failed finish retry asks for its steps. This covers a throw in a tick and every other way a film fails in `advanceFilmJob`. A module with no cancel logs that its job runs on: every cloud clip door except `infinitetalk`, once that module is deployed. A storage error that also blocks reading the doc now throws and leaves the film for the next tick, where it used to fail the row and strand the film.
+
+### fix(film): a film failing at the keyframe ceiling stops its keyframe jobs
+
+When a film fails at the phase ceiling with a partial keyframe set, the core now cancels the keyframe jobs still running before it marks the film failed.
+
+### fix(film): a keyframe poll tolerates a passing failure, as a clip poll does
+
+A keyframe poll that failed in transport, such as `module /poll -> 500`, ended the film at once. It now waits, for up to 3 consecutive ticks, then fails by name and stops the keyframe jobs. A tick with no such failure resets the count. A failure the module reports still fails at once, unless its text matches the transport words (such as `connection reset`), which waits like a transport failure. A sibling's finished output is kept while it waits.
+
+### feat(film): retake one shot and keep the rest
+
+`startFilmJob` and `startFilmFromKeyframes` take `retake_shots`. With `reuse_finished`, those shots buy a new clip even when the old one is proven. An unchanged line is kept. Finish follows the clip.
+
+**Feat: the tenant R2 block can carry an optional session token, for temporary S3 credentials.**
+
+When the studio env has `R2_S3_SESSION_TOKEN` next to the four R2 S3 values, `tenantR2FromEnv` adds it to the block as `session_token`. The four still decide whether a block exists. With no token, the block is unchanged.
 
 ## [1.28.4] -- 2026-10-31
 
