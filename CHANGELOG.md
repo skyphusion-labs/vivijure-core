@@ -81,6 +81,10 @@ A keyframe poll that failed in transport, such as `module /poll -> 500`, ended t
 
 `startFilmJob` and `startFilmFromKeyframes` take `retake_shots`. With `reuse_finished`, those shots buy a new clip even when the old one is proven. An unchanged line is kept. Finish follows the clip.
 
+**Feat: the tenant R2 block can carry an optional session token, for temporary S3 credentials.**
+
+When the studio env has `R2_S3_SESSION_TOKEN` next to the four R2 S3 values, `tenantR2FromEnv` adds it to the block as `session_token`. The four still decide whether a block exists. With no token, the block is unchanged.
+
 ## [1.28.4] -- 2026-10-31
 
 **Fix: archived clip takes are bounded, and a render copies only what it replaces (#395).**
