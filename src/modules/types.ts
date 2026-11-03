@@ -445,6 +445,12 @@ export interface TenantR2Config {
   access_key_id: string;
   secret_access_key: string;
   bucket: string;
+  /**
+   * Session token, present ONLY when the pair above is a temporary S3 credential, which the S3 API
+   * refuses without it. Absent (the key not present) for a long-lived pair, so the block a host
+   * with no token sends is unchanged. A receiver passes it to its S3 client as the session token.
+   */
+  session_token?: string;
 }
 
 /** Per-job context the core passes to every invoke (never secrets -- see InvokeRequest.r2,
