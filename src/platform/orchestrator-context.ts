@@ -55,6 +55,8 @@ export interface OrchestratorEnv {
   R2_S3_ACCESS_KEY_ID?: unknown;
   R2_S3_SECRET_ACCESS_KEY?: unknown;
   R2_S3_BUCKET?: unknown;
+  /** Optional session token when the pair above is a temporary S3 credential. Same resolution. */
+  R2_S3_SESSION_TOKEN?: unknown;
   /**
    * The control-plane RunPod proxy pair (cp#321). DECLARED for exactly the reason the comment
    * above gives: the index signature would type-check either way, and an undeclared binding is
