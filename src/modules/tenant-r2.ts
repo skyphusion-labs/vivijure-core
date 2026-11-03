@@ -36,6 +36,13 @@ export type { TenantR2Config };
 const ENV_KEYS = ["R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_S3_BUCKET"] as const;
 
 /**
+ * Optional fifth name: the session token of a temporary S3 credential. It is NOT one of the four
+ * that decide whether a block exists. A token with no pair is no credential, and a pair with no
+ * token is a long-lived credential, so it only rides along on a block the four already made.
+ */
+const SESSION_TOKEN_KEY = "R2_S3_SESSION_TOKEN";
+
+/**
  * A binding may be a plain string or a Secrets Store handle. Resolved the same way the rest of the
  * codebase does it, and a failed read is treated as ABSENT rather than throwing: a credential we
  * cannot read must degrade to "no block", which the backend answers by falling back to its own
@@ -68,12 +75,17 @@ export async function tenantR2FromEnv(env: Record<string, unknown>): Promise<Ten
     ENV_KEYS.map((k) => readEnvValue(env[k])),
   );
   if (!endpoint || !accessKeyId || !secretAccessKey || !bucket) return null;
-  return {
+  const block: TenantR2Config = {
     endpoint,
     access_key_id: accessKeyId,
     secret_access_key: secretAccessKey,
     bucket,
   };
+  // OMIT when absent or empty, never an empty string: a block from a host with no token must
+  // serialise exactly as it did before this field existed.
+  const sessionToken = await readEnvValue(env[SESSION_TOKEN_KEY]);
+  if (sessionToken) block.session_token = sessionToken;
+  return block;
 }
 
 /** Matches registry DISPATCH_REF_PREFIX. Duplicated here because registry imports this file. */
