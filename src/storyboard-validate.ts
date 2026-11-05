@@ -51,6 +51,10 @@ export const STORYBOARD_MAX_SCENES = 50;
 // tokens are added.
 export const FULL_PROMPT_MAX_CHARS = 1024;
 export const STYLE_PREFIX_MAX_CHARS = 256;
+// vivijure-cf#1145: where the whole film takes place, said on every shot whose own prompt does not
+// already say it. It rides inside SDXL's text budget on every shot, so it is a short phrase
+// ("a dim workshop at night"), not a description.
+export const SETTING_MAX_CHARS = 100;
 // Per-shot and total duration caps. A shot's render cost is ~linear in its seconds
 // (Wan I2V), so an LLM Assist storyboard with a 600s shot, or a huge duration_seconds,
 // becomes real GPU minutes that pass the structural schema. Cap a single shot at 60s
@@ -97,6 +101,9 @@ export interface StoryboardInput {
   duration_seconds?: number;
   clip_seconds?: number;
   style_prefix?: string;
+  /** vivijure-cf#1145, optional: where the film takes place. The renderer adds it to a shot whose own
+   *  prompt does not name it. Absent means the shot prompt alone decides the place, as before. */
+  setting?: string;
   /** Same speaker on every native-AV shot. Prepended to motion prompts. */
   voice_lock?: string;
   style_category?: string | null;
@@ -119,6 +126,8 @@ export interface StoryboardValidated {
   duration_seconds: number | undefined;
   clip_seconds: number | undefined;
   style_prefix: string;
+  /** Present only when the board set a non-empty one (vivijure-cf#1145). */
+  setting?: string;
   voice_lock?: string;
   style_category: string;
   style_preset: string;
@@ -497,7 +506,7 @@ function validateScenesSection(input: Record<string, unknown>, useCharacters: Sl
   return validatedScenes;
 }
 
-interface TopLevelFields { fullPrompt: string; stylePrefix: string; castRules: string; durationSeconds?: number; clipSeconds?: number; refsDir?: string }
+interface TopLevelFields { fullPrompt: string; stylePrefix: string; setting?: string; castRules: string; durationSeconds?: number; clipSeconds?: number; refsDir?: string }
 
 function validateTopLevelFields(input: Record<string, unknown>, errors: string[]): TopLevelFields {
   let fullPrompt = "";
@@ -534,6 +543,23 @@ function validateTopLevelFields(input: Record<string, unknown>, errors: string[]
       );
     } else {
       stylePrefix = input.style_prefix;
+    }
+  }
+
+  // vivijure-cf#1145: optional and additive. Absent, or blank after trim, leaves it out of the board,
+  // so a board without it serializes byte for byte as before.
+  let setting: string | undefined;
+  if (input.setting !== undefined) {
+    if (typeof input.setting !== "string") {
+      errors.push(`setting must be a string if provided (got ${describeType(input.setting)})`);
+    } else if (/[\r\n]/.test(input.setting)) {
+      errors.push("setting must be one line");
+    } else if (input.setting.trim().length > SETTING_MAX_CHARS) {
+      errors.push(
+        `setting is ${input.setting.trim().length} chars; cap is ${SETTING_MAX_CHARS} (it is said on every shot inside SDXL's text budget, so keep it to a short place phrase)`,
+      );
+    } else if (input.setting.trim()) {
+      setting = input.setting.trim();
     }
   }
 
@@ -596,7 +622,7 @@ function validateTopLevelFields(input: Record<string, unknown>, errors: string[]
       refsDir = input.refs_dir;
     }
   }
-  return { fullPrompt, stylePrefix, castRules, durationSeconds, clipSeconds, refsDir };
+  return { fullPrompt, stylePrefix, setting, castRules, durationSeconds, clipSeconds, refsDir };
 }
 
   // v0.134.3: backfill each scene's target_seconds when the model omitted the
@@ -641,7 +667,7 @@ export function validateStoryboard(input: unknown): ValidationResult {
   const { title, projectName } = validateTitleSection(input, errors);
   const useCharacters = validateUseCharactersSection(input, errors);
   const validatedScenes = validateScenesSection(input, useCharacters, errors);
-  const { fullPrompt, stylePrefix, castRules, durationSeconds, clipSeconds, refsDir } = validateTopLevelFields(input, errors);
+  const { fullPrompt, stylePrefix, setting, castRules, durationSeconds, clipSeconds, refsDir } = validateTopLevelFields(input, errors);
 
   // None-normalization for the two style fields. The renderer disables on
   // the literal string "None", not on null/undefined, so we collapse to it.
@@ -668,6 +694,7 @@ export function validateStoryboard(input: unknown): ValidationResult {
     cast_rules: castRules,
     scenes: validatedScenes,
   };
+  if (setting !== undefined) value.setting = setting;
   if (refsDir !== undefined) value.refs_dir = refsDir;
   return { ok: true, value };
 }

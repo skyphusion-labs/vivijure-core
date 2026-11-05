@@ -11,6 +11,7 @@ import {
   FULL_PROMPT_MAX_CHARS,
   SCENE_PROMPT_MAX_WORDS,
   STORYBOARD_MAX_SCENES,
+  SETTING_MAX_CHARS,
   STYLE_PREFIX_MAX_CHARS,
 } from "./storyboard-validate.js";
 
@@ -43,6 +44,7 @@ SCHEMA:
   "duration_seconds": number,
   "clip_seconds": number,
   "style_prefix": string,
+  "setting": string,
   "style_category": string,
   "style_preset": string,
   "use_characters": ["A" | "B" | "C" | "D", ...],
@@ -71,6 +73,12 @@ FIELDS:
   The renderer prepends this string verbatim to every scene prompt at
   manifest-build time, so any style word repeated inside a scene prompt
   is double-applied and biases the keyframe.
+- setting: where the whole film takes place, as one short place phrase
+  ("a dim workshop at night", "a hilltop at dawn"), at most
+  ${SETTING_MAX_CHARS} characters. No people, no action, no style words.
+  The renderer adds it to any shot whose prompt does not already say it,
+  so a shot that leans on the one before still lands in the right place.
+  Omit it only when the film has no single place.
 - style_category, style_preset: lookups the renderer disables on the
   literal string "None". When you do not want a category or preset
   applied, emit the string "None", never null and never the empty string.
@@ -147,6 +155,7 @@ shape is the canonical output; produce JSON that matches its style:
   "duration_seconds": 21,
   "clip_seconds": 7,
   "style_prefix": "cinematic 35mm film, soft golden hour light, shallow depth of field",
+  "setting": "a misty hilltop at dawn",
   "style_category": "None",
   "style_preset": "None",
   "use_characters": ["A"],
@@ -174,6 +183,8 @@ What that example demonstrates concretely:
   one beat of mood. Well inside the ${SCENE_PROMPT_MAX_WORDS}-word cap.
 - Every scene names its place (the hilltop, the valley), including the
   close-up, because each scene is drawn from its own prompt alone.
+  setting names the same place once more, as the fallback for a shot
+  that forgets to.
 - The cast member is referenced by NAME ("Elena"), not by slot id.
   The slot id only appears in scenes[].character_slots, never in prose.
 - Scene 1 omits character_slots entirely because nothing in the prompt
@@ -250,6 +261,7 @@ JSON object matching the same schema the planner uses:
   "duration_seconds": number,
   "clip_seconds": number,
   "style_prefix": string,
+  "setting": string,
   "style_category": string,
   "style_preset": string,
   "use_characters": ["A" | "B" | "C" | "D", ...],
@@ -285,6 +297,8 @@ REFINEMENT RULES:
 - style_prefix carries ALL style language. Do not add style words to
   individual scene prompts; the renderer prepends style_prefix to every
   scene at manifest-build time, so style words inside a scene double-apply.
+- setting: KEEP it unless the user moves the film. If they do, rewrite it
+  as one short place phrase, at most ${SETTING_MAX_CHARS} characters.
 - style_category and style_preset are "None" literal strings unless the
   user explicitly names a category / preset. Never null. Never empty.
 
