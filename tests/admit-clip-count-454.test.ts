@@ -9,6 +9,8 @@ vi.mock("../src/bundle-storyboard.js", async (original) => ({
 
 import { admitAssemble, ASSEMBLE_MAX_CLIPS, type AssembleSecondsBasis } from "../src/assemble-admission.js";
 import { startFilmJob } from "../src/film-orchestrator.js";
+import { STORYBOARD_MAX_SCENES, STORYBOARD_MAX_SECONDS } from "../src/storyboard-validate.js";
+import { PLANNER_ASK_MAX_SCENES } from "../src/planner-prompt.js";
 
 const basis = (seconds: number): AssembleSecondsBasis => ({ seconds, measured: 0, planned: 1, unknown: 0 });
 
@@ -16,16 +18,16 @@ describe("admitAssemble counts clips (vivijure-core#454)", () => {
   it("refuses one clip over the cap with a count reason, even when the bytes fit", () => {
     const a = admitAssemble({ clipCount: ASSEMBLE_MAX_CLIPS + 1, width: 1280, height: 720, basis: basis(60) });
     expect(a.admitted).toBe(false);
-    expect(a.reason).toMatch(/81 clips, and one assemble takes at most 80/);
+    expect(a.reason).toContain(`${ASSEMBLE_MAX_CLIPS + 1} clips, and one assemble takes at most ${ASSEMBLE_MAX_CLIPS}`);
     expect(a.reason).not.toMatch(/Its size is also over/);
   });
   it("CONTROL: admits exactly the cap when the bytes fit", () => {
     expect(admitAssemble({ clipCount: ASSEMBLE_MAX_CLIPS, width: 1280, height: 720, basis: basis(60) }).admitted).toBe(true);
   });
   it("names both when both are over", () => {
-    const a = admitAssemble({ clipCount: 450, width: 1920, height: 1080, fps: 48, basis: basis(2700) });
+    const a = admitAssemble({ clipCount: ASSEMBLE_MAX_CLIPS + 1, width: 1920, height: 1080, fps: 48, basis: basis(2700) });
     expect(a.admitted).toBe(false);
-    expect(a.reason).toMatch(/450 clips/);
+    expect(a.reason).toContain(`${ASSEMBLE_MAX_CLIPS + 1} clips`);
     expect(a.reason).toMatch(/Its size is also over: assemble refused/);
   });
   it("CONTROL: a size refusal under the cap carries no count reason", () => {
@@ -69,25 +71,36 @@ describe("a film over the clip cap is refused at submit (vivijure-core#454)", ()
   const start = (env: never, n: number, over: Record<string, unknown> = {}) =>
     startFilmJob(env, { project: "film", bundle_key: "bundles/film.tar.gz", scenes: scenes(n), delivery_width: 1280, delivery_height: 720, ...over } as never);
 
-  it("81 short shots: failed at start, no keyframe job bought", async () => {
+  it("one shot over the cap: failed at start, no keyframe job bought", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const h = harness();
     const job = await start(h.env, ASSEMBLE_MAX_CLIPS + 1);
     expect(job.phase).toBe("failed");
-    expect(job.error).toMatch(/81 clips, and one assemble takes at most 80/);
+    expect(job.error).toContain(`${ASSEMBLE_MAX_CLIPS + 1} clips, and one assemble takes at most ${ASSEMBLE_MAX_CLIPS}`);
     expect(h.invokes).toHaveLength(0);
   });
-  it("CONTROL: 80 short shots start their keyframes", async () => {
+  it("CONTROL: exactly the cap starts its keyframes", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const h = harness();
     const job = await start(h.env, ASSEMBLE_MAX_CLIPS);
     expect(job.phase).toBe("keyframe");
     expect(h.invokes.length).toBeGreaterThan(0);
   });
-  it("CONTROL: a keyframes-only film of 81 shots is not priced, because it never assembles", async () => {
+  it("CONTROL: a keyframes-only film over the cap is not priced, because it never assembles", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const h = harness();
     const job = await start(h.env, ASSEMBLE_MAX_CLIPS + 1, { keyframes_only: true });
     expect(job.phase).toBe("keyframe");
+  });
+});
+
+describe("the feature-length caps (vivijure-core#455)", () => {
+  it("a board the validator takes is a film assemble takes: the two caps are one number", () => {
+    expect(ASSEMBLE_MAX_CLIPS).toBe(STORYBOARD_MAX_SCENES);
+  });
+  it("is 600 shots, 60 minutes stated, and the planner still asks for 50 in one turn", () => {
+    expect(STORYBOARD_MAX_SCENES).toBe(600);
+    expect(STORYBOARD_MAX_SECONDS).toBe(3600);
+    expect(PLANNER_ASK_MAX_SCENES).toBe(50);
   });
 });

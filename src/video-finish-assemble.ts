@@ -91,8 +91,10 @@ export const ASSEMBLE_MAX_JOB_SECONDS = 6 * 3600;
 export const ASSEMBLE_PRESIGN_TTL_SECONDS = ASSEMBLE_MAX_JOB_SECONDS + 1800;
 
 /**
- * Upper bound on pool size. Mirrors MAX_CLIPS in containers/video-finish/app.py; a film with more
- * clips than this is refused by the container regardless, so minting past it is pure waste.
+ * Upper bound on pool size. NOT a mirror of MAX_CLIPS (it said so until vivijure-core#455). The
+ * container closes a batch at MAX_BATCH_BYTES (1 GiB) of SOURCE, so 80 partials is 80 GiB of source,
+ * far past any film one R2 PUT can deliver. A 450 clip film is a handful of batches. Kept at 80 as a
+ * bound on signatures minted per assemble.
  */
 export const ASSEMBLE_MAX_POOL_PAIRS = 80;
 

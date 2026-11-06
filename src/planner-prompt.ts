@@ -10,10 +10,15 @@ import {
   DIALOGUE_MAX_CHARS,
   FULL_PROMPT_MAX_CHARS,
   SCENE_PROMPT_MAX_WORDS,
-  STORYBOARD_MAX_SCENES,
   SETTING_MAX_CHARS,
   STYLE_PREFIX_MAX_CHARS,
 } from "./storyboard-validate.js";
+
+/** vivijure-core#455: the most scenes the LLM planner is asked for in one turn. The storyboard cap
+ *  (STORYBOARD_MAX_SCENES, 600) is what a board may hold; this is what one generation is asked to
+ *  write. It stays at the old cap of 50: a one-shot plan of hundreds of scenes is untested model
+ *  output, and a long board is built over refinement turns or imported. */
+export const PLANNER_ASK_MAX_SCENES = 50;
 
 // Character bible entry the planner UI passes in. `bible` is the condensed
 // appearance description that the cast-prep stage saved (typically ~220
@@ -139,7 +144,7 @@ overflow SDXL's CLIP 77-token text encoder or break manifest builds):
    reads ALL of it once per scene, so verbosity here costs every shot.
 9. full_prompt: at most ${FULL_PROMPT_MAX_CHARS} characters. This is the
    film-level summary, not the script; one or two sentences.
-10. scenes array length: at most ${STORYBOARD_MAX_SCENES} entries. A 50-
+10. scenes array length: at most ${PLANNER_ASK_MAX_SCENES} entries. A 50-
     shot render is already 25+ minutes of GPU time at typical clip
     seconds; if the brief implies more, shorten clip_seconds or split.
 11. scenes[].dialogue.text: at most ${DIALOGUE_MAX_CHARS} characters. One
@@ -310,7 +315,7 @@ over these because they overflow SDXL's CLIP 77-token text encoder):
 - style_prefix: at most ${STYLE_PREFIX_MAX_CHARS} characters. If the user
   asks to expand the style, compress earlier clauses to make room.
 - full_prompt: at most ${FULL_PROMPT_MAX_CHARS} characters.
-- scenes array length: at most ${STORYBOARD_MAX_SCENES} entries. If the
+- scenes array length: at most ${PLANNER_ASK_MAX_SCENES} entries. If the
   user asks for more shots than the cap allows, add as many as fit
   under the cap and keep the remaining requested scenes for a future
   refinement turn; never let the array exceed the cap.
