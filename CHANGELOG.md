@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.35.0
+
 ## [1.34.0] -- 2026-11-06
 
 **Fix: a cancel can no longer be undone by a tick that wrote back an older film doc (vivijure-cf#1215).**
