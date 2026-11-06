@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.31.0
+
 ## [1.30.0] -- 2026-11-06
 
 **Feat: a storyboard can name the film's place once, in an optional `setting`.**

@@ -946,6 +946,24 @@ export interface KeyframeShot {
   /** True when this job drew nothing and returns a still already in the store. Optional and additive:
    *  absent means drawn. The core stamps its config provenance only on a still drawn this run. */
   reused?: boolean;
+  /** What the backend plate count guard saw on this still, when it ran (two-person shots). Optional
+   *  and additive: absent means the guard did not run, which is NOT the same as clean. `clean: false`
+   *  means the still was made from a plate that may still show an extra person. The core carries it
+   *  to the render row (`output.plate_check`) so the panel can say so. */
+  plate_count?: PlateCount;
+}
+/** The plate count guard report on one still (vivijure-backend docs/contract.md, `keyframes`). */
+export interface PlateCount {
+  /** People the shot asked for. */
+  expected: number;
+  /** Faces counted on each plate draw, in draw order. */
+  faces: number[];
+  /** Index into `faces` of the draw the still was made from. */
+  chosen: number;
+  /** False when no draw held at most `expected` faces. */
+  clean: boolean;
+  /** Redraws the guard was allowed. */
+  retries: number;
 }
 /** What a `keyframe` module returns: every keyframe it generated, by shot. The core presigns each
  *  key into a fetchable keyframe_url when it hands them on to the motion.backend orchestrator. */

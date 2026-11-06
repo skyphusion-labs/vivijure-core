@@ -198,6 +198,7 @@ import { presignR2Get, presignR2Put, FILM_DOWNLOAD_TTL_SECONDS } from "./presign
 import { readShotDurationsFromBundle } from "./bundle-durations.js";
 import { readBundleShotSlots, readBundleStoryboardYaml } from "./bundle-storyboard.js";
 import { contentValidateDoneClips, contentValidationView } from "./clip-content-validate.js";
+import { parsePlateCount } from "./plate-count.js";
 import { buildCaptionCues } from "./captions.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
 import { getCastById, markLoraReady } from "./cast-db.js";
@@ -247,10 +248,16 @@ export async function clipKeysFromFilmJob(
 
 /** Confine every module-returned keyframe / LoRA key to renders/<project>/. Throws on escape. */
 function confineKeyframeOutput(project: string, kfOut: KeyframeOutput): KeyframeOutput {
-  const keyframes = (kfOut.keyframes || []).map((k: KeyframeShot) => ({
-    ...k,
-    keyframe_key: assertProjectKey(project, k.keyframe_key),
-  }));
+  const keyframes = (kfOut.keyframes || []).map((k: KeyframeShot) => {
+    // The plate count report is module-supplied: keep it only in the documented shape, never guess.
+    const { plate_count: rawPlate, ...rest } = k;
+    const plate_count = parsePlateCount(rawPlate);
+    return {
+      ...rest,
+      keyframe_key: assertProjectKey(project, k.keyframe_key),
+      ...(plate_count ? { plate_count } : {}),
+    };
+  });
   let trained_loras = kfOut.trained_loras;
   if (trained_loras) {
     const next: Record<string, string> = {};
@@ -274,7 +281,7 @@ function completeKeyframesOnly(job: FilmJob, kfOut: KeyframeOutput): void {
       : "keyframe stage produced no keyframes";
     return;
   }
-  job.keyframes = kfs.map((k: KeyframeShot) => ({ shot_id: k.shot_id, keyframe_key: k.keyframe_key }));
+  job.keyframes = kfs.map(keyframeRef);
   job.phase = "done";
 }
 
@@ -359,8 +366,15 @@ async function voiceRefOnShot(
   return { voice_ref_key: key, voice_ref_url: await presignR2Get(env, key, 1800) };
 }
 
+/** The job doc's ref for one keyframe. The plate count report rides along when the guard ran, so the
+ *  render row can say a still may show an extra person (plateCheckView). */
+function keyframeRef(k: { shot_id: string; keyframe_key: string; plate_count?: unknown }): FilmKeyframeRef {
+  const plate_count = parsePlateCount(k.plate_count);
+  return { shot_id: k.shot_id, keyframe_key: k.keyframe_key, ...(plate_count ? { plate_count } : {}) };
+}
+
 function persistKeyframeRefs(job: FilmJob, kfOut: KeyframeOutput): void {
-  job.keyframes = (kfOut.keyframes || []).map((k) => ({ shot_id: k.shot_id, keyframe_key: k.keyframe_key }));
+  job.keyframes = (kfOut.keyframes || []).map(keyframeRef);
 }
 
 function keyframeOutputFromJob(job: FilmJob): KeyframeOutput {
@@ -3559,7 +3573,10 @@ export async function startFilmFromKeyframes(
     await putFilm(env, job);
     return job;
   }
-  job.keyframes = matched.map((m) => ({ shot_id: m.shot_id, keyframe_key: m.keyframe_key }));
+  // A still carried from the preview keeps its plate count report, so the animated film still says
+  // which stills may show an extra person. The host drops the report for a still it replaced.
+  const plateByShot = new Map((args.keyframes || []).map((k) => [k.shot_id, k.plate_count]));
+  job.keyframes = matched.map((m) => keyframeRef({ ...m, plate_count: plateByShot.get(m.shot_id) }));
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   const refusal = await submitBudgetRefusal(env, job, modules);
   if (refusal) {

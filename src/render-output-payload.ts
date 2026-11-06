@@ -37,6 +37,7 @@ import {
   summarizeFinish,
 } from "./film-model.js";
 import { resolveFilmOutputKey } from "./film-output-key.js";
+import { plateCheckView } from "./plate-count.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 
 /** The `output_json` payload for a single-film job at phase `done`.
@@ -93,8 +94,16 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
   // the studio saying it cannot vouch for these clips, which is a different sentence and gets its
   // own key rather than being folded into one of the degrade counts.
   if (job.content_validation) out.content_validation = job.content_validation;
+  // The backend plate count guard, same ladder: absent when it ran on no still, `unclean: []` when
+  // every still it checked came out clean. Derived from the job doc alone, so both writers agree.
+  const plateCheck = plateCheckView(job.keyframes);
+  if (plateCheck) out.plate_check = plateCheck;
   if (job.keyframes_only && job.keyframes?.length) {
-    out.keyframes = job.keyframes.map((k) => ({ shot_id: k.shot_id, key: k.keyframe_key }));
+    out.keyframes = job.keyframes.map((k) => ({
+      shot_id: k.shot_id,
+      key: k.keyframe_key,
+      ...(k.plate_count ? { plate_count: k.plate_count } : {}),
+    }));
     out.scenes = job.scenes;
   }
   if (job.derive_mode && clipJob) {

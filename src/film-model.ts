@@ -5,7 +5,7 @@
 // every await; it re-exports this module, so importers and tests keep their one entry point.
 
 import { FINISH_TRANSPORT_HOLD_MAX_SECONDS, assembleCapacityBackoffSeconds, decodeAssembleWait } from "./video-finish-assemble.js";
-import type { ConfigSchema, DialogueLine, FinishOutput, HookSelection, MasterOutput, RegisteredModule, SpeechOutput, StepFailure } from "./modules/types.js";
+import type { ConfigSchema, DialogueLine, FinishOutput, HookSelection, MasterOutput, PlateCount, RegisteredModule, SpeechOutput, StepFailure } from "./modules/types.js";
 import { validateConfig } from "./modules/registry.js";
 import { summarizeJob, type ClipJob, type JobSummary } from "./clip-job-model.js";
 import { classifyTransientFailure } from "./render-orchestrator.js";
@@ -348,6 +348,8 @@ export interface SpeechShot {
 export interface FilmKeyframeRef {
   shot_id: string;
   keyframe_key: string;
+  /** The backend plate count guard report for this still, when it ran. Read by plateCheckView. */
+  plate_count?: PlateCount;
 }
 
 export interface FilmJob {
