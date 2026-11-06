@@ -3,7 +3,11 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.31.0
+## [1.31.0] -- 2026-11-06
+
+**Feat: the backend plate count report reaches the render row, so a still that may show an extra person is no longer silent.**
+
+On two-person shots the GPU backend (1.1.14) counts faces on the background plate and reports `plate_count: {expected, faces, chosen, clean, retries}` on each keyframe entry; `clean: false` means the still was made from a plate that may still show an extra person. The core dropped that field at the job doc. `KeyframeShot`, `FilmKeyframeRef` and `KeyframeRef` now carry an optional `plate_count` (additive, no module epoch change), read strictly by `parsePlateCount` so a malformed block is dropped rather than read as clean. The render payload gains `plate_check: {checked, unclean: [{shot_id, expected, faces}]}`, absent when the guard ran on no still, and a keyframes-only payload keeps `plate_count` on each keyframe entry. A film animated from a preview keeps the report for each carried still.
 
 ## [1.30.0] -- 2026-11-06
 
