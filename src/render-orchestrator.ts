@@ -130,6 +130,7 @@ import { contentValidateDoneClips } from "./clip-content-validate.js";
 import { clipProvenanceHash, chooseProvenanceMatch, headEtag, provVerdict, UNSTAMPED_SETTLE_MS, writeProv } from "./clip-provenance.js";
 import { BUCKET_KEYFRAME_MOTION_BACKENDS, ensureClipKeyframeInR2 } from "./stage-clip-keyframe.js";
 import { assertProjectKey } from "./key-safety.js";
+import { presignR2Get } from "./presign.js";
 
 export type { ClipShotInput, ClipShot, ClipJob, JobSummary };
 export { summarizeJob };
@@ -410,7 +411,200 @@ async function provenClipKey(env: Env, shot: ClipShot, candidates: string[], sta
   return null;
 }
 
-/** Start a clip job: resolve the motion.backend module per shot, submit, persist poll tokens. */
+// --------------------------------------------------------------------------- vivijure-core#451
+//
+// A clip job is bought in claimed batches. The doc is written before any door is invoked, every batch is
+// claimed in the doc before its invokes and recorded after, and a tick submits only while the shots in
+// flight are under the window. So a tick cut off at any point leaves at most one batch whose outcome is
+// unknown, and those shots are claimed, never bought a second time: they wait for their clip to land in
+// R2 (reclaimClipsFromR2 adopts it) and fail loudly once the claim is stale.
+//
+// The window is also what keeps a shot's URLs alive. A door that queues fetches its keyframe when the job
+// starts running, so a URL minted at t0 for shot 450 expired long before it was read. URLs are minted from
+// the shot's keys when the shot is submitted, on every submit, for shots the film path marked presign_keys.
+
+/** The most shots one tick submits. */
+export const CLIP_SUBMIT_BATCH = 20;
+/** The most shots of one clip job submitted and not yet resolved. A claimed shot counts. */
+export const CLIP_MAX_IN_FLIGHT = 20;
+/** A claim older than this has no live owner: longer than any Worker invocation runs. */
+export const CLIP_SUBMIT_CLAIM_STALE_MS = 15 * 60_000;
+/** TTL of a URL minted at submit. 30 min covers a long cloud i2v job once it is running. */
+export const CLIP_URL_TTL_SECONDS = 1800;
+
+async function putClipJob(env: Env, job: ClipJob): Promise<void> {
+  await env.R2_RENDERS.put(jobKey(job.job_id), JSON.stringify(job), { httpMetadata: { contentType: "application/json" } });
+}
+
+/** Pure: shots submitted and not resolved, plus shots claimed with an unknown outcome. */
+export function clipsInFlight(job: ClipJob): number {
+  return job.shots.filter((s) => s.status === "pending" && (!!s.poll || s.submit_claim !== undefined)).length;
+}
+
+/** Pure: shots waiting to be bought (never submitted, or a transient retry), in board order. */
+export function queuedClipShots(job: ClipJob): ClipShot[] {
+  return job.shots.filter((s) => s.status === "pending" && !s.poll && s.submit_claim === undefined);
+}
+
+/** A claim whose tick died. Its invoke may have reached the door, so it is never re-bought: R2 adoption
+ *  still rescues it if the clip lands, and otherwise it fails with the reason. */
+export function expireStaleSubmitClaims(job: ClipJob, now: number = Date.now()): number {
+  let n = 0;
+  for (const s of job.shots) {
+    if (s.status !== "pending" || s.poll || s.submit_claim === undefined) continue;
+    if (now - s.submit_claim < CLIP_SUBMIT_CLAIM_STALE_MS) continue;
+    s.status = "failed";
+    s.error = `submit outcome unknown: the tick that submitted ${s.shot_id} ended before it recorded the result. ` +
+      "It is not bought again automatically; a clip that lands is still adopted, and a retry may buy it (vivijure-core#451)";
+    delete s.submit_claim;
+    n += 1;
+  }
+  return n;
+}
+
+async function mintShotUrls(env: Env, shot: ClipShot): Promise<void> {
+  if (!shot.presign_keys) return;
+  if (shot.keyframe_key) shot.keyframe_url = await presignR2Get(env, shot.keyframe_key, CLIP_URL_TTL_SECONDS);
+  if (shot.last_keyframe_key) shot.last_keyframe_url = await presignR2Get(env, shot.last_keyframe_key, CLIP_URL_TTL_SECONDS);
+  if (shot.audio_key) shot.audio_url = await presignR2Get(env, shot.audio_key, CLIP_URL_TTL_SECONDS);
+  if (shot.voice_ref_key) shot.voice_ref_url = await presignR2Get(env, shot.voice_ref_key, CLIP_URL_TTL_SECONDS);
+}
+
+/** Invoke the door for one shot and record the outcome on it. The caller holds the claim. */
+async function submitShot(
+  env: Env,
+  job: ClipJob,
+  shot: ClipShot,
+  mb: RegisteredModule,
+  fetcher: NonNullable<ReturnType<typeof resolveFetcher>>,
+  tenantR2: Awaited<ReturnType<typeof tenantR2FromEnv>>,
+): Promise<void> {
+  if (!shot.submit_attempts) {
+    try {
+      await archiveExistingClipTakes(env, job.project, shot);
+    } catch { /* archive is best-effort; a failed copy must not block the new take */ }
+  }
+  await mintShotUrls(env, shot);
+  let motionInput: ClipShotInput = shot;
+  if (mb.name && BUCKET_KEYFRAME_MOTION_BACKENDS.has(mb.name)) {
+    try {
+      motionInput = await ensureClipKeyframeInR2(env, job.project, shot);
+      shot.keyframe_key = motionInput.keyframe_key;
+      shot.keyframe_url = motionInput.keyframe_url;
+    } catch (e) {
+      shot.status = "failed";
+      shot.error = e instanceof Error ? e.message : String(e);
+      return;
+    }
+  }
+  // cp#270: `own-gpu` submits to the vivijure-backend endpoint, which may be POOLED across
+  // tenants, so it declares `needs_tenant_r2` and gets the tenant credential attached here.
+  // withTenantR2 is what enforces the declaration -- a module that does not ask for it (every
+  // cloud motion backend) gets the envelope back unchanged, with the key ABSENT rather than null.
+  const r = await invokeModule<MotionBackendInput, MotionBackendOutput>(
+    fetcher,
+    withTenantR2(
+      {
+        hook: "motion.backend",
+        input: {
+          shot_id: motionInput.shot_id,
+          keyframe_url: motionInput.keyframe_url,
+          keyframe_key: motionInput.keyframe_key,
+          last_keyframe_url: motionInput.last_keyframe_url,
+          last_keyframe_key: motionInput.last_keyframe_key,
+          voice_ref_url: motionInput.voice_ref_url,
+          voice_ref_key: motionInput.voice_ref_key,
+          audio_url: motionInput.audio_url,
+          audio_key: motionInput.audio_key,
+          prompt: motionInput.prompt,
+          seconds: motionInput.seconds,
+        },
+        config: shot.config ?? {},
+        context: { project: job.project, job_id: job.job_id },
+      },
+      mb,
+      tenantR2,
+    ),
+  );
+  if (!r.ok) {
+    if (classifyInvokeFailure(r) === "transient") {
+      const attempts = (shot.submit_attempts ?? 0) + 1;
+      if (attempts < CLIP_SUBMIT_MAX_ATTEMPTS) {
+        shot.submit_attempts = attempts;
+        shot.error = `transient submit retry ${attempts}/${CLIP_SUBMIT_MAX_ATTEMPTS}: ${r.error}`;
+        // stays pending with no poll token; the next submit pass invokes it again
+      } else {
+        shot.status = "failed";
+        shot.error = `${r.error} (submit retries exhausted, ${attempts})`;
+      }
+    } else {
+      shot.status = "failed";
+      shot.error = r.error;
+    }
+  } else if ((r as { pending?: boolean }).pending) {
+    shot.poll = (r as { poll: string }).poll;
+    shot.runpod_job_id = (r as { jobId?: string }).jobId; // #536: retain the backend job id for cancel/accounting
+    shot.error = undefined;
+  } else if ("output" in r) {
+    const output = r.output as MotionBackendOutput;
+    const violation = hookOutputViolation(mb.name, "motion.backend", output);
+    if (violation) { shot.status = "failed"; shot.error = violation; }
+    else {
+      try {
+        shot.clip_key = assertProjectKey(job.project, output.clip_key);
+        shot.status = "done";
+        shot.error = undefined;
+        if (typeof output.has_audio === "boolean") shot.has_audio = output.has_audio;
+        await stampClipProvenance(env, job.project, shot);
+      } catch (e) {
+        shot.status = "failed";
+        shot.error = e instanceof Error ? e.message : String(e);
+      }
+    }
+  } else {
+    shot.status = "failed";
+    shot.error = "module returned neither output nor a poll token";
+  }
+}
+
+/** Buy the next batch of queued shots, inside the window. Writes the claim before any invoke and the
+ *  outcomes after. Returns how many shots it submitted. */
+export async function submitQueuedShots(env: Env, job: ClipJob, modules: RegisteredModule[], now: number = Date.now()): Promise<number> {
+  const room = Math.min(CLIP_SUBMIT_BATCH, CLIP_MAX_IN_FLIGHT - clipsInFlight(job));
+  if (room <= 0) return 0;
+  const batch = queuedClipShots(job).slice(0, room);
+  if (!batch.length) return 0;
+  for (const s of batch) s.submit_claim = now;
+  await putClipJob(env, job); // the claim lands before any money moves
+  const envRec = env as unknown as Record<string, unknown>;
+  const serving = servingForHook(modules, "motion.backend");
+  const tenantR2 = await tenantR2FromEnv(envRec);
+  for (const shot of batch) {
+    const binding = shot.binding ?? job.binding;
+    const fetcher = binding ? resolveFetcher(envRec, binding) : null;
+    const mbName = shot.motion_backend ?? job.motion_backend;
+    const mb = mbName ? serving.find((m) => m.name === mbName) ?? null : null;
+    if (!fetcher || !mb) {
+      shot.status = "failed";
+      shot.error = !fetcher ? "module binding no longer bound" : "no motion.backend module installed";
+      delete shot.submit_claim;
+      continue;
+    }
+    try {
+      await submitShot(env, job, shot, mb, fetcher, tenantR2);
+    } catch (e) {
+      // The invoke may have reached the door. Keep the claim: the shot is adopted from R2 or fails as
+      // unknown, and is never bought twice.
+      console.warn(`clip job ${job.job_id}: submit of ${shot.shot_id} threw (${e instanceof Error ? e.message : String(e)}); claim kept (vivijure-core#451)`);
+      continue;
+    }
+    delete shot.submit_claim;
+  }
+  await putClipJob(env, job);
+  return batch.length;
+}
+
+/** Start a clip job: resolve the motion.backend module per shot, write the doc, buy the first batch. */
 export async function startClipJob(
   env: Env,
   args: {
@@ -469,12 +663,12 @@ export async function startClipJob(
       shots.push(shot);
       continue;
     }
-    let motionInput: ClipShotInput = sh;
     if (mb.name && BUCKET_KEYFRAME_MOTION_BACKENDS.has(mb.name)) {
+      // Staged here, before the proof, because the proof hashes this key's etag.
       try {
-        motionInput = await ensureClipKeyframeInR2(env, args.project, sh);
-        shot.keyframe_key = motionInput.keyframe_key;
-        shot.keyframe_url = motionInput.keyframe_url;
+        const staged = await ensureClipKeyframeInR2(env, args.project, sh);
+        shot.keyframe_key = staged.keyframe_key;
+        shot.keyframe_url = staged.keyframe_url;
       } catch (e) {
         shot.status = "failed";
         shot.error = e instanceof Error ? e.message : String(e);
@@ -482,7 +676,6 @@ export async function startClipJob(
         continue;
       }
     }
-    if (!endFrameUsed) motionInput = { ...motionInput, last_keyframe_key: undefined, last_keyframe_url: undefined };
     const proven = args.retake_shots?.includes(shot.shot_id)
       ? null
       : await provenClipKey(env, shot, existingClips.get(shot.shot_id) ?? [], endFrameUsed ? undefined : sh.last_keyframe_key);
@@ -494,69 +687,7 @@ export async function startClipJob(
       shots.push(shot);
       continue;
     }
-    try {
-      await archiveExistingClipTakes(env, args.project, shot);
-    } catch { /* archive is best-effort; a failed copy must not block the new take */ }
-    // cp#270: `own-gpu` submits to the vivijure-backend endpoint, which may be POOLED across
-    // tenants, so it declares `needs_tenant_r2` and gets the tenant credential attached here.
-    // withTenantR2 is what enforces the declaration -- a module that does not ask for it (every
-    // cloud motion backend) gets the envelope back unchanged, with the key ABSENT rather than null.
-    const r = await invokeModule<MotionBackendInput, MotionBackendOutput>(
-      fetcher,
-      withTenantR2(
-        {
-          hook: "motion.backend",
-          input: {
-            shot_id: motionInput.shot_id,
-            keyframe_url: motionInput.keyframe_url,
-            keyframe_key: motionInput.keyframe_key,
-            last_keyframe_url: motionInput.last_keyframe_url,
-            last_keyframe_key: motionInput.last_keyframe_key,
-            voice_ref_url: motionInput.voice_ref_url,
-            voice_ref_key: motionInput.voice_ref_key,
-            audio_url: motionInput.audio_url,
-            audio_key: motionInput.audio_key,
-            prompt: motionInput.prompt,
-            seconds: motionInput.seconds,
-          },
-          config,
-          context: { project: args.project, job_id },
-        },
-        mb,
-        await tenantR2FromEnv(envRec),
-      ),
-    );
-    if (!r.ok) {
-      if (classifyInvokeFailure(r) === "transient") {
-        shot.submit_attempts = 1;
-        shot.error = `transient submit retry 1/${CLIP_SUBMIT_MAX_ATTEMPTS}: ${r.error}`;
-        // stays pending with no poll token; advanceClipJob re-invokes next tick
-      } else {
-        shot.status = "failed";
-        shot.error = r.error;
-      }
-    } else if ((r as { pending?: boolean }).pending) {
-      shot.poll = (r as { poll: string }).poll;
-      shot.runpod_job_id = (r as { jobId?: string }).jobId; // #536: retain the backend job id for cancel/accounting
-    } else if ("output" in r) {
-      const output = r.output as MotionBackendOutput;
-      const violation = hookOutputViolation(mb.name, "motion.backend", output);
-      if (violation) { shot.status = "failed"; shot.error = violation; }
-      else {
-        try {
-          shot.clip_key = assertProjectKey(args.project, output.clip_key);
-          shot.status = "done";
-          if (typeof output.has_audio === "boolean") shot.has_audio = output.has_audio;
-          await stampClipProvenance(env, args.project, shot);
-        } catch (e) {
-          shot.status = "failed";
-          shot.error = e instanceof Error ? e.message : String(e);
-        }
-      }
-    } else {
-      shot.status = "failed";
-      shot.error = "module returned neither output nor a poll token";
-    }
+    // vivijure-core#451: queued, not bought. submitQueuedShots buys it in a claimed batch.
     shots.push(shot);
   }
 
@@ -569,7 +700,10 @@ export async function startClipJob(
     shots,
     created_at: Date.now(),
   };
-  await env.R2_RENDERS.put(jobKey(job_id), JSON.stringify(job), { httpMetadata: { contentType: "application/json" } });
+  // vivijure-core#451: the doc lands with nothing bought, so a tick cut off from here on cannot have
+  // paid for a clip that no doc records.
+  await putClipJob(env, job);
+  await submitQueuedShots(env, job, modules);
   return job;
 }
 
@@ -581,9 +715,11 @@ export async function advanceClipJob(env: Env, jobId: string, preModules?: Regis
   const envRec = env as unknown as Record<string, unknown>;
   const polled: ClipShot[] = [];
   const modules = preModules ?? await discoverModules(envRec);
-  const serving = servingForHook(modules, "motion.backend");
+  expireStaleSubmitClaims(job);
   for (const shot of job.shots) {
-    if (shot.status !== "pending") continue;
+    // vivijure-core#451: a shot with no poll token is queued (or a transient retry); submitQueuedShots
+    // buys it below, inside the window. A claimed shot is never polled or re-bought here.
+    if (shot.status !== "pending" || !shot.poll) continue;
     const binding = shot.binding ?? job.binding;
     const fetcher = binding ? resolveFetcher(envRec, binding) : null;
     if (!fetcher) {
@@ -597,90 +733,6 @@ export async function advanceClipJob(env: Env, jobId: string, preModules?: Regis
       polled.push(shot);
       continue;
     }
-    // Pending with no poll token: last invoke was a retryable fail. Submit again.
-    const mbName = shot.motion_backend ?? job.motion_backend;
-    const mb = mbName ? serving.find((m) => m.name === mbName) ?? null : null;
-    if (!mb) {
-      shot.status = "failed";
-      shot.error = "no motion.backend module installed";
-      continue;
-    }
-    const config = shot.config ?? {};
-    let motionInput: ClipShotInput = shot;
-    if (mb.name && BUCKET_KEYFRAME_MOTION_BACKENDS.has(mb.name)) {
-      try {
-        motionInput = await ensureClipKeyframeInR2(env, job.project, shot);
-        shot.keyframe_key = motionInput.keyframe_key;
-        shot.keyframe_url = motionInput.keyframe_url;
-      } catch (e) {
-        shot.status = "failed";
-        shot.error = e instanceof Error ? e.message : String(e);
-        continue;
-      }
-    }
-    const r = await invokeModule<MotionBackendInput, MotionBackendOutput>(
-      fetcher,
-      withTenantR2(
-        {
-          hook: "motion.backend",
-          input: {
-            shot_id: motionInput.shot_id,
-            keyframe_url: motionInput.keyframe_url,
-            keyframe_key: motionInput.keyframe_key,
-            last_keyframe_url: motionInput.last_keyframe_url,
-            last_keyframe_key: motionInput.last_keyframe_key,
-            voice_ref_url: motionInput.voice_ref_url,
-            voice_ref_key: motionInput.voice_ref_key,
-            audio_url: motionInput.audio_url,
-            audio_key: motionInput.audio_key,
-            prompt: motionInput.prompt,
-            seconds: motionInput.seconds,
-          },
-          config,
-          context: { project: job.project, job_id: job.job_id },
-        },
-        mb,
-        await tenantR2FromEnv(envRec),
-      ),
-    );
-    if (!r.ok) {
-      if (classifyInvokeFailure(r) === "transient") {
-        const attempts = (shot.submit_attempts ?? 0) + 1;
-        if (attempts < CLIP_SUBMIT_MAX_ATTEMPTS) {
-          shot.submit_attempts = attempts;
-          shot.error = `transient submit retry ${attempts}/${CLIP_SUBMIT_MAX_ATTEMPTS}: ${r.error}`;
-        } else {
-          shot.status = "failed";
-          shot.error = `${r.error} (submit retries exhausted, ${attempts})`;
-        }
-      } else {
-        shot.status = "failed";
-        shot.error = r.error;
-      }
-    } else if ((r as { pending?: boolean }).pending) {
-      shot.poll = (r as { poll: string }).poll;
-      shot.runpod_job_id = (r as { jobId?: string }).jobId;
-      shot.error = undefined;
-    } else if ("output" in r) {
-      const output = r.output as MotionBackendOutput;
-      const violation = hookOutputViolation(mb.name, "motion.backend", output);
-      if (violation) { shot.status = "failed"; shot.error = violation; }
-      else {
-        try {
-          shot.clip_key = assertProjectKey(job.project, output.clip_key);
-          shot.status = "done";
-          if (typeof output.has_audio === "boolean") shot.has_audio = output.has_audio;
-          await stampClipProvenance(env, job.project, shot);
-        } catch (e) {
-          shot.status = "failed";
-          shot.error = e instanceof Error ? e.message : String(e);
-        }
-      }
-    } else {
-      shot.status = "failed";
-      shot.error = "module returned neither output nor a poll token";
-    }
-    polled.push(shot);
   }
   // #767: stamp this render config-provenance for any shot accepted via this pass's poll, so a later
   // same-project render with a different backend/config can prove it must re-render rather than adopt this
@@ -693,6 +745,8 @@ export async function advanceClipJob(env: Env, jobId: string, preModules?: Regis
   // landed. Runs BEFORE the caller's summarizeJob() complete/advance judgment. (The caller also calls
   // reclaimClipsFromR2 again right before its complete-check; both are idempotent + cheap.)
   await reclaimClipsFromR2(env, job);
+  // vivijure-core#451: fill the window the polls above freed, in a claimed batch.
+  await submitQueuedShots(env, job, modules);
   // #536: a shot still FAILED that had started a remote job (it held a poll token) may have left the RunPod
   // job running -- fire a best-effort cancel so the backend does not keep burning GPU after the studio gave
   // up (the 307s-of-H200 zombie observed on the S18 gate). reclaimClipsFromR2 ran first, so a shot whose

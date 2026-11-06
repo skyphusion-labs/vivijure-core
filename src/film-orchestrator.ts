@@ -532,6 +532,7 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
       audio_key: lineKey,
       audio_url,
       motion_backend: job.per_shot_motion?.[m.shot_id],
+      presign_keys: true, // vivijure-core#451: minted again when the shot is actually submitted
       ...(await voiceRefOnShot(env, job.voice_ref_keys, m.shot_id)),
     });
   }
@@ -3651,6 +3652,7 @@ export async function startFilmFromKeyframes(
       }),
       seconds: m.seconds,
       motion_backend: job.per_shot_motion?.[m.shot_id],
+      presign_keys: true, // vivijure-core#451: minted again when the shot is actually submitted
       ...(await voiceRefOnShot(env, job.voice_ref_keys, m.shot_id)),
     });
   }
