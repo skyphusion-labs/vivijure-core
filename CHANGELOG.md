@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.40.0
+
 ## [1.39.0] -- 2026-11-06
 
 **Fix: a refine caps what one turn adds or rewrites, not the board's length (vivijure-core#473).**

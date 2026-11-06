@@ -26,7 +26,9 @@ import type { FinishQueue, FinishQueueAnswer } from "./finish-queue.js";
 export const ASSEMBLE_NOTFOUND_STREAK = 12;
 
 export type FinishPayload = {
-  clips: { url: string }[];
+  /** holdToSeconds (vivijure-cf#1338): the container clones the clip's last frame until the clip lasts this
+   *  long. An older container ignores the field and assembles the clip as delivered. */
+  clips: { url: string; holdToSeconds?: number }[];
   outputUrl: string;
   outputKey: string;
   width?: number;

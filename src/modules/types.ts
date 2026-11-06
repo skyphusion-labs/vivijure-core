@@ -230,6 +230,13 @@ export interface ModuleUi {
   cost?: string;   // short cost-model tag, display only (e.g. "Pay per render", "Free after hardware")
   blurb?: string;  // one honest positioning sentence, display only
   limits?: string[]; // honest capability-ceiling bullets, display only (absent => fall back to config_schema)
+  /** Provider cost per clip in USD, at cost: one entry per price, optionally keyed by `seconds` (a price
+   *  per duration step) or `resolution`. vivijure-cf's door-manifest-rules.ts validates the shape.
+   *  vivijure-cf#1338 reads it: a door whose per-clip price does not depend on length gets its driving
+   *  line padded to the shot's planned length, because the extra seconds cost nothing. */
+  cost_usd_per_clip?: Array<{ usd: number; seconds?: number; resolution?: string }>;
+  /** Provider cost per second of output in USD (one value, or a low/high pair), at cost. */
+  cost_usd_per_second?: number[];
 }
 
 /** How we actually call a motion.backend. Sets the ceiling on speaker/look lock. */

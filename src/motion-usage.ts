@@ -43,6 +43,20 @@ export function parseMotionUsage(raw: unknown): MotionUsageDecl | undefined {
   };
 }
 
+/** vivijure-cf#1338: true when the door's price per clip does not depend on the clip's length, so a longer
+ *  clip costs it nothing. Read from `ui.cost_usd_per_clip`: every entry a `{ usd }` with a positive price,
+ *  and none keyed by `seconds` (a price per duration step, where a longer clip can cost more). Any other
+ *  door, priced per second, per duration step, or not priced at all, is treated as billing by length:
+ *  the safe reading, because padding its line could be paid for. */
+export function doorBillsPerClip(mod: RegisteredModule | undefined): boolean {
+  const c = (mod?.ui as { cost_usd_per_clip?: unknown } | undefined)?.cost_usd_per_clip;
+  return Array.isArray(c) && c.length > 0 && c.every((p) => {
+    if (!p || typeof p !== "object" || Array.isArray(p)) return false;
+    const o = p as Record<string, unknown>;
+    return typeof o.usd === "number" && Number.isFinite(o.usd) && o.usd > 0 && o.seconds === undefined;
+  });
+}
+
 export function usageOf(mod: RegisteredModule | undefined): MotionUsageDecl | undefined {
   return mod ? parseMotionUsage(mod.usage) : undefined;
 }
