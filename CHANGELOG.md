@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.33.0
+
 ## [1.32.0] -- 2026-11-06
 
 **Fix: a film whose poll is cut off no longer stalls for five minutes, and the sweep drives a keyframes-only film nobody polls (vivijure-cf#1139).**
