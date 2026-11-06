@@ -10,9 +10,9 @@ import {
   discoverModules,
   invokeModule,
   resolveFetcher,
-  servingForHook,
   validateConfig,
 } from "./modules/registry.js";
+import { scoreModulesOfKind } from "./modules/score-select.js";
 import type { RegisteredModule, ScoreInput } from "./modules/types.js";
 import { presignR2Get } from "./presign.js";
 import {
@@ -25,11 +25,9 @@ interface FetcherLike {
   fetch(input: Request | string, init?: RequestInit): Promise<Response>;
 }
 
-/** Score modules that analyze beat timing (config_schema.clip_seconds). */
+/** Score modules that analyze beat timing: those that declare score_kind "beat" (vivijure-cf#878). */
 export function beatSyncScoreModules(modules: RegisteredModule[]): RegisteredModule[] {
-  return servingForHook(modules, "score").filter(
-    (m) => m.config_schema != null && m.config_schema.clip_seconds != null,
-  );
+  return scoreModulesOfKind(modules, "beat");
 }
 
 function fetcherForModule(env: Env, mod: RegisteredModule): FetcherLike | null {

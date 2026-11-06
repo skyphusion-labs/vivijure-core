@@ -243,6 +243,7 @@ describe("cf#746(a) inverse controls: the degrades that SHOULD survive", () => {
             version: "1.0.0",
             api: "vivijure-module/2",
             hooks: ["score"],
+            score_kind: "beat", // vivijure-cf#878: selected by declared kind, never by its config keys
             config_schema: { clip_seconds: { type: "float", default: 8 } },
           }, 200);
         }

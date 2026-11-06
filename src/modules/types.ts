@@ -65,12 +65,28 @@ export const HOOK_NAMES: readonly HookName[] = [
   "film.finish",
 ];
 
-/** Whether a hook resolves to one module or folds every installed module. */
-export const HOOK_CARDINALITY: Record<HookName, "pick_one" | "chain"> = {
+/** How many modules serve a hook in one render.
+ *
+ *  - `pick_one`: one module, chosen by name or by `ui.order`.
+ *  - `chain`: every installed module folds, in `ui.order`.
+ *  - `pick_one_per_kind` (vivijure-cf#878): one module per declared KIND. Only `score` has it. The hook
+ *    carries three products a film can use together (a music bed, narration, and a beat plan), so
+ *    "one score module" is false and "every score module" has no meaning. Each score module declares
+ *    its kind in `score_kind`, and the host picks one module within the kind it needs
+ *    (`pickScoreModule`). Additive on vivijure-module/2: a panel that knows only the first two values
+ *    renders an unknown value as a list of modules, which is what this one is. */
+export type HookCardinality = "pick_one" | "chain" | "pick_one_per_kind";
+
+/** What a `score` module produces (vivijure-cf#878). Declared, never inferred from config keys. */
+export const SCORE_KINDS = ["music", "narration", "beat"] as const;
+export type ScoreKind = (typeof SCORE_KINDS)[number];
+
+/** Whether a hook resolves to one module, one module per kind, or folds every installed module. */
+export const HOOK_CARDINALITY: Record<HookName, HookCardinality> = {
   keyframe: "pick_one",
   "motion.backend": "pick_one",
   finish: "chain",
-  score: "chain",
+  score: "pick_one_per_kind",
   dialogue: "pick_one",
   speech: "chain",
   "plan.enhance": "chain",
@@ -366,6 +382,12 @@ export interface ModuleManifest {
    *  while `validateManifest` still LOADS such a manifest (a third-party module is not our gate to
    *  fail). A malformed value is refused at load, so a typo can never read as "default". */
   participation?: "default" | "opt_in";
+  /** OPTIONAL, additive (no MODULE_API bump). What a `score` module produces: a music bed, narration,
+   *  or a beat plan (vivijure-cf#878). The host selects score modules by this field and never by
+   *  sniffing config keys. A score module that does not declare it is never selected and is named in
+   *  the refusal; `checkManifest` FAILS conformance for it, while `validateManifest` still LOADS it,
+   *  the same split as `participation`. A malformed value is refused at load. */
+  score_kind?: ScoreKind;
   /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable` / `duration_grid` /
    *  `participation`). core#182. The module's OWN enforced per-invocation wall-clock ceiling, in
    *  seconds: the point at which THIS module's door gives up on one invoke and returns, whether that
@@ -1314,7 +1336,7 @@ export type PublicModule = ModuleManifest;
 export interface HookCatalogEntry {
   name: HookName;
   blurb: string;
-  cardinality: "pick_one" | "chain";
+  cardinality: HookCardinality;
   /** Pipeline display sort key (see HOOK_DISPLAY_ORDER). Additive; no MODULE_API bump. */
   order: number;
 }
