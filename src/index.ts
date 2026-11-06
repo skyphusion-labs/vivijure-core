@@ -65,6 +65,8 @@ export {
   mediaDoorReachable,
   mediaDoorFetch,
   mediaDoorFetcher,
+  boundMediaDoorFetch,
+  withMediaBearer,
   videoFinishUrl,
   videoFinishReachable,
   videoFinishFetch,
