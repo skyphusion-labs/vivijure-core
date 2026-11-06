@@ -1553,15 +1553,19 @@ export function phaseAgeSeconds(job: FilmJob, now: number = Date.now()): number 
 
 /** The phases that advance one shot at a time inside a single phase (the fan-out phases). These are
  *  the phases where a long wall-clock is healthy as long as shots keep landing -- which is why the
- *  hard ceiling measures them from last_progress_at, not phase_started_at (#704). */
-export const PER_SHOT_PHASES: ReadonlySet<FilmJob["phase"]> = new Set(["clips", "pre_clip_speech", "speech", "finish"]);
+ *  hard ceiling measures them from last_progress_at, not phase_started_at (#704). Keyframe joined in
+ *  vivijure-core#453: a split pass lands one job's stills at a time, and filmProgressMarker counts them,
+ *  so a long pass whose jobs keep finishing is not killed at 90 min. A pass with no job finishing in the
+ *  window still fails as before. */
+export const PER_SHOT_PHASES: ReadonlySet<FilmJob["phase"]> = new Set(["keyframe", "clips", "pre_clip_speech", "speech", "finish"]);
 
 /** Seconds since the last REAL progress, for the hard-ceiling check (#704). A per-shot phase
  *  (clips/speech/finish) on a slow local-gpu card lands one clip every few minutes for hours; that is
  *  genuine progress, so the 90min ceiling measures from last_progress_at (re-stamped on every finished
  *  shot via filmProgressMarker, #136): a phase that keeps landing shots never dies at the ceiling,
- *  while 90min since the LAST landed shot still fails loudly. Batch phases (keyframe) keep the
- *  phase_started_at clock: no phase-level progress for the whole window really is wedged (#129).
+ *  while 90min since the LAST landed shot still fails loudly. Keyframe is on this clock too since
+ *  vivijure-core#453, where a landed unit is a finished job of a split pass; a pass with no job
+ *  finishing for the whole window really is wedged (#129).
  *  Falls back to phase_started_at (then created_at) on jobs with no last_progress_at stamp. */
 export function ceilingAgeSeconds(job: FilmJob, now: number = Date.now()): number {
   if (!PER_SHOT_PHASES.has(job.phase)) return phaseAgeSeconds(job, now);
@@ -1732,8 +1736,9 @@ export function phaseCeilingVerdict(
 /** Progress fingerprint for the stall signal (#136): the current phase, how many of its per-shot units
  *  are done, and how many CHAIN STEPS have resolved inside those units. Monotonic within a phase (shots
  *  only go pending->done, `idx` only advances) and it changes on every phase transition, so ANY change is
- *  genuine forward progress -- which is what re-stamps last_progress_at. Phases with no per-shot fan-out
- *  (keyframe/pre_clip_dialogue/dialogue/assemble/master/mux) report :0:0, so their stall window runs from when the phase
+ *  genuine forward progress -- which is what re-stamps last_progress_at. Keyframe counts the stills parked
+ *  from finished jobs of a split pass (vivijure-core#453). Phases with no per-shot fan-out
+ *  (pre_clip_dialogue/dialogue/assemble/master/mux) report :0:0, so their stall window runs from when the phase
  *  began, exactly as before.
  *
  *  WHY STEPS AND NOT ONLY SHOTS (#182). Counting finished SHOTS made the marker blind to a shot that is
@@ -1764,6 +1769,9 @@ export function filmProgressMarker(job: FilmJob, clipJob: ClipJob | null): strin
     const shots = job.speech_shots || [];
     done = shots.filter((ss) => ss.status === "done").length;
     steps = shots.reduce((n, ss) => n + Math.max(0, Math.trunc(ss.idx) || 0), 0);
+  } else if (job.phase === "keyframe") {
+    // vivijure-core#453: a split pass parks each finished job's stills, so this moves once per job.
+    done = (job.keyframe_partials || []).length;
   }
   return `${job.phase}:${done}:${steps}`;
 }
@@ -2019,6 +2027,21 @@ export function resolveKeyframeParallel(raw: unknown, shotCount: number): number
   const parsed = parseInt(text, 10);
   const wanted = Number.isFinite(parsed) ? parsed : DEFAULT_KEYFRAME_PARALLEL;
   const n = Math.min(shots, Math.max(1, wanted));
+  return n <= 1 ? 1 : n;
+}
+
+/** vivijure-core#453: the most shots one keyframe job carries. At about 25 s a still, 60 shots is about
+ *  25 min, inside the keyframe door's 3600 s execution limit with room for a cold load. */
+export const KEYFRAME_SHOTS_PER_JOB = 60;
+
+/** Pure: how many keyframe jobs a film starts. KEYFRAME_PARALLEL sets the floor; the film's size sets
+ *  the rest, so no job carries more than KEYFRAME_SHOTS_PER_JOB shots (vivijure-core#453). Before this a
+ *  450 shot film at the default of 4 put 113 shots, about 47 min, in each job.
+ *  N = min(shots, max(resolveKeyframeParallel(raw, shots), ceil(shots / KEYFRAME_SHOTS_PER_JOB))). */
+export function resolveKeyframeJobs(raw: unknown, shotCount: number): number {
+  const shots = Number.isFinite(shotCount) ? Math.max(0, Math.floor(shotCount)) : 0;
+  const bySize = Math.ceil(shots / KEYFRAME_SHOTS_PER_JOB);
+  const n = Math.min(shots, Math.max(resolveKeyframeParallel(raw, shots), bySize));
   return n <= 1 ? 1 : n;
 }
 

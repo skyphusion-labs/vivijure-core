@@ -116,6 +116,9 @@ import {
   slotsMissingAdapters,
   partitionContiguous,
   KEYFRAME_STALL_SECONDS,
+  KEYFRAME_SHOTS_PER_JOB,
+  resolveKeyframeJobs,
+  ceilingAgeSeconds,
   PHASE_HARD_DEADLINE_SECONDS,
   phaseCeilingVerdict,
   POLLABLE_PHASES,
@@ -3807,18 +3810,28 @@ export async function startFilmJob(
   } else {
     const config = validateConfig(kf.config_schema, args.keyframe_config);
     const shotIds = scenes.map((s) => s.shot_id);
-    let n = resolveKeyframeParallel(envRec.KEYFRAME_PARALLEL, shotIds.length);
+    let n = resolveKeyframeJobs(envRec.KEYFRAME_PARALLEL, shotIds.length);
+    let oneJobBecause: string | null = null;
     // core#370: every job of a split film trains a slot it has no adapter for. Measured on film-a9939630:
     // two jobs logged the same loss at every step they shared, each billed for the same adapter.
     if (n > 1 && kf.trains_loras) {
       const yaml = await readBundleStoryboardYaml(env, args.bundle_key).catch(() => null);
       const missing = slotsMissingAdapters(yaml, args.pretrained_loras);
       if (missing === null || missing.length > 0) {
-        console.log(`film ${job.film_id}: one keyframe job instead of ${n}: ${missing === null ? "slots unreadable" : `no adapter for ${missing.join(", ")}`} (core#370)`);
+        oneJobBecause = missing === null ? "its storyboard slots could not be read" : `no adapter is trained for ${missing.join(", ")}`;
+        console.log(`film ${job.film_id}: one keyframe job instead of ${n}: ${oneJobBecause} (core#370)`);
         n = 1;
       }
     }
-    if (n <= 1) {
+    if (n <= 1 && shotIds.length > KEYFRAME_SHOTS_PER_JOB) {
+      // vivijure-core#453: one job of every shot would outrun the keyframe door's time limit, so refuse
+      // before anything is bought rather than start a job that cannot finish.
+      job.phase = "failed";
+      job.error =
+        `this film has ${shotIds.length} shots and must draw its keyframes in one job, because ${oneJobBecause ?? "one job was asked for"}. ` +
+        `One keyframe job carries at most ${KEYFRAME_SHOTS_PER_JOB} shots. Train the cast adapters first and submit with them ` +
+        "(pretrained_loras), or split the film (vivijure-core#453)";
+    } else if (n <= 1) {
       const keyframeInput: KeyframeInput = {
         project: args.project,
         bundle_key: args.bundle_key,
@@ -4811,7 +4824,9 @@ async function recoverStalledPhase(env: Env, job: FilmJob, preModules?: Register
   // one-shot gate on a partial pass -- keyframe_recovered is set only when it actually advances, so the
   // !keyframe_recovered guard just stops a re-run AFTER the phase has moved on.
   if (job.phase === "keyframe" && !job.keyframe_recovered && age >= KEYFRAME_STALL_SECONDS) {
-    if (await recoverStalledKeyframePhase(env, job, preModules, age >= PHASE_HARD_DEADLINE_SECONDS)) return true;
+    // vivijure-core#453: the ceiling here is the progress clock, so a split pass that keeps finishing jobs
+    // is not advanced incomplete at 90 min from its start.
+    if (await recoverStalledKeyframePhase(env, job, preModules, ceilingAgeSeconds(job, now) >= PHASE_HARD_DEADLINE_SECONDS)) return true;
   }
 
   // Same-phase recovery: a clips (motion.backend) poll that never resolved, but the clips are in R2
@@ -4828,8 +4843,8 @@ async function recoverStalledPhase(env: Env, job: FilmJob, preModules?: Register
   // (keyframe/clips adoption above already rescued any phase whose artifacts landed; a finish phase has
   // no adoption yet; or the GPU truly produced nothing). Fail loudly rather than hang. For the per-shot
   // phases the ceiling tracks last_progress_at (#704): a slow local-gpu card landing one clip every few
-  // minutes is healthy however long the phase runs, so only 90min with NO new shot fails; the batch
-  // keyframe phase keeps the phase_started_at clock (age above).
+  // minutes is healthy however long the phase runs, so only 90min with NO new shot fails. Keyframe is on
+  // the same clock since vivijure-core#453, counted in finished jobs of a split pass.
   // core#182: the ceiling is sized to the WORK, not to a constant. `phaseCeilingVerdict` raises the
   // 90min floor to FINISH_STEP_MAX_ATTEMPTS * the longest per-invocation ceiling the modules in THIS
   // job's chain DECLARE, because a retrying step moves `attempts` and not `idx` and the progress
@@ -5174,7 +5189,8 @@ async function advanceFilmJobLocked(
   // transition), so a change is genuine progress -> refresh last_progress_at. Since #704 this stamp is
   // ALSO load-bearing for recovery: the 90min ceiling measures the per-shot phases (clips/speech/finish)
   // against last_progress_at, so a slow-but-landing local-gpu film never dies mid-progress; the
-  // same-phase recovery triggers and the batch keyframe ceiling still measure from phase_started_at.
+  // same-phase recovery triggers still measure from phase_started_at, and since vivijure-core#453 the
+  // keyframe ceiling measures from the last finished keyframe job.
   if (job.finish_retry_prior && (job.phase === "done" || job.phase === "failed")) {
     await settleFinishRetry(env, job, modules);
     await putFilm(env, job);
