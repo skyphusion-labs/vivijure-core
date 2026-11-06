@@ -133,6 +133,17 @@ export function assembleFilmByteCeiling(): number {
   return Math.min(disk, R2_SINGLE_PUT_BYTES);
 }
 
+/**
+ * The most clips one assemble takes.
+ *
+ * Mirrors `MAX_CLIPS` in containers/video-finish/app.py, which refuses above it with `too many clips`.
+ * Until vivijure-core#454 nothing in core checked it, so a film over it was refused by the container
+ * at assemble, after every keyframe and clip was bought. admitAssemble checks it now, so the submit
+ * gate (submitBudgetRefusal, vivijure-cf#1144) refuses such a film before anything is paid.
+ * vivijure-cf holds the two numbers equal by test.
+ */
+export const ASSEMBLE_MAX_CLIPS = 80;
+
 /** Predicted normalized bytes for `seconds` of video at a delivery target. */
 export function predictNormalizedBytes(
   width: number,
@@ -235,7 +246,12 @@ export function admitAssemble(input: AssembleAdmissionInput): AssembleAdmission 
   const predictedBytes = predictNormalizedBytes(width, height, fps, basis.seconds);
   const perSecond = predictNormalizedBytes(width, height, fps, 1);
   const allowedSeconds = perSecond > 0 ? Math.floor(ceilingBytes / perSecond) : 0;
+  const tooManyClips = clipCount > ASSEMBLE_MAX_CLIPS
+    ? `assemble refused before any clip was fetched: ${clipCount} clips, and one assemble takes at most ` +
+      `${ASSEMBLE_MAX_CLIPS} (the video-finish container's MAX_CLIPS). Split the film, or use fewer, longer shots.`
+    : null;
   if (predictedBytes <= ceilingBytes) {
+    if (tooManyClips) return { admitted: false, predictedBytes, ceilingBytes, allowedSeconds, basis, reason: tooManyClips };
     return { admitted: true, predictedBytes, ceilingBytes, allowedSeconds, basis };
   }
   const over = predictedBytes - ceilingBytes;
@@ -253,5 +269,5 @@ export function admitAssemble(input: AssembleAdmissionInput): AssembleAdmission 
     `This delivery target admits at most ${allowedSeconds}s; reduce the film, or lower ` +
     `delivery_width/delivery_height` +
     (fps > CONTAINER_DEFAULT_FPS ? `, or lower the interpolation factor or delivery_fps.` : `.`);
-  return { admitted: false, predictedBytes, ceilingBytes, allowedSeconds, basis, reason };
+  return { admitted: false, predictedBytes, ceilingBytes, allowedSeconds, basis, reason: tooManyClips ? `${tooManyClips} Its size is also over: ${reason}` : reason };
 }
