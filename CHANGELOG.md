@@ -3,7 +3,17 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.36.0
+## [1.36.0] -- 2026-11-06
+
+**Feat: a storyboard and an assemble take up to 600 shots, for a film of up to 60 minutes (vivijure-core#455, vivijure-cf#1122).**
+
+`STORYBOARD_MAX_SCENES` rises from 50 to 600, 60 minutes at a 6 s average shot, and `ASSEMBLE_MAX_CLIPS` from 80 to 600 with it. The reason for 50 was RunPod's per-job timeout; that is now met where it lives, by keyframe jobs split at 60 shots (core#453) and clips bought in claimed batches inside a window (core#451). `STORYBOARD_MAX_SECONDS` is now stated, 3600 s, instead of scenes x 60, which at 600 scenes would have been ten hours; 60 minutes sits under the 63.9 minutes one R2 PUT carries at 1080p24. `CONTAINER_AUDIO_BED_BYTES` rises from 256 MB to 768 MiB, because 60 minutes of 16 bit 48 kHz stereo WAV is 691 MB; the disk ceiling falls from 6.85 GB to 6.58 GB, still above one PUT, so admission does not move. The LLM planner still asks for at most 50 scenes in one turn, as new `PLANNER_ASK_MAX_SCENES`: a one-shot plan of hundreds of scenes is untested model output. `ASSEMBLE_MAX_POOL_PAIRS` stays 80 and its comment no longer claims it mirrors the container's clip cap.
+
+**Deploy order.** A host must run a video-finish container whose `MAX_CLIPS` is at least 600 and `MAX_AUDIO_BYTES` at least 768 MiB before it adopts this release. Against a container still at 80, a film of 81 to 600 shots passes submit, buys every clip, and is refused at assemble.
+
+**Feat: the bound media-door hop carries the bearer (vivijure-cf#911).**
+
+`mediaDoorFetch` took the bound branch (`MEDIA_DOOR_FETCHERS`) first and returned before any token lookup. So the credential reached a bound container only when the call site had built it into its own headers. The bound video-finish poll did not go through `mediaDoorFetch` at all. New `withMediaBearer` puts `Authorization: Bearer <MEDIA_FINISH_TOKEN>` on a request, and new `boundMediaDoorFetch` sends one request through a bound door with it attached. Both the bound branch of `mediaDoorFetch` and the bound poll in `pollVideoFinishAsync` now use `boundMediaDoorFetch`. The resolved token replaces any `authorization` header the caller set, whatever its case. The header shape is kept: a plain object, a `Headers` or a tuple list. With no token the bound call still goes out with no header and does not throw, as before. The container behind the binding is where the bearer is enforced, and hosts arm that in stages. New exports: `withMediaBearer`, `boundMediaDoorFetch`.
 
 ## [1.35.0] -- 2026-11-06
 
