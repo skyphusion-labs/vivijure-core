@@ -2,6 +2,7 @@
 // consistency ceiling. Pure. Modules declare `usage` on the manifest.
 
 import type { MotionUsageDecl, MotionVoiceMode, RegisteredModule } from "./modules/types.js";
+import { LINE_WAV_MAX_SECONDS } from "./wav-duration.js";
 
 const VOICE_MODES = new Set<MotionVoiceMode>([
   "prompt_lock",
@@ -20,6 +21,10 @@ export function parseMotionUsage(raw: unknown): MotionUsageDecl | undefined {
   if (typeof o.max_seconds !== "number" || !Number.isFinite(o.max_seconds) || o.max_seconds < o.min_seconds) {
     return undefined;
   }
+  // core#464: a floor is kept only when it is a usable length, above 0 and not over the 15s line cap.
+  const floor = o.driving_audio_min_seconds;
+  const audioFloor =
+    typeof floor === "number" && Number.isFinite(floor) && floor > 0 && floor <= LINE_WAV_MAX_SECONDS ? floor : undefined;
   const steps = Array.isArray(o.duration_steps)
     ? o.duration_steps.filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0)
     : undefined;
@@ -34,6 +39,7 @@ export function parseMotionUsage(raw: unknown): MotionUsageDecl | undefined {
     seed: o.seed === true,
     voice_ref: o.voice_ref === true,
     driving_audio: o.driving_audio === true,
+    ...(audioFloor !== undefined ? { driving_audio_min_seconds: audioFloor } : {}),
   };
 }
 

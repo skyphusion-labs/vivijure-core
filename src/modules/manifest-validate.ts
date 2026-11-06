@@ -7,6 +7,7 @@ import {
   type ModuleManifest,
 } from "./types.js";
 import { parseMotionUsage } from "../motion-usage.js";
+import { LINE_WAV_MAX_SECONDS } from "../wav-duration.js";
 
 /** Validate a parsed manifest enough to trust it in the registry. Returns the typed manifest or a
  *  reason string. We check the contract version, a name, and that every declared hook is known. */
@@ -70,6 +71,13 @@ export function validateManifest(raw: unknown): ModuleManifest | string {
   }
   if (m.usage !== undefined && !parseMotionUsage(m.usage)) {
     return "usage is present but not a valid MotionUsageDecl (native_audio, voice, scatter_native_audio, min_seconds, max_seconds)";
+  }
+  // core#464: a declared audio floor that cannot be used must not load. Dropping it would hand the door a
+  // line shorter than it accepts, and the provider would refuse the clip after the film was paid for.
+  if (m.usage && typeof m.usage === "object" && "driving_audio_min_seconds" in (m.usage as object)) {
+    const v = (m.usage as Record<string, unknown>).driving_audio_min_seconds;
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || v > LINE_WAV_MAX_SECONDS)
+      return `usage.driving_audio_min_seconds ${JSON.stringify(v)} must be a number of seconds above 0 and at most ${LINE_WAV_MAX_SECONDS}`;
   }
   return m as unknown as ModuleManifest;
 }

@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.37.0
+
 ## [1.36.0] -- 2026-11-06
 
 **Feat: a storyboard and an assemble take up to 600 shots, for a film of up to 60 minutes (vivijure-core#455, vivijure-cf#1122).**

@@ -256,6 +256,20 @@ describe("validateManifest usage", () => {
     expect(typeof validateManifest({ ...base, usage: VALID })).toBe("object");
   });
 
+  it("core#464: keeps a usable driving-audio floor and refuses an unusable one at LOAD", () => {
+    const wan = { ...VALID, driving_audio: true, driving_audio_min_seconds: 3 };
+    expect(typeof validateManifest({ ...base, usage: wan })).toBe("object");
+    expect(parseMotionUsage(wan)?.driving_audio_min_seconds).toBe(3);
+    expect(parseMotionUsage(VALID)).not.toHaveProperty("driving_audio_min_seconds");
+    for (const bad of [0, -1, 16, Number.NaN, "3", null]) {
+      const r = validateManifest({ ...base, usage: { ...wan, driving_audio_min_seconds: bad } });
+      expect(typeof r, String(bad)).toBe("string");
+      expect(String(r)).toMatch(/driving_audio_min_seconds/);
+      expect(parseMotionUsage({ ...wan, driving_audio_min_seconds: bad })?.driving_audio_min_seconds).toBeUndefined();
+    }
+    expect(parseMotionUsage({ ...wan, driving_audio_min_seconds: 15 })?.driving_audio_min_seconds).toBe(15);
+  });
+
   it("refuses a present-but-invalid usage at LOAD", () => {
     const r = validateManifest({ ...base, usage: { ...VALID, voice: "invented" } });
     expect(typeof r).toBe("string");

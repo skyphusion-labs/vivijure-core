@@ -238,6 +238,9 @@ export interface MotionUsageDecl {
   voice_ref?: boolean;
   /** Door consumes the shot LINE file as driving audio (InfiniteTalk, Wan 2.6). */
   driving_audio?: boolean;
+  /** core#464: the shortest driving-audio file this door accepts, in seconds (Wan 2.6: 3). The core pads
+   *  a line to it for a shot on this door only. A door that declares none gets its line unpadded. */
+  driving_audio_min_seconds?: number;
 }
 
 /** OPTIONAL, additive (no MODULE_API bump, same pattern as `cancelable`): a finish module's declared

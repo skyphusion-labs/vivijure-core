@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LINE_WAV_MAX_SECONDS,
   LINE_WAV_MIN_SECONDS,
+  UNLINED_SILENCE_SECONDS,
   mintSilenceWav,
   normalizeLineWav,
   parseWavDurationSeconds,
@@ -16,15 +17,36 @@ describe("wav-duration", () => {
     expect(wav.subarray(0, 4).toString()).toBe("82,73,70,70"); // RIFF
   });
 
-  it("pads a sub-3s line to 3.0s", () => {
+  it("pads nothing by default (core#464): a 1.5s line stays 1.5s", () => {
     const short = mintSilenceWav(1.5);
-    expect(parseWavDurationSeconds(short)).toBeCloseTo(1.5, 6);
     const normalized = normalizeLineWav(short);
     expect(normalized).not.toBeNull();
+    expect(normalized!.padded).toBe(false);
+    expect(normalized!.bytes).toBe(short);
+    expect(normalized!.seconds).toBeCloseTo(1.5, 6);
+  });
+
+  it("pads to the floor it is given, and only to that floor", () => {
+    const short = mintSilenceWav(1.5);
+    const normalized = normalizeLineWav(short, 3);
     expect(normalized!.padded).toBe(true);
     expect(normalized!.trimmed).toBe(false);
-    expect(normalized!.seconds).toBeCloseTo(LINE_WAV_MIN_SECONDS, 6);
-    expect(parseWavDurationSeconds(normalized!.bytes)).toBeCloseTo(LINE_WAV_MIN_SECONDS, 6);
+    expect(normalized!.seconds).toBeCloseTo(3, 6);
+    expect(parseWavDurationSeconds(normalized!.bytes)).toBeCloseTo(3, 6);
+    expect(normalizeLineWav(short, 2)!.seconds).toBeCloseTo(2, 6);
+  });
+
+  it("an unusable floor pads nothing, and a floor over the cap stops at the cap", () => {
+    const short = mintSilenceWav(1.5);
+    for (const bad of [Number.NaN, -1, 0, Number.POSITIVE_INFINITY]) {
+      expect(normalizeLineWav(short, bad)!.seconds, String(bad)).toBeCloseTo(1.5, 6);
+    }
+    expect(normalizeLineWav(short, 99)!.seconds).toBeCloseTo(LINE_WAV_MAX_SECONDS, 6);
+  });
+
+  it("the minted silence for an unlined shot is still 3s", () => {
+    expect(parseWavDurationSeconds(mintSilenceWav())).toBeCloseTo(UNLINED_SILENCE_SECONDS, 6);
+    expect(LINE_WAV_MIN_SECONDS).toBe(UNLINED_SILENCE_SECONDS);
   });
 
   it("keeps a legal 3-15s file unchanged", () => {
