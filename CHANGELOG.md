@@ -3,6 +3,12 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## [1.30.0] -- 2026-11-06
+
+**Feat: a storyboard can name the film's place once, in an optional `setting`.**
+
+`setting` is one short place phrase ("a dim workshop at night"), at most 100 characters and one line. The validator keeps it trimmed and leaves it out when absent or blank, and `serializeStoryboardYaml` writes `setting:` only when it is set, so a board without it validates and serializes byte for byte as before. The planner is asked to fill it, its worked example does, and a refine keeps it. The renderers add it to any shot whose own prompt does not already name it (vivijure-cf#1145).
+
 ## [1.29.0] -- 2026-11-03
 
 ### fix(assemble-admission): do not admit a film larger than one upload carries
