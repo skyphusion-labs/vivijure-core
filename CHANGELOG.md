@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.36.0
+
 ## [1.35.0] -- 2026-11-06
 
 **Fix: a clip job is bought in claimed batches inside a window, and a shot's URLs are minted when it is submitted (vivijure-core#451, vivijure-cf#1122).**
