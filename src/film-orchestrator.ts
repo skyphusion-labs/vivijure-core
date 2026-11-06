@@ -142,6 +142,7 @@ import {
 } from "./film-model.js";
 import {
   admitAssemble,
+  ASSEMBLE_MAX_CLIPS,
   resolveAssembleSeconds,
 } from "./assemble-admission.js";
 import type {
@@ -1589,6 +1590,8 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       basis: budgetSeconds,
     });
     if (admission.admitted) return null;
+    // vivijure-core#454: a count refusal is not a size refusal, so it says what it is.
+    if ((job.finish_shots ?? []).length > ASSEMBLE_MAX_CLIPS) return admission.reason ?? "too many clips for one assemble";
     return `a ${Math.round(budgetSeconds.seconds)}s film at ${frame.width}x${frame.height} cannot fit the assemble budget, which allows ${admission.allowedSeconds}s at that frame`;
   };
   const modules = preModules ?? await discoverModules(envRec);
