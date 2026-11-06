@@ -11,13 +11,18 @@ import {
   FULL_PROMPT_MAX_CHARS,
   SCENE_PROMPT_MAX_WORDS,
   SETTING_MAX_CHARS,
+  STORYBOARD_MAX_SCENES,
   STYLE_PREFIX_MAX_CHARS,
 } from "./storyboard-validate.js";
 
 /** vivijure-core#455: the most scenes the LLM planner is asked for in one turn. The storyboard cap
  *  (STORYBOARD_MAX_SCENES, 600) is what a board may hold; this is what one generation is asked to
  *  write. It stays at the old cap of 50: a one-shot plan of hundreds of scenes is untested model
- *  output, and a long board is built over refinement turns or imported. */
+ *  output, and a long board is built over refinement turns or imported.
+ *
+ *  In a REFINE it caps what one turn adds or rewrites, never the board's length (vivijure-core#473): a
+ *  refine returns every scene it was given, so a board over 50 is not cut back to 50. vivijure-cf's
+ *  panel holds REFINE_GUARD_MIN_SCENES equal to this by test. */
 export const PLANNER_ASK_MAX_SCENES = 50;
 
 // Character bible entry the planner UI passes in. `bible` is the condensed
@@ -315,10 +320,13 @@ over these because they overflow SDXL's CLIP 77-token text encoder):
 - style_prefix: at most ${STYLE_PREFIX_MAX_CHARS} characters. If the user
   asks to expand the style, compress earlier clauses to make room.
 - full_prompt: at most ${FULL_PROMPT_MAX_CHARS} characters.
-- scenes array length: at most ${PLANNER_ASK_MAX_SCENES} entries. If the
-  user asks for more shots than the cap allows, add as many as fit
-  under the cap and keep the remaining requested scenes for a future
-  refinement turn; never let the array exceed the cap.
+- scenes array: return EVERY scene you were given, in the same order,
+  unless the user asks you to remove scenes. Never drop, merge or
+  shorten the board on your own. In one turn, add or rewrite at most
+  ${PLANNER_ASK_MAX_SCENES} scenes; if the user asks for more than that,
+  do ${PLANNER_ASK_MAX_SCENES} now and keep the rest for a future
+  refinement turn. The whole board may hold up to
+  ${STORYBOARD_MAX_SCENES} scenes; never return more than that.
 
 CANONICAL SHAPE (any new or edited scene must match this style;
 mirrors the renderer's storyboard.example.yaml):
