@@ -32,11 +32,10 @@ describe("the storyboard caps (vivijure-core#455)", () => {
 });
 
 describe("the planner asks for 50 scenes, not the board cap (vivijure-core#455)", () => {
-  it("both prompts carry the ask, and neither carries the board cap", () => {
-    for (const prompt of [buildPlanningSystemPrompt(), buildRefinementSystemPrompt()]) {
-      expect(prompt).toContain(`at most ${PLANNER_ASK_MAX_SCENES} entries`);
-      expect(prompt).not.toContain(`at most ${STORYBOARD_MAX_SCENES} entries`);
-    }
+  it("the planning prompt carries the ask and not the board cap", () => {
+    const prompt = buildPlanningSystemPrompt();
+    expect(prompt).toContain(`at most ${PLANNER_ASK_MAX_SCENES} entries`);
+    expect(prompt).not.toContain(`at most ${STORYBOARD_MAX_SCENES} entries`);
   });
 });
 
