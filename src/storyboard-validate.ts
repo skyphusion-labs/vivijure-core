@@ -39,11 +39,13 @@ const SLOT_SET: ReadonlySet<string> = new Set(SLOT_IDS);
 // count check uses 60 / 1.3 = ~46 words. We round to 50 with a small
 // margin and surface the offending scene + word count in the error.
 export const SCENE_PROMPT_MAX_WORDS = 50;
-// Hard cap on scenes per storyboard. The pod's max_scenes default is
-// 100; below 50 is the preflight comfort zone. A 50-scene render with
-// Wan I2V at ~30s per shot is already ~25 minutes of GPU time, beyond
-// which RunPod's per-job timeout starts mattering more than schema.
-export const STORYBOARD_MAX_SCENES = 50;
+// Hard cap on scenes per storyboard. vivijure-core#455 (vivijure-cf#1122) raised it from 50 to 600:
+// 60 minutes at a 6 s average shot. The old reason for 50, RunPod's per-job timeout, is now met where
+// it lives: keyframe jobs are split at KEYFRAME_SHOTS_PER_JOB (core#453), and clips are bought in
+// claimed batches inside a window (core#451). It is held equal to ASSEMBLE_MAX_CLIPS and to the
+// video-finish container's MAX_CLIPS, so a board this validator takes is a film assemble takes.
+// The LLM planner still asks for at most PLANNER_ASK_MAX_SCENES in one turn (planner-prompt.ts).
+export const STORYBOARD_MAX_SCENES = 600;
 // Length caps on the two top-level free-text strings the renderer
 // reads at manifest-build time. style_prefix is what the pod's 0.4.38
 // background_prompt() now leans on - an LLM Assist style_prefix > 256
@@ -60,7 +62,9 @@ export const SETTING_MAX_CHARS = 100;
 // becomes real GPU minutes that pass the structural schema. Cap a single shot at 60s
 // (well past any one i2v clip the model makes) and the whole film at scenes x per-shot.
 export const SCENE_MAX_SECONDS = 60;
-export const STORYBOARD_MAX_SECONDS = STORYBOARD_MAX_SCENES * SCENE_MAX_SECONDS;
+// vivijure-core#455: stated, not derived. It was scenes x 60, which at 600 scenes would be 10 hours.
+// 60 minutes sits under the 63.9 minutes one R2 PUT carries at 1080p24 (assemble-admission.ts).
+export const STORYBOARD_MAX_SECONDS = 3600;
 // Per-shot dialogue line cap. The line is voiced by Deepgram Aura-1 (billed per 1k chars) and a
 // shot lip-syncs one spoken line, so this bounds both TTS cost and how much speech must fit a clip.
 // 300 chars is ~20s of speech, well past any single-shot line, while staying firmly bounded.
@@ -582,7 +586,7 @@ function validateTopLevelFields(input: Record<string, unknown>, errors: string[]
       );
     } else if (input.duration_seconds > STORYBOARD_MAX_SECONDS) {
       errors.push(
-        `duration_seconds is ${input.duration_seconds}s; cap is ${STORYBOARD_MAX_SECONDS}s (${STORYBOARD_MAX_SCENES} shots x ${SCENE_MAX_SECONDS}s)`,
+        `duration_seconds is ${input.duration_seconds}s; cap is ${STORYBOARD_MAX_SECONDS}s`,
       );
     } else {
       durationSeconds = input.duration_seconds;
