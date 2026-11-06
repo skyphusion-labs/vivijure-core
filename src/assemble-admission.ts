@@ -88,8 +88,10 @@ export const FINALIZE_FILM_COPIES = 2;
  */
 export const CONTAINER_BATCH_PEAK_BYTES = 3 * (1024 * 1024 * 1024 + 256 * 1024 * 1024);
 
-/** `MAX_AUDIO_BYTES`, containers/video-finish/app.py:41. The bed lands on disk beside the film. */
-export const CONTAINER_AUDIO_BED_BYTES = 256 * 1024 * 1024;
+/** `MAX_AUDIO_BYTES`, containers/video-finish/app.py. The bed lands on disk beside the film.
+ *  vivijure-core#455: 768 MiB, from 256 MB, because 60 minutes of 16 bit 48 kHz stereo WAV is 691 MB.
+ *  The disk ceiling drops from 6.85 GB to 6.58 GB, still above one R2 PUT, so admission does not move. */
+export const CONTAINER_AUDIO_BED_BYTES = 768 * 1024 * 1024;
 
 /**
  * Disk the image, the OS and ffmpeg's own scratch occupy, which the film must not be allowed to
@@ -142,7 +144,7 @@ export function assembleFilmByteCeiling(): number {
  * gate (submitBudgetRefusal, vivijure-cf#1144) refuses such a film before anything is paid.
  * vivijure-cf holds the two numbers equal by test.
  */
-export const ASSEMBLE_MAX_CLIPS = 80;
+export const ASSEMBLE_MAX_CLIPS = 600; // vivijure-core#455: from 80, with the container's MAX_CLIPS
 
 /** Predicted normalized bytes for `seconds` of video at a delivery target. */
 export function predictNormalizedBytes(
