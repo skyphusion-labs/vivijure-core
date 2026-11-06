@@ -57,7 +57,6 @@ function unresolvedTotal(): number {
       `SELECT COUNT(*) AS n FROM renders
         WHERE status NOT IN ('COMPLETED','FAILED','CANCELLED')
           AND notified_at IS NULL
-          AND COALESCE(mode,'full') != 'keyframes-only'
           AND parent_id IS NULL`,
     )
     .get() as { n: number };
@@ -364,7 +363,7 @@ describe("core#180 the tiebreaker: ties are real, and the order must not depend 
       .prepare(
         `EXPLAIN QUERY PLAN SELECT job_id FROM renders
            WHERE status NOT IN ('COMPLETED','FAILED','CANCELLED') AND notified_at IS NULL
-             AND COALESCE(mode,'full') != 'keyframes-only' AND parent_id IS NULL
+             AND parent_id IS NULL
              AND submitted_at >= 0
            ORDER BY submitted_at ASC, id ASC LIMIT 25 OFFSET 0`,
       )

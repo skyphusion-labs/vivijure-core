@@ -1,7 +1,24 @@
 import type { Env } from "./platform/orchestrator-context.js";
 import { withD1Retry } from "./d1-retry.js";
 
-export const FILM_ADVANCE_LEASE_TTL_SECONDS = 300;
+/**
+ * How long a claim holds the film with no renewal (vivijure-cf#1139).
+ *
+ * WHY SHORT, AND WHY A HEARTBEAT. The lease is released in the tick's `finally`. A host can end the
+ * tick before that runs: a Worker's execution context ends when its client disconnects, and every
+ * pending await in it is dropped, `finally` included. The lease then stayed held until it expired.
+ * At 300 s a client that timed out each poll made a film advance one step per five minutes, and the
+ * sweep lost every claim in that window too. Measured on two 8-shot keyframe films, 2026-10-31.
+ *
+ * So the lease now lives only as long as its holder does: it is short, and `holdFilmAdvance` renews it
+ * every `FILM_ADVANCE_LEASE_RENEW_SECONDS` while the tick runs. A tick that is cut off stops renewing,
+ * because its timers die with it, and the film is free again within this many seconds. A tick that
+ * runs long keeps the film, so two drivers still never overlap.
+ */
+export const FILM_ADVANCE_LEASE_TTL_SECONDS = 60;
+
+/** Renewal period. Three renewals fit in one TTL, so one failed renewal does not free a live tick. */
+export const FILM_ADVANCE_LEASE_RENEW_SECONDS = 20;
 
 export interface FilmAdvanceClaim {
   won: boolean;
@@ -62,4 +79,65 @@ export async function releaseFilmAdvance(env: Env, filmId: string, token: string
       .bind(filmId, token)
       .run(),
   );
+}
+
+/**
+ * Push this holder's lease expiry forward. True while this token still holds the film. False means
+ * another driver holds it now, or the row is gone: the tick goes on, but says so.
+ */
+export async function renewFilmAdvance(
+  env: Env,
+  filmId: string,
+  token: string,
+  now: number = Date.now(),
+): Promise<boolean> {
+  const lease = now + FILM_ADVANCE_LEASE_TTL_SECONDS * 1000;
+  const res = await withD1Retry(() =>
+    env.DB.prepare(`UPDATE renders SET advance_lease = ? WHERE job_id = ? AND advance_lease_token = ?`)
+      .bind(lease, filmId, token)
+      .run(),
+  );
+  return (res.meta?.changes ?? 0) === 1;
+}
+
+/** A running renewal. `stop()` is idempotent and must run before the release. */
+export interface FilmAdvanceHold {
+  stop(): void;
+}
+
+/**
+ * Keep a won claim alive while its tick runs (vivijure-cf#1139). A claim with no token (fail-open, or
+ * no renders row) has nothing to renew, so this does nothing for it.
+ *
+ * The timer is the point: it runs only while the host keeps the tick alive. When a host drops the
+ * tick, the renewal stops with it and the lease expires on its own within one TTL.
+ */
+export function holdFilmAdvance(env: Env, filmId: string, claim: FilmAdvanceClaim): FilmAdvanceHold {
+  const token = claim.token;
+  if (!claim.won || token === undefined) return { stop() {} };
+  let stopped = false;
+  let reported = false;
+  const timer = setInterval(() => {
+    if (stopped) return;
+    renewFilmAdvance(env, filmId, token).then(
+      (held) => {
+        if (!held && !stopped && !reported) {
+          reported = true;
+          console.warn(JSON.stringify({ ev: "film.advance_lease_lost", film_id: filmId }));
+        }
+      },
+      (e: Error) => {
+        console.warn(`film ${filmId}: advance lease renewal failed (${e.message}); retrying next period`);
+      },
+    );
+  }, FILM_ADVANCE_LEASE_RENEW_SECONDS * 1000);
+  // Node: a renewal timer must not keep a finished process alive. Workers timers have no unref.
+  (timer as { unref?: () => void }).unref?.();
+  return {
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
 }
