@@ -13,11 +13,18 @@ export interface ClipShotInput {
   prompt: string;
   seconds: number;
   motion_backend?: string;
+  /** vivijure-core#451: mint keyframe, end frame, line and voice URLs from their keys when the shot is
+   *  submitted. Set by the film path, whose keys live in the renders bucket. A caller that hands in its
+   *  own URLs leaves this unset and its URLs are used as given. */
+  presign_keys?: boolean;
 }
 
 export interface ClipShot extends ClipShotInput {
   status: "pending" | "done" | "failed";
   poll?: string;
+  /** vivijure-core#451: when a tick claimed this shot for submit (ms epoch). Set before the invoke and
+   *  cleared once the outcome is recorded. A claim left behind means the outcome is unknown. */
+  submit_claim?: number;
   clip_key?: string;
   error?: string;
   binding?: string | null;
