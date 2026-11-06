@@ -34,6 +34,19 @@ function warnCorruptColumn(column: string, e: unknown): void {
 }
 
 // Fresh row at submit time.
+/** What kind of render a row is.
+ *
+ *  - `full`: the train, keyframes, i2v and assemble pipeline (a film).
+ *  - `keyframes-only`: a preview pass producing keyframes only.
+ *  - `finalized` / `cloud-finalized`: a film made from approved keyframes.
+ *  - `clips` (vivijure-core#458): a standalone clip job, `POST /api/render/clips` on the studio. Its row
+ *    holds per-shot clips and no assembled film. Before this the projection read it as `full`, so a client
+ *    had to tell it apart by its `clips-` job id.
+ *
+ *  A stored value not listed here, and NULL on legacy rows, reads as `full`. */
+export type RenderMode = "full" | "keyframes-only" | "finalized" | "cloud-finalized" | "clips";
+export const RENDER_MODES: ReadonlySet<RenderMode> = new Set<RenderMode>(["full", "keyframes-only", "finalized", "cloud-finalized", "clips"]);
+
 export interface NewRenderRow {
   jobId: string;
   project: string;
@@ -43,8 +56,8 @@ export interface NewRenderRow {
   status: string;
   // v0.40.0: 'full' = the train + keyframes + I2V + assemble pipeline;
   // 'keyframes-only' = preview pass producing SDXL keyframes only.
-  // Stored verbatim. Defaults to 'full' when omitted.
-  mode?: "full" | "keyframes-only" | "finalized" | "cloud-finalized";
+  // Stored verbatim. Defaults to 'full' when omitted. See RenderMode.
+  mode?: RenderMode;
   // v0.55.0: optional FK to storyboard_projects(id). NULL on rows
   // submitted without an active project (the transient v0.42.0 flow).
   projectId?: number | null;
@@ -116,8 +129,8 @@ export interface RenderRow {
   // v0.40.0: 'full' or 'keyframes-only'. v0.42.0 adds 'finalized' as
   // the mode for rows produced by the keyframes -> finalize pipeline.
   // Legacy rows are stored NULL; the row normalizer collapses NULL ->
-  // 'full' so callers can rely on a non-null value.
-  mode: "full" | "keyframes-only" | "finalized" | "cloud-finalized";
+  // 'full' so callers can rely on a non-null value. See RenderMode.
+  mode: RenderMode;
   // v0.42.0: shot_ids the user marked as approved in the keyframes-
   // only preview, before clicking finalize. Metadata-only; the GPU
   // is not informed of this set in v0.42.0 (finalize runs Wan I2V +
@@ -1310,14 +1323,8 @@ function normalizeRow(r: RawRenderRow): RenderRow {
     // not need to do this themselves. Legacy rows pre-dating the mode
     // column read as NULL and are therefore 'full'.
     // v0.42.0 adds 'finalized' as a third recognized value.
-    mode:
-      r.mode === "keyframes-only"
-        ? "keyframes-only"
-        : r.mode === "finalized"
-          ? "finalized"
-          : r.mode === "cloud-finalized"
-            ? "cloud-finalized"
-            : "full",
+    // vivijure-core#458: every value in RENDER_MODES passes through, "clips" included.
+    mode: typeof r.mode === "string" && (RENDER_MODES as ReadonlySet<string>).has(r.mode) ? (r.mode as RenderMode) : "full",
     // v0.42.0: parse the locked_shots_json column back into a string
     // array; NULL / empty / malformed -> null (read as "nothing
     // locked"). The normalizer keeps the same MAX_LOCKED_SHOTS cap as
