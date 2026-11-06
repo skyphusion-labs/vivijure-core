@@ -45,7 +45,7 @@ installed.
 | Pre-render preflight | `src/preflight.ts` | Cast bindings, module availability checks |
 | Storyboard YAML parse/serialize | `src/planner-yaml.ts` | Bundle interchange |
 | Film + clip orchestration | `src/film-orchestrator.ts`, `render-orchestrator.ts` | Calls modules at hook points |
-| Render hook selection | `src/modules/render-pipeline.ts` | `pick_one` vs `chain` resolution |
+| Render hook selection | `src/modules/render-pipeline.ts`, `src/modules/score-select.ts` | `pick_one` vs `chain` resolution; `score` one per `score_kind` |
 | Registry projection for UI | `src/modules/registry.ts` + `HOOK_BLURBS` | Host serves `GET /api/modules` from this |
 | Config clamping | registry + `config_schema` | User/render/install scopes from manifest |
 
@@ -73,7 +73,7 @@ branch on module names; it branches on **hook names** only.
 | `keyframe` | pick one | Storyboard -> start keyframes |
 | `motion.backend` | pick one | Keyframe -> shot clip |
 | `finish` | chain | Per-clip post (upscale, interpolate, face restore) |
-| `score` | chain | Music / narration / beat-sync |
+| `score` | one per kind | Music / narration / beat-sync. Each module declares `score_kind`; the host picks one module per kind (vivijure-cf#878) |
 | `master` | chain | Film-level audio mastering |
 | `film.finish` | chain | Title / credit cards |
 

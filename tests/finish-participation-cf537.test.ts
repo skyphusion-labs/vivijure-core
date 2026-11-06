@@ -176,10 +176,11 @@ describe("selectForChain: the gate is PER HOOK (blast radius)", () => {
     const chainHooks = (Object.keys(HOOK_CARDINALITY) as (keyof typeof HOOK_CARDINALITY)[])
       .filter((h) => HOOK_CARDINALITY[h] === "chain");
     // DENOMINATOR. The issue body and the ruling both enumerate SIX chain hooks; HOOK_CARDINALITY
-    // says seven (`plan.enhance` is in neither prose list). Derived here, never transcribed.
-    expect(chainHooks.length, `chain hooks in HOOK_CARDINALITY: ${chainHooks.join(", ")}`).toBe(7);
+    // said seven (`plan.enhance` is in neither prose list). Derived here, never transcribed.
+    // vivijure-cf#878 moved `score` to pick_one_per_kind, so it is six chain hooks, five unselectable.
+    expect(chainHooks.length, `chain hooks in HOOK_CARDINALITY: ${chainHooks.join(", ")}`).toBe(6);
     const unselectable = chainHooks.filter((h) => !SELECTABLE_HOOKS.has(h));
-    expect(unselectable.length, `${unselectable.length} of ${chainHooks.length} chain hooks are NOT selectable`).toBe(6);
+    expect(unselectable.length, `${unselectable.length} of ${chainHooks.length} chain hooks are NOT selectable`).toBe(5);
 
     for (const hook of unselectable) {
       // Same modules, same aggressive selection. A non-selectable hook must ignore it entirely --

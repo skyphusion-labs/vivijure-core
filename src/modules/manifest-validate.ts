@@ -3,6 +3,7 @@
 import {
   HOOK_NAMES,
   MODULE_API,
+  SCORE_KINDS,
   SUPPORTED_MODULE_APIS,
   type ModuleManifest,
 } from "./types.js";
@@ -68,6 +69,11 @@ export function validateManifest(raw: unknown): ModuleManifest | string {
     const v = m.max_invocation_seconds;
     if (typeof v !== "number" || !Number.isFinite(v) || v <= 0)
       return `max_invocation_seconds ${JSON.stringify(v)} must be a positive finite number of seconds`;
+  }
+  // vivijure-cf#878: a malformed score_kind does not load. Read as absent, it would leave a module that
+  // tried to declare itself unselectable with an error naming the wrong cause.
+  if (m.score_kind !== undefined && !(SCORE_KINDS as readonly unknown[]).includes(m.score_kind)) {
+    return `score_kind ${JSON.stringify(m.score_kind)} unknown (${SCORE_KINDS.join(" | ")})`;
   }
   if (m.usage !== undefined && !parseMotionUsage(m.usage)) {
     return "usage is present but not a valid MotionUsageDecl (native_audio, voice, scatter_native_audio, min_seconds, max_seconds)";

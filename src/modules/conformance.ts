@@ -15,6 +15,7 @@ import {
   CEILING_DERIVED_HOOKS,
   INVOKE_FAILURE_REASONS,
   isInvokeFailureReason,
+  SCORE_KINDS,
   SELECTABLE_HOOKS,
   SUPPORTED_MODULE_APIS,
   type HookName,
@@ -94,6 +95,13 @@ export function checkManifest(raw: unknown): ConformanceCheck[] {
     checks.push(typeof v === "number"
       ? ok("max-invocation-seconds", String(v))
       : bad("max-invocation-seconds", `a module serving ${ceilingDerived.join(", ")} must declare max_invocation_seconds (core#223)`));
+  }
+  // vivijure-cf#878: a score module must say what it produces. Fails CONFORMANCE, not LOAD, as above.
+  if (m.hooks.includes("score")) {
+    const k = m.score_kind;
+    checks.push(k !== undefined
+      ? ok("score-kind", k)
+      : bad("score-kind", `a module serving score must declare score_kind: ${SCORE_KINDS.map((x) => `"${x}"`).join(" | ")} (vivijure-cf#878)`));
   }
   if (m.config_schema) {
     for (const [k, f] of Object.entries(m.config_schema)) checks.push(checkConfigField(k, f));

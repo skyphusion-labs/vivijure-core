@@ -9,6 +9,8 @@
 
 import { SELECTABLE_HOOKS, type HookName, type HookSelection, type RegisteredModule, type RenderHookSelection } from "./types.js";
 import { servingForHook, validateConfig } from "./registry.js";
+import { pickScoreModule } from "./score-select.js";
+import { SCORE_KINDS, type ScoreKind } from "./types.js";
 
 /** One resolved module in a render pipeline: who serves the hook + the clamped config to send it. */
 export interface ResolvedModule {
@@ -36,6 +38,8 @@ export interface RenderPipelinePlan {
 export interface RenderPipelineSelection {
   motion_backend_choice?: string;
   keyframe_backend_choice?: string;
+  /** vivijure-cf#878: which module serves each score kind. Omitted = the ui.order default of that kind. */
+  score_choice?: Partial<Record<ScoreKind, string>>;
   config?: Record<string, Record<string, unknown>>;
   /** cf#537: the caller's per-render participation statement, keyed by hook. Honoured only for hooks
    *  in SELECTABLE_HOOKS; an absent entry means the default-participation set for that hook. */
@@ -171,7 +175,11 @@ export function resolveRenderPipeline(
     motion_backend: motion ? resolve(motion, cfg[motion.name]) : null,
     keyframe: keyframe ? resolve(keyframe, cfg[keyframe.name]) : null,
     finish: chain("finish"),
-    score: chain("score"),
+    // vivijure-cf#878: one module per declared kind, in SCORE_KINDS order. A kind with no module is absent.
+    score: SCORE_KINDS.flatMap((kind) => {
+      const p = pickScoreModule(modules, kind, selection.score_choice?.[kind]);
+      return p.ok ? [resolve(p.module, cfg[p.module.name])] : [];
+    }),
     speech: chain("speech"),
     filmFinish: chain("film.finish"),
     master: chain("master"),
