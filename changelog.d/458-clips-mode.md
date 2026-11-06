@@ -1,0 +1,5 @@
+**Feat: a render row can say it is a standalone clip job: mode `clips` (vivijure-core#458).**
+
+`NewRenderRow.mode` and `RenderRow.mode` were the four film modes, and the list projection read any other stored value as `"full"`. The studio's standalone clip job row (`POST /api/render/clips`) already stores `clips` in the column, mirrored from its poll view, but every list and get returned `"full"`, so a client had to tell the row apart by its `clips-` job id. New `RenderMode` type and `RENDER_MODES` set: the four film modes plus `"clips"`. Both row types use it, and the projection passes through every value in the set; anything else, and NULL on legacy rows, still reads as `"full"`. The SQL readers are unchanged: the notify claim and the sweep's lists compare the stored column against `keyframes-only`, which `clips` already passed.
+
+**For a host.** A list or get now returns `"clips"` for these rows. A reader that treats every row that is not a preview as a film needs a look before it adopts this release.

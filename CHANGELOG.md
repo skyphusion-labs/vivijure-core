@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.41.0
+
 ## [1.40.0] -- 2026-11-06
 
 **Feat: a driven shot keeps its planned length on every door, by the cheapest means the door allows (vivijure-cf#1338).**
