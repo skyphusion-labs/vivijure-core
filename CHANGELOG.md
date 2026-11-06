@@ -3,7 +3,31 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.35.0
+## [1.35.0] -- 2026-11-06
+
+**Fix: a clip job is bought in claimed batches inside a window, and a shot's URLs are minted when it is submitted (vivijure-core#451, vivijure-cf#1122).**
+
+`startClipJob` invoked every shot's door in one loop and wrote the clip job doc once, after the loop. A tick cut off inside the loop had bought clips that no doc recorded, and the film never stored `clip_job_id`, so the next tick bought them again. Now the doc is written before any door is invoked, with every shot queued. A tick submits at most `CLIP_SUBMIT_BATCH` (20) shots, and only while fewer than `CLIP_MAX_IN_FLIGHT` (20) are submitted and unresolved. Each batch is claimed in the doc before its invokes (`ClipShot.submit_claim`) and recorded after. A claimed shot is never bought again by a tick: if its clip lands it is adopted from R2 as before, and once the claim is older than `CLIP_SUBMIT_CLAIM_STALE_MS` (15 min) the shot fails with "submit outcome unknown". `startClipJob` buys the first batch; `advanceClipJob` buys the rest as the window frees.
+
+URLs: the film path marks its shots `presign_keys`, and each such shot's keyframe, end frame, line and voice URLs are minted from their keys when the shot is submitted, at `CLIP_URL_TTL_SECONDS` (1800 s), on every submit and transient re-submit. Before, every URL was minted at the start of the clip phase, so a shot a door queued for more than 30 minutes read an expired keyframe. A caller that passes its own URLs and leaves `presign_keys` unset has them used as given.
+
+A clip job of up to 20 shots behaves as before: `startClipJob` submits all of them. A larger job now takes more ticks to submit. New exports: `CLIP_SUBMIT_BATCH`, `CLIP_MAX_IN_FLIGHT`, `CLIP_SUBMIT_CLAIM_STALE_MS`, `CLIP_URL_TTL_SECONDS`, `clipsInFlight`, `queuedClipShots`, `expireStaleSubmitClaims`, `submitQueuedShots`.
+
+**Docs and test: the clip window is the per-tick poll budget (vivijure-core#452, vivijure-cf#1122).**
+
+`advanceClipJob` used to poll every pending shot holding a token on every tick: 450 polls a tick for a 450 shot job. Since the claimed batches of core#451, a shot holds a token only inside `CLIP_MAX_IN_FLIGHT` (20), so a tick makes at most 20 polls whatever the film's length, and it polls every shot in flight on every tick. No separate budget or cursor is added: one below the window would delay noticing a finished clip, and one above it could never be reached. The `CLIP_MAX_IN_FLIGHT` comment now says so, and a 450 shot test holds both the bound and the no-starvation property. No behaviour change.
+
+**Fix: keyframe jobs are split by size, a film that would need one oversized keyframe job is refused, and the keyframe phase has a progress clock (vivijure-core#453, vivijure-cf#1122).**
+
+The keyframe fan-out was `min(shots, KEYFRAME_PARALLEL)`, so a job's length grew with the film: 450 shots at the default of 4 put 113 shots, about 47 minutes, in each job. A film whose cast slot had no trained adapter was forced into one job of every shot (core#370), which at 450 shots is about 188 minutes against the keyframe door's 3600 s limit. New `resolveKeyframeJobs` starts `max(KEYFRAME_PARALLEL, ceil(shots / KEYFRAME_SHOTS_PER_JOB))` jobs, with `KEYFRAME_SHOTS_PER_JOB` 60, so no job carries more than 60 shots. A film forced to one job with more than 60 shots now fails at start, before any job is bought, and says why and what to do (train the adapters first, or split the film).
+
+The keyframe phase was judged on the time since it started. When cold workers run one after another, a healthy long pass reached the 90 minute ceiling and advanced with `keyframes_incomplete`. `filmProgressMarker` now counts the stills parked from each finished job of a split pass, keyframe is in `PER_SHOT_PHASES`, and the stall recovery's ceiling check uses `ceilingAgeSeconds`. So the 90 minutes run from the last finished keyframe job. A pass with no job finishing for 90 minutes still fails as before.
+
+New exports: `KEYFRAME_SHOTS_PER_JOB`, `resolveKeyframeJobs`.
+
+**Fix: a film over the video-finish container's clip cap is refused at submit, before anything is paid (vivijure-core#454, vivijure-cf#1122).**
+
+`admitAssemble` checked bytes only. The container refuses more than `MAX_CLIPS` (80) clips with `too many clips`, and nothing in core checked that number, so a film of 81 or more shots bought every keyframe and clip and then failed at assemble. New `ASSEMBLE_MAX_CLIPS` (80) mirrors the container, and `admitAssemble` refuses above it with a reason that names the count. Every caller gets it: the submit gate (`submitBudgetRefusal`, vivijure-cf#1144) refuses at film start with no keyframe job bought, and the finish-step and assemble gates say "clips" rather than a size when that is the cause. When both the count and the size are over, the reason names both. A keyframes-only or clips-only film is still not priced, because it never assembles.
 
 ## [1.34.0] -- 2026-11-06
 

@@ -1,3 +1,0 @@
-**Docs and test: the clip window is the per-tick poll budget (vivijure-core#452, vivijure-cf#1122).**
-
-`advanceClipJob` used to poll every pending shot holding a token on every tick: 450 polls a tick for a 450 shot job. Since the claimed batches of core#451, a shot holds a token only inside `CLIP_MAX_IN_FLIGHT` (20), so a tick makes at most 20 polls whatever the film's length, and it polls every shot in flight on every tick. No separate budget or cursor is added: one below the window would delay noticing a finished clip, and one above it could never be reached. The `CLIP_MAX_IN_FLIGHT` comment now says so, and a 450 shot test holds both the bound and the no-starvation property. No behaviour change.
