@@ -3,7 +3,13 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.41.1
+## [1.41.1] -- 2026-11-06
+
+**Fix: a read of a finished render no longer rewrites its `completed_at` and timings (vivijure-core#487).**
+
+Every poll of a render writes the row through `prepareRenderUpdate`. A terminal view stamped `completed_at` with the time of the READ and preferred it over the stored value, and `execution_time_ms` and `delay_time_ms` took whatever the view carried. A film view's `executionTimeMs` is the elapsed time at the moment of the read, so a second read of a finished film made both columns say when it was last read: measured in the studio, 12 finished keyframes-only rows went from 44,880..266,742 ms to 482,186..830,869 ms after one re-read each, and the first, real values were gone. Now the first terminal write records `completed_at` and both timings, and a later write keeps all three (`completed_at = COALESCE(completed_at, ?)`, the timings only while `completed_at` is NULL). A finish retry still measures again, because reopening the row clears `completed_at`.
+
+**For a host.** A render's `execution_time_ms` now reads as of its first terminal poll. A film's view still reports the elapsed time at the read, so a film first polled late still records a late figure; that is the view, not the row, and is not changed here.
 
 ## [1.41.0] -- 2026-11-06
 
