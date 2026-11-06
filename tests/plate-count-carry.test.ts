@@ -122,6 +122,18 @@ describe("parsePlateCount / plateCheckView", () => {
     expect(parsePlateCount(null)).toBeUndefined();
   });
 
+  it("carries the backend face-floor flag, and only a literal true (vivijure-core#492)", () => {
+    // The shape the hosted backend 1.1.18 returned on cf#1281 (RunPod job f551a6a6-...-u1).
+    const FLOOR = { expected: 2, faces: [1, 1, 2], chosen: 2, clean: true, retries: 3, floor: true };
+    expect(parsePlateCount(FLOOR)).toEqual(FLOOR);
+    const { floor: _f, ...noFloor } = FLOOR;
+    expect(parsePlateCount(noFloor)).toEqual(noFloor);
+    expect(parsePlateCount(noFloor)).not.toHaveProperty("floor");
+    expect(parsePlateCount({ ...noFloor, floor: false })).not.toHaveProperty("floor");
+    expect(parsePlateCount({ ...noFloor, floor: "true" })).not.toHaveProperty("floor");
+    expect(parsePlateCount({ ...noFloor, floor: 1 })).not.toHaveProperty("floor");
+  });
+
   it("reports faces as null when chosen points outside the draws", () => {
     const v = plateCheckView([{ shot_id: "a", plate_count: { ...UNCLEAN, chosen: 9 } }]);
     expect(v).toEqual({ checked: 1, unclean: [{ shot_id: "a", expected: 2, faces: null }] });
