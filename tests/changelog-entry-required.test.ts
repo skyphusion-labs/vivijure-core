@@ -7,10 +7,9 @@
 // repository: two-dot passes vacuously (the bug class this guard exists to avoid), three-dot
 // refuses correctly (the fix).
 
-import { describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -20,6 +19,19 @@ import {
   workingTreeFiles,
   GATED_PREFIXES,
 } from "../scripts/changelog-entry-required.mjs";
+import { ownedTmp, type OwnedTmp } from "./helpers/owned-tmp.js";
+
+// core#484: remove each fixture repo after its test, by its exact path. The one repo that two
+// read-only cases share is built at describe time, so it has its own tracker and is removed in
+// afterAll; removing it in afterEach would delete it under the second case.
+const guardTmp = ownedTmp("core-changelog-guard-");
+const sharedGuardTmp = ownedTmp("core-changelog-guard-");
+const tree316Tmp = ownedTmp("core-316-");
+afterEach(() => {
+  guardTmp.cleanup();
+  tree316Tmp.cleanup();
+});
+afterAll(() => sharedGuardTmp.cleanup());
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -31,8 +43,8 @@ function rev(root: string): string {
   return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 }
 
-function buildRepo() {
-  const root = mkdtempSync(join(tmpdir(), "core-changelog-guard-"));
+function buildRepo(tmp: OwnedTmp = guardTmp) {
+  const root = tmp.make();
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.email", "t@example.com");
   git(root, "config", "user.name", "t");
@@ -71,7 +83,7 @@ describe("changelog-entry-required (core#178, core#202, core#212)", () => {
   // commits, so it MUTATES the tree. Sharing a mutated repo would make these cases order-dependent,
   // and an order-dependent suite is a suite whose result depends on something no reader can see.
   // Two builds instead of three is the honest saving; three instead of one would be a trap.
-  const shared = buildRepo();
+  const shared = buildRepo(sharedGuardTmp);
 
   it("CONTROL: two-dot against a moved base passes vacuously (the bug the fix avoids)", () => {
     const files = changedFiles(shared.root, shared.movedBase, shared.head, true);
@@ -140,7 +152,7 @@ describe("changelog-entry-required (core#178, core#202, core#212)", () => {
 // cases are the four acceptance inputs plus the controls that keep the matcher honest: a fragment
 // turns the same src/ change green, .gitkeep does not, and a rename into src/ still counts.
 function initTree(): string {
-  const root = mkdtempSync(join(tmpdir(), "core-316-"));
+  const root = tree316Tmp.make();
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.email", "t@example.com");
   git(root, "config", "user.name", "t");

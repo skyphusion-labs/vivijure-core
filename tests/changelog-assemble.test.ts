@@ -7,9 +7,8 @@
 // bumps package.json. See the top-of-file comment in scripts/changelog-assemble.mjs for the full
 // reasoning.
 
-import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdirSync, writeFileSync, readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
@@ -18,6 +17,11 @@ import {
   versionHeadingPresent,
   openSectionBounds,
 } from "../scripts/changelog-assemble.mjs";
+import { ownedTmp } from "./helpers/owned-tmp.js";
+
+// core#484: remove the fixture directory after each test, by its exact path.
+const assembleTmp = ownedTmp("core-changelog-assemble-");
+afterEach(() => assembleTmp.cleanup());
 
 describe("changelog-assemble (core#202)", () => {
   it("PROOF: fragment-only assembly is byte-correct against a written fixture", () => {
@@ -112,7 +116,7 @@ describe("changelog-assemble (core#202)", () => {
   });
 
   it("end to end: main() consumes fragments from disk and deletes them, keeps .gitkeep", () => {
-    const root = mkdtempSync(join(tmpdir(), "core-changelog-assemble-"));
+    const root = assembleTmp.make();
     writeFileSync(
       join(root, "CHANGELOG.md"),
       "# Changelog\n\n## Unreleased\n\n## [1.0.0] -- 2026-01-01\n\n### old\n",

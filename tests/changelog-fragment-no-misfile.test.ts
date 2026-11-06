@@ -8,11 +8,15 @@
 // inside the now-released section (the bug). A changelog.d/ fragment is proven immune: it has no
 // heading to be misfiled under, so it survives the same race untouched and unconflicted.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { ownedTmp } from "./helpers/owned-tmp.js";
+
+// core#484: remove each fixture repo after its test, by its exact path.
+const reproTmp = ownedTmp("core-212-repro-");
+afterEach(() => reproTmp.cleanup());
 
 function git(root: string, ...args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
@@ -21,7 +25,7 @@ function git(root: string, ...args: string[]): string {
 const BASE_CHANGELOG = "# Changelog\n\n## Unreleased\n\n## [1.0.0] -- 2026-01-01\n\n### old\n";
 
 function initRepo(): string {
-  const root = mkdtempSync(join(tmpdir(), "core-212-repro-"));
+  const root = reproTmp.make();
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.email", "t@example.com");
   git(root, "config", "user.name", "t");
