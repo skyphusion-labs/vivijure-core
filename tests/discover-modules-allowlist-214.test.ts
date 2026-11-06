@@ -17,12 +17,13 @@ import { join } from "node:path";
  *
  *   startScatterRender  -- scatter submit; threads into startFilmJob
  *   advanceScatterJob   -- scatter poll/gather; threads into shards + finalize
- *   cancelFilmJob       -- user cancel; threads into cancelInFlightKeyframe/Clips
+ *   cancelFilmJobLocked -- user cancel body, run under the advance lease (vivijure-cf#1215); threads into
+ *                          cancelInFlightKeyframe/Clips
  */
 const REQUEST_ENTRY = new Set([
   "startScatterRender",
   "advanceScatterJob",
-  "cancelFilmJob",
+  "cancelFilmJobLocked",
   "retryFilmFinishLocked",
 ]);
 

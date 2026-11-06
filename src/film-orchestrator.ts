@@ -4194,7 +4194,6 @@ async function cancelInFlightChainSteps(env: Env, job: FilmJob, modules: Registe
   }
 }
 
-/** Mark an in-flight film job cancelled. Terminal jobs are returned unchanged. */
 /** A film that failed by itself asks what it started to cancel, or those jobs keep running and keep paying
  *  (core#425). Measured: 2653 s and 604 s of GPU after a film failed. Asked, not stopped: a module with no cancel
  *  logs that its job runs on, and a cancel can fail. A user cancel does this in cancelFilmJob. Best effort, and it
@@ -4215,7 +4214,65 @@ async function askJobsOfFailedFilmToCancel(env: Env, job: FilmJob, preModules?: 
   return true;
 }
 
-export async function cancelFilmJob(env: Env, filmId: string): Promise<FilmJob | null> {
+/** vivijure-cf#1215: how long a cancel waits for a running tick to let go of the film, and how often it asks. */
+export const FILM_CANCEL_WAIT_MS = 20_000;
+export const FILM_CANCEL_CLAIM_EVERY_MS = 1_000;
+
+/** vivijure-cf#1215: a tick held the film for all of FILM_CANCEL_WAIT_MS. Nothing was written and nothing was asked
+ *  to stop; the caller can try again. */
+export class FilmBusyError extends Error {
+  constructor(readonly filmId: string) {
+    super(`film ${filmId} is busy, so the cancel was not written; try again shortly`);
+    this.name = "FilmBusyError";
+  }
+}
+
+export interface CancelFilmOptions {
+  /** Defaults to FILM_CANCEL_WAIT_MS. */
+  waitMs?: number;
+  /** For tests. Defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Mark an in-flight film job cancelled. Terminal jobs are returned unchanged.
+ *
+ * ONE WRITER (vivijure-cf#1215). A tick reads the doc, works, and writes it back, under the advance lease. A cancel
+ * used to write with no lease, so a tick that read the doc before the cancel wrote it back after, and the film kept
+ * spending with `cancelled` lost. The studio's R2 retry made one case of this easy to hit: a tick's put that lands
+ * and errors is put again, up to about 4 s later, over the cancel. So a cancel now takes the same lease. It waits up
+ * to `waitMs` for a running tick to finish, and then throws FilmBusyError rather than write past it. Like a tick, it
+ * fails open on a D1 error. A film already terminal is returned unchanged even while a tick holds it.
+ */
+export async function cancelFilmJob(env: Env, filmId: string, opts: CancelFilmOptions = {}): Promise<FilmJob | null> {
+  const waitMs = opts.waitMs ?? FILM_CANCEL_WAIT_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let claim = await claimAdvanceOrFailOpen(env, filmId);
+  for (let waited = 0; !claim.won && waited < waitMs; waited += FILM_CANCEL_CLAIM_EVERY_MS) {
+    await sleep(FILM_CANCEL_CLAIM_EVERY_MS);
+    claim = await claimAdvanceOrFailOpen(env, filmId);
+  }
+  if (!claim.won) {
+    const live = await readFilmJobReadOnly(env, filmId);
+    if (!live) return null;
+    if (live.job.phase === "done" || live.job.phase === "failed") return live.job;
+    throw new FilmBusyError(filmId);
+  }
+  const hold = holdFilmAdvance(env, filmId, claim);
+  try {
+    return await cancelFilmJobLocked(env, filmId);
+  } finally {
+    hold.stop();
+    if (claim.token !== undefined) {
+      await releaseFilmAdvance(env, filmId, claim.token).catch((e: Error) => {
+        console.warn(`film ${filmId}: advance lease release failed (${e.message}); it expires on its own`);
+      });
+    }
+  }
+}
+
+/** The cancel body; the caller holds (or fail-opened past) the advance lease. */
+async function cancelFilmJobLocked(env: Env, filmId: string): Promise<FilmJob | null> {
   const obj = await env.R2_RENDERS.get(filmKey(filmId));
   if (!obj) return null;
   const job = JSON.parse(await obj.text()) as FilmJob;
