@@ -406,6 +406,13 @@ export interface FilmJob {
   voice_ref_keys?: Record<string, string>;
   motion_backend: string | null;
   motion_config: Record<string, unknown>;
+  /** vivijure-core#442: shot_id -> motion door, for a film whose shots do not all use motion_backend. Kept
+   *  on the doc so a film that buys its lines before clips still starts each clip on its own door, and so
+   *  each shot's audio is decided from its own door. Absent when every shot uses motion_backend. */
+  per_shot_motion?: Record<string, string>;
+  /** vivijure-core#442: per-door motion config (keyed by module name), passed to startClipJob as
+   *  module_configs wherever this film starts its clips. Absent when none was given. */
+  motion_configs?: Record<string, Record<string, unknown>>;
   // cf#393: RESOLVED keyframe module name at submit (e.g. "keyframe", "cloud-keyframe"). Distinct from
   // keyframe_binding (service-binding id). Absent on legacy job docs and on from-keyframes jobs that
   // never ran a keyframe module. Mirrored onto the renders row so "which keyframe backend?" is answerable.

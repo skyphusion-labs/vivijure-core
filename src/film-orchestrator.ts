@@ -386,15 +386,39 @@ export function linedDialogueShots(lines: DialogueLine[] | undefined): DialogueL
   return (lines ?? []).filter((l) => l.shot_id && (l.text ?? "").trim().length > 0);
 }
 
-function motionUsageForJob(job: FilmJob, modules: RegisteredModule[]) {
-  const mb = pickOneForHook(modules, "motion.backend", job.motion_backend ?? undefined);
+/** The door a shot renders on: its own from per_shot_motion, else the film's (vivijure-core#442). This
+ *  is the same choice startClipJob makes from ClipShotInput.motion_backend and the job's door. */
+function motionDoorForShot(job: FilmJob, shotId: string): string | undefined {
+  return job.per_shot_motion?.[shotId] ?? job.motion_backend ?? undefined;
+}
+
+function motionUsageForShot(job: FilmJob, modules: RegisteredModule[], shotId: string) {
+  const mb = pickOneForHook(modules, "motion.backend", motionDoorForShot(job, shotId));
   return usageOf(mb ?? undefined);
+}
+
+/** True when this shot's own door cannot render without audio (driving_audio). */
+function shotDrivenByAudio(job: FilmJob, modules: RegisteredModule[], shotId: string): boolean {
+  return motionUsageForShot(job, modules, shotId)?.driving_audio === true;
 }
 
 function wantsPreClipDialogue(job: FilmJob, modules: RegisteredModule[]): boolean {
   // driving_audio means the door cannot render a shot without audio. Whether any shot
   // has a line is a different question; zero lined shots still need silence (core#342).
-  return motionUsageForJob(job, modules)?.driving_audio === true;
+  // Each shot is judged on its own door (core#442): one shot on such a door is enough.
+  return job.scenes.some((s) => shotDrivenByAudio(job, modules, s.shot_id));
+}
+
+/** The measured line lengths of the shots whose own door follows its audio (vivijure-cf#1142,
+ *  vivijure-core#442). A shot on any other door is left out, so the duration gate keeps its board. */
+function drivenLineSeconds(job: FilmJob, modules: RegisteredModule[]): Record<string, number> | undefined {
+  const all = job.dialogue_audio_seconds;
+  if (!all) return undefined;
+  const out: Record<string, number> = {};
+  for (const [shot, seconds] of Object.entries(all)) {
+    if (shotDrivenByAudio(job, modules, shot)) out[shot] = seconds;
+  }
+  return out;
 }
 
 function dialogueAudioKey(project: string, shotId: string): string {
@@ -467,6 +491,7 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
     return;
   }
   const shots: ClipShotInput[] = [];
+  const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   const slotsByShot = await readBundleShotSlots(env, job.bundle_key);
   for (let i = 0; i < matched.length; i++) {
     const m = matched[i];
@@ -474,7 +499,10 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
     const keyframe_url = await presignR2Get(env, m.keyframe_key, 1800); // 30min: covers a long cloud i2v job
     const endKey = next ? job.held_end_frames?.[m.shot_id] ?? next.keyframe_key : undefined;
     const last_keyframe_url = endKey ? await presignR2Get(env, endKey, 1800) : undefined;
-    const lineKey = job.dialogue_audio?.[m.shot_id];
+    // core#442: only a shot whose own door is driven by audio is given its line (or its silence) and
+    // has its length follow it. A shot on a silent door in the same film renders as it would on that
+    // door alone; its line, bought before clips, still reaches lip-sync through dialogue_audio.
+    const lineKey = shotDrivenByAudio(job, modules, m.shot_id) ? job.dialogue_audio?.[m.shot_id] : undefined;
     const audio_url = lineKey ? await presignR2Get(env, lineKey, 1800) : undefined;
     const wavSeconds = lineKey ? job.dialogue_audio_seconds?.[m.shot_id] : undefined;
     const lined = linedDialogueShots(job.dialogue_lines).some((l) => l.shot_id === m.shot_id);
@@ -503,6 +531,7 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
       seconds: lineKey ? secondsForShot(m.seconds, wavSeconds) : m.seconds,
       audio_key: lineKey,
       audio_url,
+      motion_backend: job.per_shot_motion?.[m.shot_id],
       ...(await voiceRefOnShot(env, job.voice_ref_keys, m.shot_id)),
     });
   }
@@ -510,9 +539,10 @@ async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, pre
     project: job.project, shots,
     motion_backend: job.motion_backend ?? undefined,
     config: job.motion_config,
+    module_configs: job.motion_configs,
     reuse_proven: job.reuse_finished,
     retake_shots: job.retake_shots,
-  }, preModules);
+  }, modules);
   job.clip_job_id = clip.job_id;
   job.phase = "clips";
 }
@@ -897,16 +927,20 @@ async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: Regis
   const provider = servingForHook(preModules, "dialogue")[0]?.name;
   for (const l of lined) {
     const key = job.dialogue_audio![l.shot_id];
-    await normalizeStoredLineWav(env, job, l.shot_id, key);
+    // A line on a silent door is not cut to a driven clip's length (core#442), as in a film on that door.
+    if (shotDrivenByAudio(job, preModules, l.shot_id)) await normalizeStoredLineWav(env, job, l.shot_id, key);
     // After the normalize, so the sidecar describes the bytes a clip is driven by (cf#1166).
     if (provider) await writeProv(env, key, await lineProvenanceHash({ provider, voice: l.voice_id, text: l.text }));
   }
-  const usage = motionUsageForJob(job, preModules);
   const linedIds = new Set(lined.map((l) => l.shot_id));
   for (const scene of job.scenes) {
     if (linedIds.has(scene.shot_id)) continue;
     if (job.dialogue_audio?.[scene.shot_id]) continue;
-    if (usage?.native_audio) {
+    // core#442: each unlined shot is judged on its own door. A shot on a door that is not driven by
+    // audio gets nothing, exactly as in a film on that door alone, which never enters this phase.
+    const usage = motionUsageForShot(job, preModules, scene.shot_id);
+    if (usage?.driving_audio !== true) continue;
+    if (usage.native_audio) {
       emitStructuredEvent({
         ev: "dialogue.neighborhood",
         film_id: job.film_id,
@@ -3400,8 +3434,9 @@ async function enterAssemblePhase(
     const gateModules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
     const planned = plannedForDurationGate(
       resolvePlannedSeconds(job.scenes, bundleDurations),
-      job.dialogue_audio_seconds,
-      motionUsageForJob(job, gateModules)?.driving_audio === true,
+      // core#442: each shot judged on its own door; drivenLineSeconds already leaves the others out.
+      drivenLineSeconds(job, gateModules),
+      true,
     );
     const fraction = resolveClipDurationFloor(
       typeof env.FILM_CLIP_DURATION_FLOOR === "string" ? env.FILM_CLIP_DURATION_FLOOR : undefined,
@@ -3538,6 +3573,9 @@ export async function startFilmFromKeyframes(
     scenes,
     motion_backend: args.motion_backend ?? null,
     motion_config: applyVoiceSeed(args.motion_config ?? {}, typeof args.voice_lock === "string" ? args.voice_lock : undefined) ?? args.motion_config ?? {},
+    // core#442: kept, so pre-clip dialogue and advanceToClips see each shot's own door.
+    per_shot_motion: args.per_shot_motion && Object.keys(args.per_shot_motion).length ? args.per_shot_motion : undefined,
+    motion_configs: args.motion_configs && Object.keys(args.motion_configs).length ? args.motion_configs : undefined,
     style_prefix: typeof args.style_prefix === "string" ? args.style_prefix : undefined,
     voice_lock: typeof args.voice_lock === "string" ? args.voice_lock.trim() || undefined : undefined,
     voice_ref_keys: args.voice_ref_keys && Object.keys(args.voice_ref_keys).length ? args.voice_ref_keys : undefined,
@@ -3612,7 +3650,7 @@ export async function startFilmFromKeyframes(
         ...spokenLineForShot(job.dialogue_lines, m.shot_id),
       }),
       seconds: m.seconds,
-      motion_backend: args.per_shot_motion?.[m.shot_id],
+      motion_backend: job.per_shot_motion?.[m.shot_id],
       ...(await voiceRefOnShot(env, job.voice_ref_keys, m.shot_id)),
     });
   }
@@ -3622,7 +3660,7 @@ export async function startFilmFromKeyframes(
     shots,
     motion_backend: args.motion_backend,
     config: args.motion_config,
-    module_configs: args.motion_configs,
+    module_configs: job.motion_configs,
     reuse_proven: job.reuse_finished,
     retake_shots: job.retake_shots,
   }, modules);
