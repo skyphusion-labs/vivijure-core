@@ -78,6 +78,7 @@ function harness(opts: { pollsToDone?: number } = {}) {
   const presigns: { key: string; ttl: number; tick: number }[] = [];
   const invokes: { shot: string; keyframe_url?: string; tick: number }[] = [];
   const polls = new Map<string, number>();
+  const pollLog: number[] = [];
   let maxInFlight = 0;
   const live = new Set<string>();
   const env = {
@@ -98,6 +99,7 @@ function harness(opts: { pollsToDone?: number } = {}) {
         }
         if (url.endsWith("/poll")) {
           const shot = String(body.poll).slice(4);
+          pollLog.push(state.tick);
           const n = (polls.get(shot) ?? 0) + 1;
           polls.set(shot, n);
           if (n < pollsToDone) return json({ ok: true, pending: true });
@@ -113,7 +115,7 @@ function harness(opts: { pollsToDone?: number } = {}) {
   const readDoc = (jobId: string): ClipJob =>
     JSON.parse(new TextDecoder().decode(store.get(`renders/${jobId}/clips-job.json`)!)) as ClipJob;
   return {
-    env, state, presigns, invokes, polls, readDoc,
+    env, state, presigns, invokes, polls, pollLog, readDoc,
     maxInFlight: () => maxInFlight,
     failDocPutAt: (n: number) => { failPutAt = n; },
     docPuts: () => docPuts,
@@ -200,6 +202,30 @@ describe("vivijure-core#451: a clip job is bought in batches, inside a window", 
     expect(counts.size).toBe(30);
     expect([...counts.values()].every((n) => n === 1)).toBe(true);
     expect(end.shots.filter((s) => s.status === "done").length).toBe(30 - CLIP_SUBMIT_BATCH);
+  });
+});
+
+describe("vivijure-core#452: the window is the per-tick poll budget", () => {
+  it("a 450 shot job never polls more than the window in one tick, and polls every shot in flight each tick", async () => {
+    quiet();
+    const h = harness({ pollsToDone: 4 });
+    const job = await startClipJob(h.env, { project: "p", shots: shots(450), motion_backend: "door" }, [motion]);
+    let doc = h.readDoc(job.job_id);
+    let maxPerTick = 0;
+    for (let t = 0; t < 400 && doc.shots.some((s) => s.status === "pending"); t++) {
+      const inFlightBefore = doc.shots.filter((s) => s.status === "pending" && s.poll).length;
+      h.state.tick += 1;
+      doc = (await advanceClipJob(h.env, job.job_id, [motion]))!;
+      const polled = h.pollLog.filter((x) => x === h.state.tick).length;
+      maxPerTick = Math.max(maxPerTick, polled);
+      // No starvation: every shot holding a token at the start of the tick was polled in it.
+      expect(polled).toBe(inFlightBefore);
+    }
+    expect(doc.shots.every((s) => s.status === "done")).toBe(true);
+    expect(maxPerTick).toBe(CLIP_MAX_IN_FLIGHT);
+    // The number the CLIP_MAX_IN_FLIGHT comment states. Raising the window raises the polls each tick
+    // makes, so it is a decision that has to change this line and that comment together.
+    expect(maxPerTick).toBeLessThanOrEqual(20);
   });
 });
 
