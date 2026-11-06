@@ -41,8 +41,9 @@ import {
 import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook, selectForChain } from "./modules/render-pipeline.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
-import { usageOf } from "./motion-usage.js";
+import { usageOf, doorBillsPerClip } from "./motion-usage.js";
 import {
+  LINE_WAV_MAX_SECONDS,
   UNLINED_SILENCE_SECONDS,
   mintSilenceWav,
   normalizeLineWav,
@@ -166,6 +167,7 @@ import type {
   FilmFinishOutput,
   FilmFinishCaption,
   HookSelection,
+  MotionUsageDecl,
 } from "./modules/types.js";
 import { retimeSrt } from "./srt.js";
 import { loadInstallConfig } from "./operator-config.js";
@@ -399,6 +401,45 @@ function motionDoorForShot(job: FilmJob, shotId: string): string | undefined {
 function motionUsageForShot(job: FilmJob, modules: RegisteredModule[], shotId: string) {
   const mb = pickOneForHook(modules, "motion.backend", motionDoorForShot(job, shotId));
   return usageOf(mb ?? undefined);
+}
+
+function motionDoorModuleForShot(job: FilmJob, modules: RegisteredModule[], shotId: string): RegisteredModule | undefined {
+  return pickOneForHook(modules, "motion.backend", motionDoorForShot(job, shotId)) ?? undefined;
+}
+
+function plannedShotSeconds(job: FilmJob, shotId: string): number {
+  const s = (job.scenes ?? []).find((x) => x.shot_id === shotId)?.seconds;
+  return typeof s === "number" && Number.isFinite(s) && s > 0 ? s : 0;
+}
+
+/** vivijure-cf#1338: the length a driven line is padded to. The door's own floor (core#464), raised to the
+ *  shot's planned seconds on a door that bills per clip and sizes its clip from the line, where the extra
+ *  seconds cost nothing. Never past the door's max_seconds or the 15s line cap. The dialogue module has
+ *  already cut the line's trailing silence, so the pad is added after the trim. */
+export function drivenLineFloorSeconds(
+  usage: MotionUsageDecl | undefined,
+  billsPerClip: boolean,
+  plannedSeconds: number,
+): number {
+  if (usage?.driving_audio !== true) return 0;
+  let floor = usage.driving_audio_min_seconds ?? 0;
+  if (billsPerClip && Number.isFinite(plannedSeconds) && plannedSeconds > floor) floor = plannedSeconds;
+  const cap = Math.min(Number.isFinite(usage.max_seconds) && usage.max_seconds > 0 ? usage.max_seconds : LINE_WAV_MAX_SECONDS, LINE_WAV_MAX_SECONDS);
+  return Math.max(0, Math.min(floor, cap));
+}
+
+/** vivijure-cf#1338: the length assembly holds a clip to with its last frame. Only a shot on a driven door
+ *  that bills by length gets one: its line is not padded (the pad would be billed), so the clip can come
+ *  back shorter than the plan. Never past the door's max_seconds. undefined = no hold. */
+export function assembleHoldSeconds(
+  usage: MotionUsageDecl | undefined,
+  billsPerClip: boolean,
+  plannedSeconds: number,
+): number | undefined {
+  if (usage?.driving_audio !== true || billsPerClip) return undefined;
+  if (!Number.isFinite(plannedSeconds) || plannedSeconds <= 0) return undefined;
+  const cap = Number.isFinite(usage.max_seconds) && usage.max_seconds > 0 ? usage.max_seconds : plannedSeconds;
+  return Math.min(plannedSeconds, cap);
 }
 
 /** True when this shot's own door cannot render without audio (driving_audio). */
@@ -936,7 +977,8 @@ async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: Regis
     // A line on a silent door is not cut to a driven clip's length (core#442), as in a film on that door.
     const usage = motionUsageForShot(job, preModules, l.shot_id);
     if (usage?.driving_audio === true) {
-      await normalizeStoredLineWav(env, job, l.shot_id, key, usage.driving_audio_min_seconds ?? 0);
+      const perClip = doorBillsPerClip(motionDoorModuleForShot(job, preModules, l.shot_id));
+      await normalizeStoredLineWav(env, job, l.shot_id, key, drivenLineFloorSeconds(usage, perClip, plannedShotSeconds(job, l.shot_id)));
     }
     // After the normalize, so the sidecar describes the bytes a clip is driven by (cf#1166).
     if (provider) await writeProv(env, key, await lineProvenanceHash({ provider, voice: l.voice_id, text: l.text }));
@@ -3369,11 +3411,24 @@ async function enterAssemblePhase(
     // the FIRST partial at the very END of the job, so every URL here has to cover the whole
     // job rather than its first half hour. Minted in parallel: a chunked film needs 1 + 3n
     // signatures and sequential awaits add up.
+    // vivijure-cf#1338: a shot on a driven door that bills by length is held to its planned seconds with its
+    // last frame, since its line was not padded. Planned seconds are the same ones admission used above.
+    const planned = resolvePlannedSeconds(job.scenes, bundleDurations);
+    const holdModules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
+    const holdFor = (shotId: string): number | undefined => assembleHoldSeconds(
+      motionUsageForShot(job, holdModules, shotId),
+      doorBillsPerClip(motionDoorModuleForShot(job, holdModules, shotId)),
+      planned[shotId] ?? 0,
+    );
     const [clips, outputUrl, partialUrls] = await Promise.all([
       Promise.all(
-        finalClips.map(async (c) => ({
-          url: await presignR2Get(env, c.clip_key, ASSEMBLE_PRESIGN_TTL_SECONDS),
-        })),
+        finalClips.map(async (c) => {
+          const hold = holdFor(c.shot_id);
+          return {
+            url: await presignR2Get(env, c.clip_key, ASSEMBLE_PRESIGN_TTL_SECONDS),
+            ...(hold !== undefined ? { holdToSeconds: hold } : {}),
+          };
+        }),
       ),
       presignR2Put(env, outputKey, ASSEMBLE_PRESIGN_TTL_SECONDS),
       // The pool is what makes chunked assemble live; without it the container takes the

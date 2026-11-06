@@ -38,8 +38,8 @@ const dlgMod = mod({ name: "dialogue-gen", binding: "MODULE_DIALOGUE", hooks: ["
 const speechMod = mod({ name: "speech-upscale", binding: "MODULE_SPEECH", hooks: ["speech"] });
 const finishMod = mod({ name: "finish-rife", binding: "MODULE_FINISH", hooks: ["finish"], ui: { order: 10, section: "finish" } });
 
-function motionMod(name: string, binding: string, usage: MotionUsageDecl): RegisteredModule {
-  return mod({ name, binding, hooks: ["motion.backend"], usage, ui: { order: 15, section: "motion", locality: "cloud" } });
+function motionMod(name: string, binding: string, usage: MotionUsageDecl, ui: Record<string, unknown> = {}): RegisteredModule {
+  return mod({ name, binding, hooks: ["motion.backend"], usage, ui: { order: 15, section: "motion", locality: "cloud", ...ui } as RegisteredModule["ui"] });
 }
 
 const SCENES = [
@@ -232,13 +232,13 @@ function harness(opts: {
   return h;
 }
 
-function modulesFor(h: Harness, opts: { usage: MotionUsageDecl; speech?: boolean; finish?: boolean }): RegisteredModule[] {
+function modulesFor(h: Harness, opts: { usage: MotionUsageDecl; speech?: boolean; finish?: boolean; ui?: Record<string, unknown> }): RegisteredModule[] {
   const motionName = opts.usage.native_audio ? "alibaba-wan" : "infinitetalk";
   const motionBinding = opts.usage.native_audio ? "MODULE_WAN" : "MODULE_INFINITETALK";
   const list = [
     kfMod,
     dlgMod,
-    motionMod(motionName, motionBinding, opts.usage),
+    motionMod(motionName, motionBinding, opts.usage, opts.ui),
   ];
   if (opts.speech) list.push(speechMod);
   if (opts.finish) list.push(finishMod);
@@ -407,9 +407,9 @@ describe("pre_clip_dialogue tick sequence", () => {
 // core#464: a line on a driven shot is padded only to the floor its OWN door declares. Every line used to be
 // padded to 3s, so InfiniteTalk and p-video, which size the clip to the audio, billed and animated the pad.
 describe("core#464: the line floor belongs to the door", () => {
-  async function lineAfterDialogue(usage: MotionUsageDecl, door: string) {
+  async function lineAfterDialogue(usage: MotionUsageDecl, door: string, ui?: Record<string, unknown>) {
     const h = harness({ usage, dialogue: "output" });
-    const mods = modulesFor(h, { usage });
+    const mods = modulesFor(h, { usage, ui });
     const started = await startFilmJob(h.env, { ...START, motion_backend: door }, mods);
     const advanced = await advanceFilmJob(h.env, started.film_id, mods);
     const job = advanced?.job ?? h.read(started.film_id);
@@ -434,6 +434,19 @@ describe("core#464: the line floor belongs to the door", () => {
     const r = await lineAfterDialogue({ ...USAGE_WAN, driving_audio_min_seconds: 3 }, "alibaba-wan");
     expect(r.stored).toBeCloseTo(3, 6);
     expect(r.recorded).toBeCloseTo(3, 6);
+  });
+
+  // vivijure-cf#1338: a door that bills per clip and sizes its clip from the line gets the line padded to the
+  // shot's planned seconds (SCENES plans shot_01 at 5s). A door that bills by length is not padded.
+  it("cf#1338: a per-clip door pads the 1.5s line to the shot's planned 5s", async () => {
+    const r = await lineAfterDialogue(USAGE_INFINITETALK, "infinitetalk", { cost_usd_per_clip: [{ usd: 0.25 }] });
+    expect(r.stored).toBeCloseTo(5, 6);
+    expect(r.recorded).toBeCloseTo(5, 6);
+  });
+
+  it("cf#1338: a per-second door keeps the 1.5s line, its pad would be billed", async () => {
+    const r = await lineAfterDialogue(USAGE_INFINITETALK, "infinitetalk", { cost_usd_per_second: [0.025] });
+    expect(r.stored).toBeCloseTo(1.5, 6);
   });
 
   it("the floor is read from the declaration, not from the door being Wan", async () => {
