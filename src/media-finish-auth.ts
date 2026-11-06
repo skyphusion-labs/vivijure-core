@@ -119,6 +119,58 @@ export function mediaDoorReachable(env: Env, key: MediaDoorKey): boolean {
   return Boolean(mediaDoorFetcher(env, key)) || Boolean(mediaDoorUrl(env, key));
 }
 
+/**
+ * Put the media bearer on a request bound for an in-process door (cf#911).
+ *
+ * The binding is a private hop, and it still carries the credential: the container behind it
+ * checks the same `Authorization: Bearer` a public door does. The seam attaches it HERE, not only
+ * at each call site, so a bound call cannot reach the container without it because a caller built
+ * its own headers. The resolved token wins over any `authorization` the caller set, in any case.
+ *
+ * NO token is not an error on this path. A studio with the container bound and no
+ * MEDIA_FINISH_TOKEN sends nothing, as before, and the container decides. That is what keeps the
+ * rollout safe: the container accepts a missing header for one release, then refuses it.
+ *
+ * The header shape is kept: a plain object stays a plain object (callers and tests read it as
+ * one), a `Headers` stays a `Headers`, and a tuple list stays a list.
+ */
+export async function withMediaBearer(env: Env, init: RequestInit = {}): Promise<RequestInit> {
+  const token = await mediaFinishToken(env);
+  if (!token) return init;
+  const value = "Bearer " + token;
+  const h = init.headers;
+  if (h instanceof Headers) {
+    const next = new Headers(h);
+    next.set("authorization", value);
+    return { ...init, headers: next };
+  }
+  if (Array.isArray(h)) {
+    const kept = (h as [string, string][]).filter(([k]) => k.toLowerCase() !== "authorization");
+    return { ...init, headers: [...kept, ["authorization", value]] };
+  }
+  const kept: Record<string, string> = {};
+  for (const [k, v] of Object.entries((h ?? {}) as Record<string, string>)) {
+    if (k.toLowerCase() !== "authorization") kept[k] = v;
+  }
+  return { ...init, headers: { ...kept, authorization: value } };
+}
+
+/**
+ * Send one request through a bound door, bearer attached. The ONE way core reaches a bound door:
+ * `mediaDoorFetch` and the bound poll in video-finish-assemble both go through here, so there is no
+ * second bound path that could forget the credential.
+ */
+export async function boundMediaDoorFetch(
+  env: Env,
+  key: MediaDoorKey,
+  bound: MediaDoorFetcher,
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const p = path.startsWith("/") ? path : "/" + path;
+  return bound.fetch(MEDIA_DOOR_INTERNAL_ORIGIN[key] + p, await withMediaBearer(env, init));
+}
+
 /** POST a path on a host-configured media door. Returns null when the URL is unset.
  *  Throws MediaFinishAuthError when the URL is set and the bearer is empty. */
 export async function mediaDoorFetch(
@@ -135,14 +187,12 @@ export async function mediaDoorFetch(
   // the binding there is no DNS, no edge hop, and the container keeps its property of being
   // unreachable from the internet.
   //
-  // No bearer is REQUIRED here, and that is not a relaxation. The bearer exists to authenticate a
-  // request that crosses the public internet; this one never leaves the isolate's request graph.
-  // A token is still SENT when the host set one, because mediaFinishHeaders() attaches it at the
-  // call site, so a container image configured with LOCAL_FINISH_TOKEN keeps working unchanged.
-  // What changes is only that a MISSING token no longer fails closed on a path that has nothing
-  // to fail closed against.
+  // The bound hop CARRIES the bearer (cf#911). The binding is private, but that is a property of
+  // the deployment, not of this code, so the container checks the credential anyway and this seam
+  // attaches it (boundMediaDoorFetch). A MISSING token still does not throw here: the container is
+  // the enforcement point, and throwing first would turn a staged rollout into a lockout.
   const bound = mediaDoorFetcher(env, key);
-  if (bound) return bound.fetch(MEDIA_DOOR_INTERNAL_ORIGIN[key] + p, init);
+  if (bound) return boundMediaDoorFetch(env, key, bound, p, init);
 
   const url = mediaDoorUrl(env, key);
   if (!url) return null;

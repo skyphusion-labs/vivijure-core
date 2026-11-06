@@ -14,6 +14,7 @@
 import type { Env } from "./platform/orchestrator-context.js";
 import {
   isMediaFinishAuthError,
+  boundMediaDoorFetch,
   mediaDoorFetcher,
   mediaFinishHeaders,
   videoFinishFetch,
@@ -581,9 +582,10 @@ export async function pollVideoFinishAsync(env: Env, jobId: string): Promise<Sta
   // process memory (#784 item 2 is not done), and a container restart or an instance eviction
   // loses it, so a 404 here is still "possibly transient" rather than proof the job never existed.
   // Tightening that debounce is a change to make when the state is externalised, not now.
+  // cf#911: through the seam, so the bound poll carries the bearer the bound submit does.
   const bound = mediaDoorFetcher(env, "VIDEO_FINISH_URL");
   if (bound) {
-    return pollVia(env, (path, init) => bound.fetch("http://video-finish" + path, init), jobId);
+    return pollVia(env, (path, init) => boundMediaDoorFetch(env, "VIDEO_FINISH_URL", bound, path, init), jobId);
   }
   const urls = videoFinishPollUrls(env);
   if (urls.length === 0) return { kind: "missing" };
