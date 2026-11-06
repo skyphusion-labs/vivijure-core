@@ -1,0 +1,7 @@
+**Fix: keyframe jobs are split by size, a film that would need one oversized keyframe job is refused, and the keyframe phase has a progress clock (vivijure-core#453, vivijure-cf#1122).**
+
+The keyframe fan-out was `min(shots, KEYFRAME_PARALLEL)`, so a job's length grew with the film: 450 shots at the default of 4 put 113 shots, about 47 minutes, in each job. A film whose cast slot had no trained adapter was forced into one job of every shot (core#370), which at 450 shots is about 188 minutes against the keyframe door's 3600 s limit. New `resolveKeyframeJobs` starts `max(KEYFRAME_PARALLEL, ceil(shots / KEYFRAME_SHOTS_PER_JOB))` jobs, with `KEYFRAME_SHOTS_PER_JOB` 60, so no job carries more than 60 shots. A film forced to one job with more than 60 shots now fails at start, before any job is bought, and says why and what to do (train the adapters first, or split the film).
+
+The keyframe phase was judged on the time since it started. When cold workers run one after another, a healthy long pass reached the 90 minute ceiling and advanced with `keyframes_incomplete`. `filmProgressMarker` now counts the stills parked from each finished job of a split pass, keyframe is in `PER_SHOT_PHASES`, and the stall recovery's ceiling check uses `ceilingAgeSeconds`. So the 90 minutes run from the last finished keyframe job. A pass with no job finishing for 90 minutes still fails as before.
+
+New exports: `KEYFRAME_SHOTS_PER_JOB`, `resolveKeyframeJobs`.
