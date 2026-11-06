@@ -21,6 +21,8 @@ import { withD1Retry } from "./d1-retry.js";
 import { newPublicId } from "./public-id.js";
 import { adoptFilmOutputKeyFromStore } from "./film-output-key.js";
 import { isSafeRelKey } from "./key-safety.js";
+import { parsePlateCount } from "./plate-count.js";
+import type { PlateCount } from "./modules/types.js";
 
 // Surface a corrupted *_json column instead of swallowing it silently (issue #15).
 // The empty / NULL case is handled by a length guard BEFORE the parse, so this only
@@ -65,6 +67,9 @@ export interface NewRenderRow {
 export interface KeyframeRef {
   shot_id: string;
   key: string;
+  /** The backend plate count guard report, when it ran on this still. The history strip reads it to
+   *  mark a still that may show an extra person. */
+  plate_count?: PlateCount;
 }
 
 // Shape returned to clients by /api/storyboard/renders. snake_case mirrors
@@ -1068,7 +1073,8 @@ export function normalizeKeyframes(raw: unknown): KeyframeRef[] {
     const e = entry as Record<string, unknown>;
     if (typeof e.shot_id !== "string" || e.shot_id.length === 0) continue;
     if (typeof e.key !== "string" || e.key.length === 0) continue;
-    out.push({ shot_id: e.shot_id, key: e.key });
+    const plate_count = parsePlateCount(e.plate_count);
+    out.push({ shot_id: e.shot_id, key: e.key, ...(plate_count ? { plate_count } : {}) });
   }
   return out;
 }
