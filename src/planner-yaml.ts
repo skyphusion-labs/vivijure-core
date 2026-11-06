@@ -162,6 +162,8 @@ export function serializeStoryboardYaml(value: StoryboardValidated): string {
     lines.push(`clip_seconds: ${value.clip_seconds}`);
   }
   lines.push(`style_prefix: ${quote(value.style_prefix)}`);
+  // vivijure-cf#1145: emitted only when set, so a board without it serializes exactly as before.
+  if (value.setting) lines.push(`setting: ${quote(value.setting)}`);
   // style_category / style_preset are always emitted (validator forces
   // them to a string, defaulting to the literal "None" the renderer keys
   // its disable path on).
