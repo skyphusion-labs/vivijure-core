@@ -1,7 +1,14 @@
 // Pure RIFF/WAVE helpers for Cast TTS line files (Aura writes linear16 PCM).
-// No ffmpeg. Pad short lines to Wan's 3s floor; cap at 15s (both driving-audio doors).
+// No ffmpeg. Cap at 15s (both driving-audio doors). A line is padded only to the floor its own door
+// declares (`usage.driving_audio_min_seconds`, core#464). It used to be padded to 3s for every door, which
+// made a door that sizes its clip to the audio bill and animate the pad.
 
-export const LINE_WAV_MIN_SECONDS = 3;
+/** Seconds of silence minted for an UNLINED shot on a driving-audio door with no native audio. This is
+ *  that shot's length, not a pad applied to lines. */
+export const UNLINED_SILENCE_SECONDS = 3;
+/** @deprecated core#464: lines are no longer padded to this. Use UNLINED_SILENCE_SECONDS for minted
+ *  silence, or the door's `driving_audio_min_seconds` for a floor. */
+export const LINE_WAV_MIN_SECONDS = UNLINED_SILENCE_SECONDS;
 export const LINE_WAV_MAX_SECONDS = 15;
 export const SILENCE_WAV_SAMPLE_RATE = 24_000;
 export const SILENCE_WAV_CHANNELS = 1;
@@ -116,12 +123,14 @@ export interface NormalizedLineWav {
   trimmed: boolean;
 }
 
-/** Pad PCM under 3.0s with silence; trim above 15.0s. Returns the original bytes when already legal. */
-export function normalizeLineWav(bytes: Uint8Array): NormalizedLineWav | null {
+/** Pad PCM under `minSeconds` with silence; trim above 15.0s. `minSeconds` is the floor the shot's own door
+ *  declares, and the default 0 pads nothing (core#464). Returns the original bytes when already legal. */
+export function normalizeLineWav(bytes: Uint8Array, minSeconds = 0): NormalizedLineWav | null {
   const parsed = parseWav(bytes);
   if (!parsed) return null;
   const { format } = parsed;
-  const minBytes = pcmBytesFor(LINE_WAV_MIN_SECONDS, format);
+  const floor = Number.isFinite(minSeconds) ? Math.min(Math.max(minSeconds, 0), LINE_WAV_MAX_SECONDS) : 0;
+  const minBytes = pcmBytesFor(floor, format);
   const maxBytes = pcmBytesFor(LINE_WAV_MAX_SECONDS, format);
   const pcm = bytes.subarray(format.dataOffset, format.dataOffset + format.dataSize);
   let next = pcm;
@@ -143,8 +152,8 @@ export function normalizeLineWav(bytes: Uint8Array): NormalizedLineWav | null {
   return { bytes: out, seconds: next.length / format.byteRate, padded, trimmed };
 }
 
-/** 3s (or `seconds`) of linear16 silence. Same encoding Aura writes. */
-export function mintSilenceWav(seconds: number = LINE_WAV_MIN_SECONDS): Uint8Array {
+/** UNLINED_SILENCE_SECONDS (or `seconds`) of linear16 silence. Same encoding Aura writes. */
+export function mintSilenceWav(seconds: number = UNLINED_SILENCE_SECONDS): Uint8Array {
   const sampleRate = SILENCE_WAV_SAMPLE_RATE;
   const channels = SILENCE_WAV_CHANNELS;
   const bits = SILENCE_WAV_BITS;

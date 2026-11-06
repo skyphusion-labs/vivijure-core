@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { advanceFilmJob, startFilmFromKeyframes, startFilmJob, type FilmJob } from "../src/film-orchestrator.js";
 import { filmJobDocKey, POLLABLE_PHASES } from "../src/film-model.js";
-import { mintSilenceWav } from "../src/wav-duration.js";
+import { mintSilenceWav, parseWavDurationSeconds } from "../src/wav-duration.js";
 import { MODULE_API, type MotionUsageDecl, type RegisteredModule } from "../src/modules/types.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
@@ -401,5 +401,44 @@ describe("pre_clip_dialogue tick sequence", () => {
       ["clips", "finish", "keyframe", "pre_clip_dialogue", "pre_clip_speech", "speech"].sort(),
     );
     expect(POLLABLE_PHASES.has("dialogue")).toBe(false);
+  });
+});
+
+// core#464: a line on a driven shot is padded only to the floor its OWN door declares. Every line used to be
+// padded to 3s, so InfiniteTalk and p-video, which size the clip to the audio, billed and animated the pad.
+describe("core#464: the line floor belongs to the door", () => {
+  async function lineAfterDialogue(usage: MotionUsageDecl, door: string) {
+    const h = harness({ usage, dialogue: "output" });
+    const mods = modulesFor(h, { usage });
+    const started = await startFilmJob(h.env, { ...START, motion_backend: door }, mods);
+    const advanced = await advanceFilmJob(h.env, started.film_id, mods);
+    const job = advanced?.job ?? h.read(started.film_id);
+    const bytes = h.store.get("renders/film/dialogue/shot_01.wav") as Uint8Array;
+    const wide = h.store.get("renders/film/dialogue/shot_02.wav");
+    return {
+      recorded: job.dialogue_audio_seconds?.shot_01,
+      stored: parseWavDurationSeconds(bytes),
+      unlined: wide instanceof Uint8Array ? parseWavDurationSeconds(wide) : null,
+    };
+  }
+
+  it("a door that declares no floor gets the line as bought: 1.5s stays 1.5s", async () => {
+    const r = await lineAfterDialogue(USAGE_INFINITETALK, "infinitetalk");
+    expect(r.stored).toBeCloseTo(1.5, 6);
+    expect(r.recorded).toBeCloseTo(1.5, 6);
+    // The UNLINED shot on this door still gets minted silence, and that is its length (3s), not a pad.
+    expect(r.unlined).toBeCloseTo(3, 6);
+  });
+
+  it("Wan declares 3s, so its line is padded to 3s", async () => {
+    const r = await lineAfterDialogue({ ...USAGE_WAN, driving_audio_min_seconds: 3 }, "alibaba-wan");
+    expect(r.stored).toBeCloseTo(3, 6);
+    expect(r.recorded).toBeCloseTo(3, 6);
+  });
+
+  it("the floor is read from the declaration, not from the door being Wan", async () => {
+    const r = await lineAfterDialogue(USAGE_WAN, "alibaba-wan");
+    expect(r.stored).toBeCloseTo(1.5, 6);
+    expect(r.recorded).toBeCloseTo(1.5, 6);
   });
 });

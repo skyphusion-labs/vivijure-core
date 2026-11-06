@@ -43,7 +43,7 @@ import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
 import { usageOf } from "./motion-usage.js";
 import {
-  LINE_WAV_MIN_SECONDS,
+  UNLINED_SILENCE_SECONDS,
   mintSilenceWav,
   normalizeLineWav,
   secondsForShot,
@@ -825,10 +825,11 @@ async function readDialogueWav(env: Env, key: string): Promise<Uint8Array | null
   }
 }
 
-async function normalizeStoredLineWav(env: Env, job: FilmJob, shotId: string, key: string): Promise<number | null> {
+/** core#464: pad a line only to the floor its own shot's door declares. 0 (no pad) when it declares none. */
+async function normalizeStoredLineWav(env: Env, job: FilmJob, shotId: string, key: string, minSeconds: number): Promise<number | null> {
   const raw = await readDialogueWav(env, key);
   if (!raw) return job.dialogue_audio_seconds?.[shotId] ?? null;
-  const normalized = normalizeLineWav(raw);
+  const normalized = normalizeLineWav(raw, minSeconds);
   if (!normalized) return job.dialogue_audio_seconds?.[shotId] ?? null;
   if (normalized.padded || normalized.trimmed) {
     await putDialogueWav(env, key, normalized.bytes);
@@ -846,15 +847,15 @@ async function normalizeStoredLineWav(env: Env, job: FilmJob, shotId: string, ke
 
 async function mintSilenceForShot(env: Env, job: FilmJob, shotId: string): Promise<void> {
   const key = assertProjectKey(job.project, dialogueAudioKey(job.project, shotId));
-  await putDialogueWav(env, key, mintSilenceWav(LINE_WAV_MIN_SECONDS));
+  await putDialogueWav(env, key, mintSilenceWav(UNLINED_SILENCE_SECONDS));
   (job.dialogue_audio ??= {})[shotId] = key;
-  (job.dialogue_audio_seconds ??= {})[shotId] = LINE_WAV_MIN_SECONDS;
+  (job.dialogue_audio_seconds ??= {})[shotId] = UNLINED_SILENCE_SECONDS;
   emitStructuredEvent({
     ev: "dialogue.silence",
     film_id: job.film_id,
     project: job.project,
     shot_id: shotId,
-    seconds: LINE_WAV_MIN_SECONDS,
+    seconds: UNLINED_SILENCE_SECONDS,
   });
 }
 
@@ -933,7 +934,10 @@ async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: Regis
   for (const l of lined) {
     const key = job.dialogue_audio![l.shot_id];
     // A line on a silent door is not cut to a driven clip's length (core#442), as in a film on that door.
-    if (shotDrivenByAudio(job, preModules, l.shot_id)) await normalizeStoredLineWav(env, job, l.shot_id, key);
+    const usage = motionUsageForShot(job, preModules, l.shot_id);
+    if (usage?.driving_audio === true) {
+      await normalizeStoredLineWav(env, job, l.shot_id, key, usage.driving_audio_min_seconds ?? 0);
+    }
     // After the normalize, so the sidecar describes the bytes a clip is driven by (cf#1166).
     if (provider) await writeProv(env, key, await lineProvenanceHash({ provider, voice: l.voice_id, text: l.text }));
   }
