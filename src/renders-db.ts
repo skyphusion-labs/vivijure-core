@@ -435,16 +435,22 @@ export async function prepareRenderUpdate(
 
   const outputJson = view.output !== undefined ? JSON.stringify(view.output) : null;
 
+  // core#487: once a row has completed_at, a later view must not move it, nor replace the timings the first
+  // terminal view recorded. Every read of a terminal render rewrites the row through here, and a film view's
+  // executionTimeMs is the elapsed time at the moment of the READ, so re-stamping made both columns say when
+  // the row was last read. SQLite evaluates every SET expression against the row as it was before this UPDATE,
+  // so the first terminal write (completed_at still NULL) records the timings and every later one keeps them.
+  // A finish retry reopens the row with completed_at = NULL (reopenRenderForFinishRetry), so it measures again.
   const stmt = env.DB.prepare(
     `UPDATE renders SET
       status = ?,
       output_key = COALESCE(?, output_key),
       output_json = ?,
       error = ?,
-      execution_time_ms = ?,
-      delay_time_ms = ?,
+      execution_time_ms = CASE WHEN completed_at IS NULL THEN ? ELSE execution_time_ms END,
+      delay_time_ms = CASE WHEN completed_at IS NULL THEN ? ELSE delay_time_ms END,
       updated_at = ?,
-      completed_at = COALESCE(?, completed_at),
+      completed_at = COALESCE(completed_at, ?),
       keyframes_json = COALESCE(?, keyframes_json),
       mode = COALESCE(?, mode)
     WHERE job_id = ?`,
