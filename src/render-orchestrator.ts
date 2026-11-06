@@ -425,7 +425,14 @@ async function provenClipKey(env: Env, shot: ClipShot, candidates: string[], sta
 
 /** The most shots one tick submits. */
 export const CLIP_SUBMIT_BATCH = 20;
-/** The most shots of one clip job submitted and not yet resolved. A claimed shot counts. */
+/** The most shots of one clip job submitted and not yet resolved. A claimed shot counts.
+ *
+ *  This is also the per-tick POLL budget (vivijure-core#452). advanceClipJob polls only shots holding a
+ *  poll token, and a shot gets one only inside this window, so a tick makes at most this many polls
+ *  whatever the film's length: 20, against 450 a tick before core 1.35.0. Every shot in flight is polled
+ *  on every tick, so none waits behind another. A separate budget below this number would need a
+ *  rotating cursor and would delay noticing a finished clip; one above it could never be reached.
+ *  tests/clip-submit-batches-451.test.ts holds the bound. */
 export const CLIP_MAX_IN_FLIGHT = 20;
 /** A claim older than this has no live owner: longer than any Worker invocation runs. */
 export const CLIP_SUBMIT_CLAIM_STALE_MS = 15 * 60_000;
