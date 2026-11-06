@@ -831,19 +831,28 @@ export async function claimRenderNotify(
 // The lease value (its expiry, unix ms) doubles as the holder's token, so a release can never
 // clear a successor's lease. Expiry makes a crashed winner's claim re-grantable instead of
 // wedging the job: the first driver past the expiry wins it fresh (the sweep re-drives every
-// minute, so the worst-case stall after a crash is the TTL).
+// minute, so the worst-case stall after a crash is the TTL). vivijure-cf#1139: the TTL is short and
+// the holder renews it while its tick runs, so a tick its host drops frees the film within one TTL.
 
 export {
+  FILM_ADVANCE_LEASE_RENEW_SECONDS,
   FILM_ADVANCE_LEASE_TTL_SECONDS,
   claimFilmAdvance,
+  holdFilmAdvance,
   releaseFilmAdvance,
+  renewFilmAdvance,
   type FilmAdvanceClaim,
+  type FilmAdvanceHold,
 } from "./film-advance-lease.js";
 
 // v0.139.0: jobs to resolve in the background (the cron sweep) so a fire-and-
 // forget API render still reaches terminal + emails its owner without a client
-// polling. Only non-terminal rows recent enough to still be live on RunPod;
-// keyframe previews excluded (never emailed). Bounded so one tick is cheap.
+// polling. Only non-terminal rows recent enough to still be live on RunPod.
+// Bounded so one tick is cheap.
+// vivijure-cf#1139: keyframe previews are swept too. They were left out because they are never
+// emailed, but the sweep is also the only driver of a film nobody polls, so a keyframes-only film
+// with no client attached never reached done. The email stays off for them: claimRenderNotify
+// still refuses mode = keyframes-only.
 // v0.161.1: scatter shard children (parent_id IS NOT NULL) are excluded -- the
 // parent's gather owns their lifecycle + the single notify, so a shard must not
 // be swept (RunPod-polled + emailed) on its own. Scatter PARENTS (parent_id NULL)
@@ -859,7 +868,6 @@ export async function listUnresolvedNotifiableJobs(
     `SELECT job_id FROM renders
        WHERE status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
          AND notified_at IS NULL
-         AND COALESCE(mode, 'full') != 'keyframes-only'
          AND parent_id IS NULL
          AND submitted_at >= ?
        ORDER BY submitted_at ASC, id ASC
@@ -934,7 +942,7 @@ async function countPopulation(env: Env, sql: string, binds: unknown[]): Promise
   }
 }
 
-/** Population of sweep pass 1 (unresolved, notifiable, inside the age window). */
+/** Population of sweep pass 1 (unresolved, inside the age window; keyframe previews included, vivijure-cf#1139). */
 export async function countUnresolvedNotifiableJobs(
   env: Env,
   maxAgeSeconds: number,
@@ -945,7 +953,6 @@ export async function countUnresolvedNotifiableJobs(
     `SELECT COUNT(*) AS total FROM renders
        WHERE status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
          AND notified_at IS NULL
-         AND COALESCE(mode, 'full') != 'keyframes-only'
          AND parent_id IS NULL
          AND submitted_at >= ?`,
     [cutoff],

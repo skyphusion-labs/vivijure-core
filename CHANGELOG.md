@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.32.0
+
 ## [1.31.0] -- 2026-11-06
 
 **Feat: the backend plate count report reaches the render row, so a still that may show an extra person is no longer silent.**

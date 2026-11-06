@@ -202,7 +202,7 @@ import { parsePlateCount } from "./plate-count.js";
 import { buildCaptionCues } from "./captions.js";
 import { resolveStagedAudioKey } from "./audio-stage.js";
 import { getCastById, markLoraReady } from "./cast-db.js";
-import { claimFilmAdvance, releaseFilmAdvance, type FilmAdvanceClaim } from "./film-advance-lease.js";
+import { claimFilmAdvance, holdFilmAdvance, releaseFilmAdvance, type FilmAdvanceClaim } from "./film-advance-lease.js";
 import { withD1Retry } from "./d1-retry.js";
 import { deriveLoraDestKey } from "./lora-keys.js";
 import { keyframeProvenanceHash, lineProvenanceHash, writeProv, provVerdict } from "./clip-provenance.js";
@@ -3917,9 +3917,11 @@ export async function retryFilmFinish(
     const live = await readFilmJobReadOnly(env, filmId);
     return live ? { job: live.job, retried: [], not_started: "busy" } : null;
   }
+  const hold = holdFilmAdvance(env, filmId, claim);
   try {
     return await retryFilmFinishLocked(env, filmId);
   } finally {
+    hold.stop();
     if (claim.token !== undefined) {
       await releaseFilmAdvance(env, filmId, claim.token).catch((e: Error) => {
         console.warn(`film ${filmId}: advance lease release failed (${e.message}); it expires on its own`);
@@ -4839,8 +4841,8 @@ async function persistFilmJobFailed(env: Env, filmId: string, error: string): Pr
  *  N+1's external work -- duplicated GPU spend -- and clobber each other's doc writes (a lost
  *  poll token orphans a RunPod job). So the whole tick runs under a D1 lease (claimFilmAdvance,
  *  the claimFinish conditional-UPDATE pattern): the loser skips quietly and reports the doc
- *  read-only; the lease is released after the tick and expires on its own if the winner crashed,
- *  so a genuine retry is never deadlocked. */
+ *  read-only; the lease is released after the tick, renewed while it runs (holdFilmAdvance), and expires on
+ *  its own within one TTL if the winner crashed or its host dropped it (vivijure-cf#1139). */
 export async function advanceFilmJob(
   env: Env,
   filmId: string,
@@ -4848,6 +4850,8 @@ export async function advanceFilmJob(
 ): Promise<{ job: FilmJob; clipJob: ClipJob | null } | null> {
   const claim = await claimAdvanceOrFailOpen(env, filmId);
   if (!claim.won) return readFilmJobReadOnly(env, filmId);
+  // vivijure-cf#1139: renew while the tick runs, so a tick its host drops frees the film within one TTL.
+  const hold = holdFilmAdvance(env, filmId, claim);
   try {
     const advanced = await advanceFilmJobLocked(env, filmId, preModules);
     if (advanced?.job.phase === "failed" && await askJobsOfFailedFilmToCancel(env, advanced.job, preModules)) {
@@ -4891,6 +4895,7 @@ export async function advanceFilmJob(
     }
     return job ? { job, clipJob: null } : null;
   } finally {
+    hold.stop();
     if (claim.token !== undefined) {
       try {
         await releaseFilmAdvance(env, filmId, claim.token);
