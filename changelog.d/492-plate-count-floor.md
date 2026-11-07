@@ -1,0 +1,5 @@
+### Fix: the plate count record keeps the backend's face-floor flag (vivijure-core#492)
+
+Since vivijure-backend#605 (backend 1.1.18) a keyframe's `plate_count` carries `floor: true` when the face floor ran: under per-region plate text the guard also redraws a plate with fewer faces than people, and `clean` then needs the exact count. `parsePlateCount` copied five fields and dropped the flag, so no render row could show that the floor ran, and a `clean: false` could not be told apart from the extra-person case. Measured on vivijure-cf#1281: every RunPod output of the RF run carried `floor: true` and no studio row did. `PlateCount` gains an optional `floor?: true`, and `parsePlateCount` carries it when, and only when, the raw value is a literal `true`.
+
+**For a host.** A render row's `plate_count` can now carry `floor: true`. Additive; a reader that ignores it is unchanged. `plate_check.unclean` is unchanged and still lists every `clean: false` still; under the floor that can be a still short of a person, not only one with an extra person.

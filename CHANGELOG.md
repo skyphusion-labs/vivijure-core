@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.41.2
+
 ## [1.41.1] -- 2026-11-06
 
 **Fix: a read of a finished render no longer rewrites its `completed_at` and timings (vivijure-core#487).**

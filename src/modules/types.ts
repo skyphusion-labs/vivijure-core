@@ -992,10 +992,14 @@ export interface PlateCount {
   faces: number[];
   /** Index into `faces` of the draw the still was made from. */
   chosen: number;
-  /** False when no draw held at most `expected` faces. */
+  /** False when no draw held at most `expected` faces. Under the face floor (`floor: true`) it also needs
+   *  the chosen draw to hold EXACTLY `expected`, so `false` can then mean a plate short of a person. */
   clean: boolean;
   /** Redraws the guard was allowed. */
   retries: number;
+  /** Present (always `true`) when the face floor ran: under per-region plate text the guard also redrew a
+   *  plate with FEWER faces than people (vivijure-backend#605, vivijure-core#492). Absent = no floor. */
+  floor?: true;
 }
 /** What a `keyframe` module returns: every keyframe it generated, by shot. The core presigns each
  *  key into a fetchable keyframe_url when it hands them on to the motion.backend orchestrator. */

@@ -4,7 +4,9 @@
 // when it finds more people than the shot asked for. It reports what it saw on each keyframe entry as
 // `plate_count: {expected, faces, chosen, clean, retries}` (vivijure-backend docs/contract.md, the
 // `keyframes` row). `clean: false` means no draw held at most `expected` faces, so the still was made
-// from the draw with the fewest and may show an extra person.
+// from the draw with the fewest and may show an extra person. Under the face floor (vivijure-backend#605)
+// the block also carries `floor: true`, and `clean` then needs the exact count, so `clean: false` can
+// mean a plate short of a person. The flag is carried, never inferred (vivijure-core#492).
 //
 // Before this file the core dropped the field in three places (the module contract type, the job
 // doc's keyframe refs, and the render row), so the studio could not tell a user that a still was
@@ -37,6 +39,9 @@ export function parsePlateCount(raw: unknown): PlateCount | undefined {
     chosen: o.chosen,
     clean: o.clean,
     retries: o.retries,
+    // Only a literal `true` means the floor ran; any other value is not the documented shape and is
+    // dropped, so a missing or odd flag reads as "no floor", never as one (vivijure-core#492).
+    ...(o.floor === true ? { floor: true as const } : {}),
   };
 }
 
