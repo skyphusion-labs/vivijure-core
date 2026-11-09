@@ -3,7 +3,35 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.42.0
+## [1.42.0] -- 2026-11-09
+
+### Feat: the caller picks the dialogue module (vivijure-core#339)
+
+`dialogue` is pick_one, but five sites in the film orchestrator took `servingForHook(modules, "dialogue")[0]` and sent `config: {}`. So the module that ran was the first by ui.order, whatever the caller chose, and it never got the caller's config. The studio offers two dialogue modules (`dialogue-gen` and `chatterbox`), so the voice a user picked was not the voice that ran.
+
+- New `pickDialogueModule` (`src/modules/dialogue-select.ts`) is the one place a dialogue module is chosen. All five sites and both start paths use it, and `tests/dialogue-select-339.test.ts` fails on any other lookup in `src/`.
+- The render overrides bag takes `dialogue_backend` (as `keyframe_backend` and `motion_backend`). `resolveModuleRenderConfigs` returns it, plus `dialogue_config`: the caller's config for each dialogue module it sent config for, clamped to that module's schema. `startFilmJob` and `startFilmFromKeyframes` take both and persist them on `FilmJob`, so every dialogue tick resolves the same module. Scatter passes them to every shard.
+- A name that does not serve `dialogue` is refused by name: at start, before anything is spent, and at any dialogue site if the module goes away mid-film. It is never replaced with the default, and on the post-clip leg it fails the film rather than shipping it silent.
+- Both are in the submit idempotency key, so two films that differ only in dialogue module are two films.
+- **No selection keeps the old behaviour:** the first serving module by ui.order, sent `{}`.
+
+**For a host.** Pass `dialogue_backend` and `dialogue_config` from `resolveModuleRenderConfigs` into `startFilmJob` / `startFilmFromKeyframes`, as you pass `keyframe_backend` and the other configs today. A host that does not pass them gets the old behaviour. The idempotency fingerprint gains two fields, so a submit in flight across the upgrade is not deduplicated against one from before it.
+
+### Fix: fast client polls can no longer use up the poll tolerance (vivijure-core#427)
+
+The transport tolerance for a clip poll (#719) and a keyframe poll (#426) counted polls: three failures in a row failed the shot or the film. Polls come from the cron, one a minute, and also from every client poll of the render. A client with the planner open polls every 8 s, and an agent can poll faster. So three failures could land within seconds, and a short R2 or module blip failed a healthy render.
+
+Now a run of consecutive transport failures fails the poll only once it has lasted both `CLIP_POLL_MAX_ATTEMPTS` (3) polls and `CLIP_POLL_TOLERANCE_SECONDS` (120 s) of wall time, measured from the run's first failure (`ClipShot.poll_failing_since`, `FilmJob.keyframe_poll_failing_since`). A clean poll ends the run. 120 s is two cron intervals, so a film that only the cron drives fails on the same tick as before. The count stays as a floor, so a cadence slower than the window still gets its three tries. The failure text now says how long the run lasted. New export: `pollToleranceSpent`.
+
+**For a host.** A render polled faster than once a minute now holds through a transport blip of up to 120 s instead of failing after three polls.
+
+### Feat: a failed module poll can say whether another try can help: `retry` (vivijure-core#502)
+
+`applyPoll` decided a clip retry by reading the poll's `error` sentence (`classifyTransientFailure`, then `isClipPollTransportError`). The invoke path already reads a declared `reason` first (#291), but the poll failure arm had nothing structured that names the class: none of `PollFailureOutcome`'s four members means "transient".
+
+The `PollResponse` failure arm gains an optional, closed `retry?: "transient" | "deterministic"` (`PollRetry`, `POLL_RETRY_VALUES`, `isPollRetry`). `applyPoll` reads it first. `transient` drops the dead token and resubmits within `CLIP_SUBMIT_MAX_ATTEMPTS`. Only a module that answered sets the field, so it never takes the re-poll leg that exists for the host's own `/poll` transport errors. `deterministic` fails the shot now. When the field is absent, the prose classifiers decide exactly as before. A value outside the set is logged and treated as absent, never guessed into a class. It is a new field, not `reason`, so the core#306 decision stands: `backend-error` and `cancelled` keep their separate meanings on the two arms.
+
+**For a module author.** Set `retry` only where the condition names the class, the same rule as `reason` on invoke (vivijure-cf#846). Leaving it out changes nothing.
 
 ## [1.41.3] -- 2026-11-09
 
