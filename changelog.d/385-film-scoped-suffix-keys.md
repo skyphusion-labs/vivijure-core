@@ -1,7 +1,0 @@
-### Fix: suffix finish steps write under their film too, so one render cannot replace another render's clip (vivijure-core#385)
-
-core#379 film-scoped the `shot_named` finish steps only. An `append_suffix` step (upscale `_up`, blender `_bl`, lip-sync `_ls`) built its key from its input clip, and when that input was a clip every film of the project shares (`renders/<project>/clips/<shot>_<backend>.mp4`), two films wrote one `<shot>_<backend>_up.mp4`. Film B could then replace the clip film A had recorded before A assembled.
-
-`finishStepOutputKey` now puts every step whose key the core models in the film's folder, `renders/<project>/clips/<film>/` (a retry gets `<film>/r<gen>/`), under the same file name as before. `attachFinishPresigns` sends that key as `FinishInput.output_key` for every such step, with or without presigned URLs. Reuse and deletion follow #379: adoption reads the film's own key first and then the shared key an older writer used, and the render sweep of `clips/<film>/` now reaches the suffix outputs too. `tests/finish-film-scoped-suffix-385.test.ts` runs two films of one project through the same upscale step and asserts neither overwrites the other.
-
-**For a module author.** When `output_key` is set, write there, not beside the input. `finish-upscale` and `finish-blender` already do (vivijure-cf `modules/finish-blender/src/finish.ts`: `input.output_key ?? blenderKey(input.clip_key)`).

@@ -3,7 +3,66 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.43.0
+## [1.43.0] -- 2026-11-09
+
+### Fix: a video-finish submit that never answers is bounded (vivijure-core#308)
+
+The capacity wait, the core#377 transport hold and the 6 h job horizon all start after `submitAsync` returns, and `submitAsync` sent its request with no deadline. A door that never answered started none of them, so `assemble` sat with no error, which reads the same as work in progress (vivijure-cf#841, film-40e0cd09, about 4.5 minutes before the platform gave up first).
+
+Every request to the video-finish door now has a deadline, `FINISH_DOOR_TIMEOUT_SECONDS` (60). The transport is given an `AbortSignal` that fires at the deadline, and the call is also raced against it, so a transport that ignores the signal is bounded too. A submit past the deadline is `unreachable`: with an affinity holder it takes the transport hold (15 minutes with backoff, then it fails by name), without one it fails the tick by name, and the detail says `no answer within 60s`. The status poll is bounded the same way, and a poll past the deadline is a miss counted by the not-found streak, as a thrown transport already was.
+
+The 60 s is documented, not measured: the container library vivijure-cf runs (`@cloudflare/containers` 0.3.7) gives up a start after 8 s for the instance plus 20 s for the ports, 28 s, and vivijure-cf overrides neither, so a request still open past that is not a slow cold start. 60 s is about twice that ceiling. No cold-start latency for this door is recorded.
+
+**For a host.** Nothing to change. A film whose finish door hangs now says so within a minute and is held or failed by name, instead of sitting in `assemble`.
+
+### Feat: an enum value a module does not declare is refused by name, not replaced with the default (vivijure-core#343)
+
+`validateConfig` turned an out-of-set enum value into the field default with no signal. Measured on the `infinitetalk` schema: `{"size":"1080p"}` became `{"size":"480p"}`, the same result as a caller who sent nothing. So any check below `validateConfig` against an invalid value was dead code, and a caller who sent a wrong value got the same success as one who sent none. Lead ruling on the issue: refuse, never silently default.
+
+- `validateConfig` now throws the new `ConfigValueError` (`field`, `value`, `allowed`; message `config "<field>": <value> is not supported (allowed: ...)`) when a PRESENT enum value is not in `values`. `null` counts as present. An ABSENT value (missing key or `undefined`) still takes the default. Numbers, booleans and strings are unchanged.
+- New `configValueRefusal(schema, user)`: the same sentence, or null, without throwing.
+- New `filmStartConfigRefusal(modules, start)`: `startFilmJob` and `startFilmFromKeyframes` check the keyframe config and every motion config against the module it goes to, and fail the film by name before anything is spent, as an unknown dialogue module is refused (core#339).
+- `resolveModuleRenderConfigs` and every other caller of `validateConfig` let the error propagate.
+
+**For a host.** This is a MINOR because a previously accepted input is now refused. A client that relied on the silent default now gets an error naming the field. Map `ConfigValueError` to a 400 at every route that passes caller config into core (vivijure-cf#1383, vivijure-local#520); until a route does, it answers 500 where it used to answer 201. A stored `render_overrides` with a bad enum, accepted before this release, is refused when it is retried or finalized. A literal grep of vivijure-cf, vivijure-local and vivijure-mcp found no out-of-enum value that reaches `validateConfig` (method on the PR).
+
+### Fix: suffix finish steps write under their film too, so one render cannot replace another render's clip (vivijure-core#385)
+
+core#379 film-scoped the `shot_named` finish steps only. An `append_suffix` step (upscale `_up`, blender `_bl`, lip-sync `_ls`) built its key from its input clip, and when that input was a clip every film of the project shares (`renders/<project>/clips/<shot>_<backend>.mp4`), two films wrote one `<shot>_<backend>_up.mp4`. Film B could then replace the clip film A had recorded before A assembled.
+
+`finishStepOutputKey` now puts every step whose key the core models in the film's folder, `renders/<project>/clips/<film>/` (a retry gets `<film>/r<gen>/`), under the same file name as before. `attachFinishPresigns` sends that key as `FinishInput.output_key` for every such step, with or without presigned URLs. Reuse and deletion follow #379: adoption reads the film's own key first and then the shared key an older writer used, and the render sweep of `clips/<film>/` now reaches the suffix outputs too. `tests/finish-film-scoped-suffix-385.test.ts` runs two films of one project through the same upscale step and asserts neither overwrites the other.
+
+**For a module author.** When `output_key` is set, write there, not beside the input. `finish-upscale` and `finish-blender` already do (vivijure-cf `modules/finish-blender/src/finish.ts`: `input.output_key ?? blenderKey(input.clip_key)`).
+
+### Feat: a film start pins the frame rate, as it pins the frame (vivijure-core#431)
+
+`startFilmJob` took `delivery_width` / `delivery_height` (#430) and not the rate, so a long film's parts could still differ at the join: a part with interpolation ships at 48 fps and one without at 24, and the join refuses parts that differ.
+
+- `startFilmJob` takes `delivery_fps` and persists it on the job, as `startFilmFromKeyframes` already did. It wins over the rate the finish chain produced (`resolveDeliveryFps`), and a clip above it already carries the note `finished clip is N fps, delivered at M fps`, as a clip larger than the frame does.
+- **Fix-forward:** neither submit fingerprint held the delivery pin, so two submits that differed only in frame or rate were deduplicated into one film. Both natural keys now include `delivery_width`, `delivery_height` and `delivery_fps` when set. A submit that pins nothing gains no field, so its key is unchanged and a submit in flight across the upgrade still deduplicates.
+
+**For a host.** Pass one `delivery_fps` to every part of a long film, beside the frame (vivijure-cf#1389). Absent, the rate comes from the finish chain as before.
+
+### Fix: an assemble job the door marks lost to a container restart is re-submitted at once (vivijure-core#513)
+
+vivijure-cf#1377 marks a finish job lost to a container restart: the bound door answers its status poll with HTTP 404 and `lost: "instance_restarted"` when the Durable Object recorded which instance took the job and a different instance answered. Core read every 404 as "possibly transient", so a lost job waited out the 12-poll not-found streak and then failed instead of being re-run.
+
+Per the lead ruling on the issue: a 404 marked exactly `lost: "instance_restarted"` (`FINISH_JOB_LOST_REASON`) now re-submits on that tick, under the same output key, with freshly presigned URLs. An unmarked 404 keeps the streak exactly as before, and so does any other `lost` value, a non-object body or an unreadable one. Re-submits are counted on the poll state (`AssemblePollState.lost`) and capped at `ASSEMBLE_LOST_RESUBMIT_MAX` (3); past it, or when the re-submit itself is refused, the assemble fails by name. The per-replica fan-out path (no bound door) never reads the mark, because a replica there has peers.
+
+The tick takes a new `repayload` option, because a poll tick is given a payload with no live URLs (a caller presigns only when it submits). The four assemble and mux callers in the film and scatter orchestrators now build their presigned payload in one closure and pass it; without `repayload` a marked 404 is an ordinary one. `tests/assemble-lost-resubmit-513.test.ts` scans `src/` and fails on a call site that does not pass it.
+
+**For a host.** Nothing to change. A lost job on the bound finish door is re-run within the tick that sees it, not 12 polls later.
+
+### Feat: a board is refused when another project already renders under its title key (vivijure-core#518)
+
+The backend keys every stored artifact of a render by the board title: `normalizeProjectName(title)` builds `bundles/<key>-<hex>.tar.gz`, the studio remaps the render's `project` to `<key>`, and the backend writes and later reads back `renders/<key>/...` and `loras/<key>/...`. Two projects whose titles share a key reused each other's keyframes and LoRAs as their own (vivijure-backend#487).
+
+- `setLastStoryboard` now throws `BoardKeyCollisionError` before it writes, when another project in the tenant holds the board's key. The error names the holder (`existing: { id, name, title }`, the public id) and the key (`slug`). Saving a project's own board again, or retitling it, is never refused by itself. An untitled board is not checked.
+- The key is core's rule, not the backend's `_slug`. `Two O'Clock` and `Two O_Clock` collide here, because core maps both to `Two_O_Clock`.
+- New exports: `boardKeySlug`, `findBoardKeyHolder`, `BoardKeyCollisionError`, `BoardKeyHolder`.
+- `tests/project-key-contract-487.test.ts` pins core's rule by golden table, pins a copy of the backend golden (with its source sha), and asserts the backend `_slug` returns every core key unchanged.
+
+**For a host.** Map `BoardKeyCollisionError` to `409` with its message on every route that saves a board (PATCH project with `storyboard`, save storyboard, a film that saves its board to a project). Until a host does, the refusal surfaces as a `500`. The check is not transactional: two concurrent first saves of one key can both pass.
 
 ## [1.42.0] -- 2026-11-09
 
