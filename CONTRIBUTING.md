@@ -62,6 +62,12 @@ used a changelog.d/ fragment instead is not at risk, by construction. See RELEAS
 `npm run typecheck` and `npm test` run in CI on every PR (`.github/workflows/ci.yml`).
 `.github/workflows/changelog.yml` is the changelog entry gate described above.
 
+The suite needs a `vivijure-cf` checkout for the module manifests and the D1 migrations. Point
+`VIVIJURE_CF_DIR` at your own checkout (for example `VIVIJURE_CF_DIR=../vivijure-cf-<tag> npm test`), or
+sparse-checkout `skyphusion-labs/vivijure-cf` (`modules`, `migrations`) into `./vivijure` inside this
+clone, the path CI uses, which `.gitignore` ignores. Neither needs a shared, unsuffixed sibling
+(core#355, core#359).
+
 `npm test` also runs `scripts/changelog-entry-required.mjs --working-tree` before vitest (core#316).
 That is the same `verdict()` the PR job uses, fed the staged, unstaged, and untracked paths, so a
 dirty `src/` with no fragment fails locally instead of only after the fragment exists. A clean tree
