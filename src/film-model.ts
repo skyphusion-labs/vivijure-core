@@ -659,6 +659,10 @@ export interface FilmJob {
   // Set once the keyframe stall recovery has adopted orphaned keyframes from R2, so the (idempotent)
   // adoption is never retried in a loop -- after one adoption the job has moved to clips anyway.
   keyframe_recovered?: boolean;
+  // core#493: when a PENDING keyframe poll first found the full set in R2. The pending-poll adopt waits
+  // KEYFRAME_R2_ADOPT_GRACE_SECONDS from this, so a job that already finished can still return its output.
+  // Cleared with the rest of the keyframe flight state.
+  keyframe_r2_full_at?: number;
   // Set once the clips stall recovery has adopted orphaned clips from R2 (issue #139). Same idea as
   // keyframe_recovered: the motion.backend (own-gpu) poll can return pending forever on a GC'd RunPod
   // job while the finished clip already sits in R2; recovery collects them by shot name and advances.
@@ -1537,6 +1541,12 @@ export function coerceDialogueLineIds(originalScenes: FilmScene[], lines: Dialog
 //   the GPU; clips/finish keys are GPU-assigned (not guessable), so those phases get the loud-fail
 //   ceiling only (a stuck clips/finish poll is rarer and re-submitting is the human's call).
 export const KEYFRAME_STALL_SECONDS = 20 * 60; // 20min: a project-wide SDXL keyframe pass is well done by now
+// core#493: how long a pending keyframe poll holds once the full set is in R2 before it adopts the set
+// and cancels the job. The backend writes each PNG BEFORE its job returns, so a healthy job always has a
+// window where R2 is full and RunPod still says IN_PROGRESS; adopting in that window cancelled a finished
+// job and lost everything only in its output (the plate count record). A healthy job returns well inside
+// this grace and takes the normal path. A frozen envelope never returns and is adopted after it.
+export const KEYFRAME_R2_ADOPT_GRACE_SECONDS = 120;
 export const PHASE_HARD_DEADLINE_SECONDS = 90 * 60; // 90min: absolute ceiling for any one pollable phase
 
 export const POLLABLE_PHASES: ReadonlySet<FilmJob["phase"]> = new Set([

@@ -70,14 +70,27 @@ function userConfigFromRequest(req: AudioAnalyzeRequest): Record<string, unknown
  *
  * The caller (failIfSongBeatsUnread) FAILS a paid film on a permanent miss, so this door has to
  * say which kind of miss it had. A door that is unset, or set with no bearer, is host
- * configuration and never improves by retrying: permanent. A non-2xx status, a body that will not
- * parse, and a fetch that rejects are all the container being down, restarting, overloaded or
- * behind an edge error page: transient. Only a 200 whose body parses and is not a plan is the
- * analyzer ANSWERING with something unusable, which is permanent (the #245/#249 distinction).
+ * configuration and never improves by retrying: permanent. A 5xx, a body that will not parse, and
+ * a fetch that rejects are all the container being down, restarting, overloaded or behind an edge
+ * error page: transient. A 4xx is the container ANSWERING and refusing, so it is permanent, except
+ * 408 and 429, which mean "come back" (core#358, see beatDoorStatusTransient). A 200 whose body
+ * parses and is not a plan is the analyzer answering with something unusable: permanent (the
+ * #245/#249 distinction).
  *
  * The two shapes this corrects: a 502 carrying a JSON body read as an unrecognized plan, and a
  * 502 carrying an HTML body THREW out of resp.json() and past the caller attempt counter
  * entirely, so the cap never engaged on that shape at all. Both retry now. */
+/** core#358: whether a non-2xx from the URL beat door is worth another attempt. A 4xx is the
+ *  container up and refusing: a 400 is a request it will refuse again, and a 404 on this door means
+ *  it has no `/analyze` route, a deploy or config mismatch that no retry fixes. Retrying either
+ *  burned the full attempt cap for the same verdict. 408 (request timeout) and 429 (too many
+ *  requests) do mean "come back", so they stay transient. Every other status (5xx, and any 1xx or
+ *  3xx that reaches here) stays transient, the safe direction for a paid film. */
+export function beatDoorStatusTransient(status: number): boolean {
+  if (status >= 400 && status < 500) return status === 408 || status === 429;
+  return true;
+}
+
 async function analyzeViaUrl(
   env: Env,
   audioUrl: string,
@@ -106,7 +119,13 @@ async function analyzeViaUrl(
     return { ok: false, error: "beat-sync door unreachable: " + msg.slice(0, 200), transient: true };
   }
   if (!resp) return { ok: false, error: "AUDIO_BEAT_SYNC_URL unset", transient: false };
-  if (!resp.ok) return { ok: false, error: `beat-sync container returned HTTP ${resp.status}`, transient: true };
+  if (!resp.ok) {
+    return {
+      ok: false,
+      error: `beat-sync container returned HTTP ${resp.status}`,
+      transient: beatDoorStatusTransient(resp.status),
+    };
+  }
   let body: unknown;
   try {
     body = await resp.json();

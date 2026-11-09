@@ -40,6 +40,8 @@ each host. See [HOST-ADOPTION.md](HOST-ADOPTION.md) "What never moves to core".
 
 ## Module manifests for tests
 
-The `quality-tier-drift` test resolves module worker manifests from a sibling `vivijure-cf` checkout
-(CI sparse-checks it out into `vivijure/`; local dev uses a `../vivijure-cf` sibling). See
-`vitest.config.ts`.
+The `quality-tier-drift` test reads the module worker manifests, and the D1 harness
+(`tests/helpers/d1-sqlite.ts`) reads the migrations, from a `vivijure-cf` checkout. Set
+`VIVIJURE_CF_DIR` to your own checkout, or sparse-checkout `vivijure-cf` (`modules`, `migrations`) into
+`./vivijure` inside your clone, which CI does and `.gitignore` ignores. The lookup and its fallbacks
+are in `scripts/vivijure-cf-dir.mjs` (core#355, core#359).
