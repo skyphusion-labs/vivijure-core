@@ -77,6 +77,9 @@ export interface ClipShot extends ClipShotInput {
   // #719: consecutive TRANSIENT poll-error count (see applyPoll). Reset on any successful poll;
   // the shot fails loud at CLIP_POLL_MAX_ATTEMPTS instead of on the first blip.
   poll_attempts?: number;
+  // core#427: when the current run of transient poll errors began. The shot fails only once the run
+  // has lasted CLIP_POLL_TOLERANCE_SECONDS as well, so fast client polls cannot spend the budget.
+  poll_failing_since?: number;
   // Next-tick resubmits after a transient invoke fail or a provider job that died on load/429/7003.
   // Distinct from poll_attempts: re-polling a dead job token cannot recover those.
   submit_attempts?: number;

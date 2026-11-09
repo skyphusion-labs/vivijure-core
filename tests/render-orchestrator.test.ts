@@ -88,14 +88,15 @@ describe("applyPoll", () => {
   // landing in the stall propagates as a transport error and used to STICKILY fail the healthy
   // render on the FIRST blip (film-d9214549 died at ~2min with the GPU at 8/40 steps).
   it("tolerates transient poll errors up to the budget, then fails loud (#719)", () => {
+    // At the cron's cadence (one tick a minute); core#427 is the time half of the budget.
     const s = shot();
-    applyPoll(s, { ok: false, error: "module /poll -> 502" }, "p");
+    applyPoll(s, { ok: false, error: "module /poll -> 502" }, "p", 0);
     expect(s.status).toBe("pending"); // blip 1: held, not failed
     expect(s.poll_attempts).toBe(1);
-    applyPoll(s, { ok: false, error: "module unreachable: connection reset" }, "p");
+    applyPoll(s, { ok: false, error: "module unreachable: connection reset" }, "p", 60_000);
     expect(s.status).toBe("pending"); // blip 2: still held
     expect(s.poll_attempts).toBe(2);
-    applyPoll(s, { ok: false, error: "module /poll -> 504" }, "p");
+    applyPoll(s, { ok: false, error: "module /poll -> 504" }, "p", 120_000);
     expect(s.status).toBe("failed");  // budget exhausted -> loud, with the real error
     expect(s.error).toContain("504");
     expect(s.error).toContain("#719");

@@ -190,6 +190,20 @@ export function classifyInvokeFailure(
 
 /** Consecutive transient poll errors a clip shot tolerates before failing loud (#719). */
 export const CLIP_POLL_MAX_ATTEMPTS = 3;
+/** core#427: and the wall-clock time they must have lasted. Polls come from the cron (one a minute)
+ *  AND from every client poll of the render, which can be seconds apart, so a count alone let a fast
+ *  client spend the whole tolerance on a blip of a few seconds. A transport failure now fails the poll
+ *  only once it has lasted BOTH this many seconds and CLIP_POLL_MAX_ATTEMPTS consecutive polls. The
+ *  count stays as a floor, so a cadence slower than the window still gets its retries. Clip and
+ *  keyframe polls share it. 120 s is two cron intervals, so a film only the cron drives fails on its
+ *  third failing tick, the same tick as before; only polls faster than the cron are held longer. */
+export const CLIP_POLL_TOLERANCE_SECONDS = 120;
+
+/** core#427: true once a run of consecutive transport failures that began at `since` and has
+ *  reached `attempts` may fail the poll. */
+export function pollToleranceSpent(attempts: number, since: number, now: number): boolean {
+  return attempts >= CLIP_POLL_MAX_ATTEMPTS && now - since >= CLIP_POLL_TOLERANCE_SECONDS * 1000;
+}
 /** Resubmits of a dead-but-retryable provider job (load / 7003 / 429 at invoke). */
 export const CLIP_SUBMIT_MAX_ATTEMPTS = 3;
 
@@ -203,7 +217,7 @@ export function isClipPollTransportError(error: string | undefined): boolean {
 
 /** Apply a /poll outcome to a shot (pure): failure -> failed; still pending -> unchanged; output ->
  *  done with the clip key. `project` confines a module-returned clip_key to renders/<project>/. */
-export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, project: string): void {
+export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, project: string, now: number = Date.now()): void {
   if (!r.ok) {
     // #719: one TRANSIENT poll failure must not STICKILY fail a healthy in-flight render. Mirror the
     // finish chain's bounded-attempts contract: tolerate up to CLIP_POLL_MAX_ATTEMPTS CONSECUTIVE
@@ -213,12 +227,14 @@ export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, 
     if (classifyTransientFailure(r.error) === "transient") {
       if (isClipPollTransportError(r.error)) {
         const attempts = (shot.poll_attempts ?? 0) + 1;
-        if (attempts < CLIP_POLL_MAX_ATTEMPTS) {
+        const since = shot.poll_failing_since ?? now;
+        if (!pollToleranceSpent(attempts, since, now)) {
           shot.poll_attempts = attempts;
+          shot.poll_failing_since = since;
           return; // stays pending; re-polled next sweep
         }
         shot.status = "failed";
-        shot.error = `${r.error} (persisted through ${attempts} consecutive polls, #719)`;
+        shot.error = `${r.error} (persisted through ${attempts} consecutive polls over ${Math.round((now - since) / 1000)}s, #719)`;
         return;
       }
       // Provider job died (high load, 7003). Drop the dead token; next tick submits again.
@@ -227,6 +243,7 @@ export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, 
         shot.submit_attempts = attempts;
         shot.poll = undefined;
         shot.poll_attempts = 0;
+        shot.poll_failing_since = undefined;
         shot.error = `transient submit retry ${attempts}/${CLIP_SUBMIT_MAX_ATTEMPTS}: ${r.error}`;
         return;
       }
@@ -240,6 +257,7 @@ export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, 
   }
   if ((r as { pending?: boolean }).pending) {
     if (shot.poll_attempts) shot.poll_attempts = 0; // a successful round-trip resets the blip budget
+    shot.poll_failing_since = undefined;
     return; // still running
   }
   const output = (r as { output: MotionBackendOutput }).output;
@@ -255,6 +273,7 @@ export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, 
   shot.status = "done";
   shot.submit_attempts = 0;
   shot.poll_attempts = 0;
+  shot.poll_failing_since = undefined;
   // #707: retain what the backend delivered so the film summary can show delivered-vs-planned. The
   // contract has always carried fps+frames; modules with nothing to report send frames=0 (sentinel) --
   // treat that as absent rather than recording a fabricated 0-frame delivery.

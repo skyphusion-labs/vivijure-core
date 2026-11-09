@@ -182,7 +182,7 @@ import {
   finishedClipFileMatchesShot,
   listClipsByShotId,
   reclaimClipsFromR2,
-  CLIP_POLL_MAX_ATTEMPTS,
+  pollToleranceSpent,
   classifyTransientFailure,
   isClipPollTransportError,
   validateDoneClips,
@@ -4658,16 +4658,25 @@ function isKeyframePollTransient(error: string | undefined): boolean {
   return classifyTransientFailure(error) === "transient" && isClipPollTransportError(error);
 }
 
-/** Counts one tick with a transient keyframe poll failure. Returns the failure text once it has lasted
- *  CLIP_POLL_MAX_ATTEMPTS consecutive ticks, otherwise null and the film carries on waiting. */
-function countKeyframePollFailure(job: FilmJob, error: string | undefined): string | null {
+/** Counts one tick with a transient keyframe poll failure. Returns the failure text once the run has
+ *  lasted CLIP_POLL_MAX_ATTEMPTS consecutive ticks AND CLIP_POLL_TOLERANCE_SECONDS (core#427), otherwise
+ *  null and the film carries on waiting. */
+function countKeyframePollFailure(job: FilmJob, error: string | undefined, now: number = Date.now()): string | null {
   const attempts = (job.keyframe_poll_attempts ?? 0) + 1;
-  if (attempts < CLIP_POLL_MAX_ATTEMPTS) {
+  const since = job.keyframe_poll_failing_since ?? now;
+  if (!pollToleranceSpent(attempts, since, now)) {
     job.keyframe_poll_attempts = attempts;
+    job.keyframe_poll_failing_since = since;
     return null;
   }
+  resetKeyframePollFailures(job);
+  return `${error} (persisted through ${attempts} consecutive polls over ${Math.round((now - since) / 1000)}s)`;
+}
+
+/** A tick with no keyframe transport failure ends the run (core#427: the count and its start time). */
+function resetKeyframePollFailures(job: FilmJob): void {
   job.keyframe_poll_attempts = undefined;
-  return `${error} (persisted through ${attempts} consecutive polls)`;
+  job.keyframe_poll_failing_since = undefined;
 }
 
 async function pollParallelKeyframes(
@@ -4712,7 +4721,7 @@ async function pollParallelKeyframes(
 
   if (!fail) {
     if (transient) fail = countKeyframePollFailure(job, transient) ?? undefined;
-    else job.keyframe_poll_attempts = undefined;
+    else resetKeyframePollFailures(job);
   }
 
   if (fail) {
@@ -5156,7 +5165,7 @@ async function advanceFilmJobLocked(
         }
       }
       else if (!(p as { pending?: boolean }).pending) {
-        job.keyframe_poll_attempts = undefined;
+        resetKeyframePollFailures(job);
         job.keyframe_wait = undefined;
         job.keyframe_r2_full_at = undefined; // core#493: the job returned; the grace is over
         const out = (p as { output: KeyframeOutput }).output;
@@ -5164,7 +5173,7 @@ async function advanceFilmJobLocked(
         if (v) { endJob(job, "failed"); job.error = v; }
         else await afterKeyframeOutput(env, job, out, modules);
       } else {
-        job.keyframe_poll_attempts = undefined;
+        resetKeyframePollFailures(job);
         // cf#307: surface module wait phase (accepted vs running) so the poll view can distinguish
         // cold start from sampling. Modules that omit wait leave keyframe_wait cleared.
         const wait = (p as { wait?: string }).wait;

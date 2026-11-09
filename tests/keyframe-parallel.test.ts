@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   advanceFilmJob,
   cancelFilmJob,
@@ -10,6 +10,7 @@ import {
   type FilmJob,
 } from "../src/film-orchestrator.js";
 import { clipJobDocKey, filmJobDocKey, PHASE_HARD_DEADLINE_SECONDS } from "../src/film-model.js";
+import { CLIP_POLL_TOLERANCE_SECONDS } from "../src/render-orchestrator.js";
 import type { RegisteredModule } from "../src/modules/types.js";
 
 const kfMod = {
@@ -271,6 +272,14 @@ describe("keyframe parallel start/advance", () => {
 });
 
 describe("a keyframe poll that fails in transport", () => {
+  afterEach(() => vi.useRealTimers());
+  /** core#427: the tolerance is time as well as ticks, so these drive ticks at the cron's cadence. */
+  const cron = () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let t = Date.UTC(2026, 10, 9, 12, 0, 0);
+    vi.setSystemTime(t);
+    return () => { t += 60_000; vi.setSystemTime(t); };
+  };
   const five = () => new Response("boom", { status: 500 });
   const pending = { ok: true, pending: true, wait: "running" };
 
@@ -291,11 +300,14 @@ describe("a keyframe poll that fails in transport", () => {
   });
 
   it("three ticks in a row fail the film by name and stop its jobs", async () => {
+    const next = cron();
     const h = harness({ keyframeParallel: "2", poll: () => five() });
     const started = await startFilmJob(h.env, START, [kfMod]);
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    next();
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
     expect(h.read(started.film_id).phase).toBe("keyframe");
+    next();
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
     const doc = h.read(started.film_id);
     expect(doc.phase).toBe("failed");
@@ -324,13 +336,16 @@ describe("a keyframe poll that fails in transport", () => {
   });
 
   it("the single-job path tolerates the same and fails at three", async () => {
+    const next = cron();
     const h = harness({ keyframeParallel: "1", poll: () => five() });
     const started = await startFilmJob(h.env, START, [kfMod]);
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    next();
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
     const mid = h.read(started.film_id);
     expect(mid.phase).toBe("keyframe");
     expect(mid.keyframe_poll).toBe("kf-poll-0");
+    next();
     await advanceFilmJob(h.env, started.film_id, [kfMod]);
     expect(h.read(started.film_id).error).toMatch(/persisted through 3/);
     expect(h.cancels).toEqual(["kf-poll-0"]);
@@ -618,3 +633,54 @@ describe("core#425 a failed film asks its GPU jobs to cancel", () => {
   });
 });
 
+
+// core#427: the keyframe poll tolerance is wall-clock time as well as ticks. Ticks come from the cron
+// AND from every client poll of the render, so a fast client used to spend all three on a short blip.
+describe("a fast poller cannot spend the keyframe poll tolerance (core#427)", () => {
+  afterEach(() => vi.useRealTimers());
+  const five = () => new Response("boom", { status: 500 });
+
+  it("ten failing ticks one second apart hold the film; the run fails once it has lasted the window", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.UTC(2026, 10, 9, 12, 0, 0);
+    vi.setSystemTime(t0);
+    const h = harness({ keyframeParallel: "1", poll: () => five() });
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    for (let i = 0; i < 10; i++) {
+      vi.setSystemTime(t0 + i * 1_000);
+      await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    }
+    let doc = h.read(started.film_id);
+    expect(doc.phase).toBe("keyframe");
+    expect(doc.keyframe_poll_attempts).toBe(10);
+    expect(doc.keyframe_poll_failing_since).toBe(t0);
+    expect(h.cancels).toEqual([]);
+    vi.setSystemTime(t0 + CLIP_POLL_TOLERANCE_SECONDS * 1000);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    doc = h.read(started.film_id);
+    expect(doc.phase).toBe("failed");
+    expect(doc.error).toMatch(/persisted through 11 consecutive polls over 120s/);
+  });
+
+  it("a clean tick ends the run, so the window starts again at the next failure", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.UTC(2026, 10, 9, 12, 0, 0);
+    let fail = true;
+    const h = harness({ keyframeParallel: "1", poll: () => (fail ? five() : { ok: true, pending: true, wait: "running" }) });
+    vi.setSystemTime(t0);
+    const started = await startFilmJob(h.env, START, [kfMod]);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    fail = false;
+    vi.setSystemTime(t0 + 60_000);
+    await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    expect(h.read(started.film_id).keyframe_poll_failing_since).toBeUndefined();
+    fail = true;
+    for (const dt of [100_000, 110_000, 130_000]) {
+      vi.setSystemTime(t0 + dt);
+      await advanceFilmJob(h.env, started.film_id, [kfMod]);
+    }
+    const doc = h.read(started.film_id);
+    expect(doc.phase).toBe("keyframe"); // 3 failures, but only 30 s since this run began
+    expect(doc.keyframe_poll_failing_since).toBe(t0 + 100_000);
+  });
+});
