@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.41.3
+
 ## [1.41.2] -- 2026-11-06
 
 ### Fix: the plate count record keeps the backend's face-floor flag (vivijure-core#492)
