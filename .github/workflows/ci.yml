@@ -108,3 +108,42 @@ jobs:
         env:
           VIVIJURE_CONSUMER_ROOTS: consumers/vivijure-backend:consumers/vivijure-upscale:consumers/vivijure-wan-train:consumers/vivijure-cf
         run: node scripts/comment-symbol-refs.mjs
+
+  # core#335, option 1b (lead ruling 2026-11-09): run vivijure-cf's own suite against THIS core build.
+  # scripts/consumer-suite.mjs runs cf on its own pin first (the baseline), then packs this commit,
+  # installs it into the same tree, proves the installed file is this build, and runs cf again.
+  #   PASS        green on both                       -> job green
+  #   FAIL        green on its pin, red on this build -> job RED
+  #   UNMEASURED  cf red on its own pin, or not proven -> job green, ::warning:: and summary say so
+  # UNMEASURED does not block by ruling: a red cf main is cf's defect, not core's. Read the verdict
+  # line, never the job colour alone, because PASS and UNMEASURED are both green.
+  #
+  # NOT REQUIRED YET. It becomes a required check after 5 consecutive core PRs with a PASS verdict,
+  # and that switch is recorded on core#335. Only vivijure-cf: it is the one repo that installs this
+  # package with a floating range (vivijure-local pins exactly and is on hold; the GPU repos consume
+  # the HTTP contract, not the package). cf's browser tests are not run: they test the UI, and they
+  # are 4 of cf's 5 minutes. Cost measured on 2026-11-09: about 1.5 to 2 runner minutes, $0 (public).
+  consumer-cf:
+    name: consumer-cf
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: core
+      - uses: actions/checkout@v7
+        with:
+          repository: skyphusion-labs/vivijure-cf
+          path: cf
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            core/package-lock.json
+            cf/package-lock.json
+      - name: Install core (npm pack builds dist through prepare)
+        working-directory: core
+        run: npm ci --no-audit --no-fund
+      - name: cf suite on its own pin, then on this core build (core#335)
+        run: node core/scripts/consumer-suite.mjs --core core --consumer cf --name cf
