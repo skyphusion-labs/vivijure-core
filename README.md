@@ -88,8 +88,10 @@ gh release create vivijure-core-v1.7.3 --title "vivijure-core v1.7.3" --notes-fi
 Tag push triggers **Publish npm package** (`.github/workflows/publish-npm.yml`). GitHub Releases are
 **manual** (see [`RELEASES.md`](RELEASES.md)); npm CI does not create them.
 
-**flatliners** (Hetzner test box): **retired 2026-07-16**. Historical notes only:
-[docs/FLATLINERS-DEV.md](docs/FLATLINERS-DEV.md). Active GPU/studio host is **propagandhi**.
+The old Hetzner studio boxes are retired. Historical notes:
+[docs/FLATLINERS-DEV.md](docs/FLATLINERS-DEV.md). Run the studio with
+[vivijure-cf](https://github.com/skyphusion-labs/vivijure-cf) or
+[vivijure-local](https://github.com/skyphusion-labs/vivijure-local).
 
 ## Key exports
 
