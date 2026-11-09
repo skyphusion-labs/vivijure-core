@@ -89,7 +89,7 @@ Tag push triggers **Publish npm package** (`.github/workflows/publish-npm.yml`).
 **manual** (see [`RELEASES.md`](RELEASES.md)); npm CI does not create them.
 
 The old Hetzner studio boxes are retired. Historical notes:
-[docs/FLATLINERS-DEV.md](docs/FLATLINERS-DEV.md). Run the studio with
+[docs/RETIRED-DEV-BOX.md](docs/RETIRED-DEV-BOX.md). Run the studio with
 [vivijure-cf](https://github.com/skyphusion-labs/vivijure-cf) or
 [vivijure-local](https://github.com/skyphusion-labs/vivijure-local).
 
