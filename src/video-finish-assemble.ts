@@ -213,7 +213,24 @@ export type AssemblePollState = {
   jobId: string;
   submittedAt: number;
   notFoundStreak: number;
+  /** core#513: how many times this assemble was re-submitted after a job lost to a container restart.
+   *  Absent is zero. Bounded by ASSEMBLE_LOST_RESUBMIT_MAX. */
+  lost?: number;
 };
+
+/**
+ * core#513: the `lost` value vivijure-cf's FinishContainer puts on a 404 when the Durable Object
+ * recorded which container instance took the job AND a DIFFERENT instance answered `not_found`
+ * (cf#784, cf#1377). Only this exact value is read. Any other value, or no value, is an ordinary 404.
+ */
+export const FINISH_JOB_LOST_REASON = "instance_restarted";
+
+/**
+ * core#513: re-submits allowed after a job lost to a container restart, before the assemble fails by
+ * name. A lost job is re-submitted at once, under the same output key, so the streak does not apply;
+ * this is what stops a container that restarts on every job from being fed the same job forever.
+ */
+export const ASSEMBLE_LOST_RESUBMIT_MAX = 3;
 
 /**
  * How long a film may wait for a finish slot before it fails.
@@ -414,6 +431,7 @@ export function decodeAssemblePoll(raw: string | undefined | null): AssemblePoll
       notFoundStreak: typeof p.notFoundStreak === "number" && p.notFoundStreak > 0
         ? Math.floor(p.notFoundStreak)
         : 0,
+      ...(typeof p.lost === "number" && p.lost > 0 ? { lost: Math.floor(p.lost) } : {}),
     };
   } catch {
     return null;
@@ -519,7 +537,9 @@ type StatusHit =
   | { kind: "completed"; result: FinishResult }
   | { kind: "failed"; error: string }
   | { kind: "pending" }
-  | { kind: "missing" };
+  | { kind: "missing" }
+  /** core#513: a 404 marked `lost: "instance_restarted"`. The job is gone, not possibly transient. */
+  | { kind: "lost" };
 
 async function pollOne(env: Env, base: string, jobId: string): Promise<StatusHit> {
   return pollVia(env, (path, init) => fetch(base + path, init), jobId);
@@ -545,7 +565,7 @@ async function pollVia(
   } catch {
     return { kind: "missing" };
   }
-  if (resp.status === 404) return { kind: "missing" };
+  if (resp.status === 404) return (await lostMark(resp)) ? { kind: "lost" } : { kind: "missing" };
   if (resp.status === 524 || resp.status === 502 || resp.status === 503 || resp.status === 504) {
     return { kind: "pending" };
   }
@@ -575,6 +595,17 @@ async function pollVia(
   return { kind: "missing" };
 }
 
+/** core#513: true only for a 404 body that is a JSON object with `lost` exactly FINISH_JOB_LOST_REASON.
+ *  An unreadable body, a non-object, a missing field or any other value is an ordinary 404. */
+async function lostMark(resp: Response): Promise<boolean> {
+  try {
+    const body = (await resp.json()) as unknown;
+    return !!body && typeof body === "object" && !Array.isArray(body) && (body as { lost?: unknown }).lost === FINISH_JOB_LOST_REASON;
+  } catch {
+    return false;
+  }
+}
+
 export async function pollVideoFinishAsync(env: Env, jobId: string): Promise<StatusHit> {
   // Bound door: ONE target, not a fan-out. The per-box fan-out exists because jobs lived in the
   // memory of one of several replicas behind a load balancer, so a 404 from a peer was not
@@ -584,6 +615,8 @@ export async function pollVideoFinishAsync(env: Env, jobId: string): Promise<Sta
   // process memory (#784 item 2 is not done), and a container restart or an instance eviction
   // loses it, so a 404 here is still "possibly transient" rather than proof the job never existed.
   // Tightening that debounce is a change to make when the state is externalised, not now.
+  // core#513: the one exception is a 404 the door MARKS lost (cf#1377). The DO saw a different
+  // instance answer than took the job, so the job is gone, and the tick re-submits at once.
   // cf#911: through the seam, so the bound poll carries the bearer the bound submit does.
   const bound = mediaDoorFetcher(env, "VIDEO_FINISH_URL");
   if (bound) {
@@ -597,6 +630,7 @@ export async function pollVideoFinishAsync(env: Env, jobId: string): Promise<Sta
   const failed = hits.find((h) => h.kind === "failed");
   if (failed) return failed;
   if (hits.some((h) => h.kind === "pending")) return { kind: "pending" };
+  // core#513: only the bound door marks a lost job. A replica here has peers, so its 404 is a miss.
   return { kind: "missing" };
 }
 
@@ -605,6 +639,12 @@ export type AssembleTickOptions = {
   wait?: string;
   /** Film id, sent as FINISH_AFFINITY_HEADER on a submit. Also the film's ticket in a bound queue. */
   affinity?: string;
+  /**
+   * core#513: builds a fresh payload (new presigned URLs, same output key) for a re-submit after a job
+   * lost to a container restart. The payload a poll tick is given carries no live URLs, because a
+   * caller presigns only when it submits. Without this, a lost job is treated as an ordinary 404.
+   */
+  repayload?: () => Promise<FinishPayload>;
 };
 
 /**
@@ -731,6 +771,29 @@ async function tickVideoFinishAssembleInner(
     return { kind: "done", result: hit.result };
   }
   if (hit.kind === "failed") return { kind: "failed", error: hit.error };
+  if (hit.kind === "lost" && opts.repayload) {
+    // core#513 (lead ruling on the issue): the door marked this 404 lost to a container restart, so it
+    // is not the possibly-transient miss the streak debounces. Re-submit now, under the same output
+    // key, with fresh URLs. Before the horizon check: the re-submit carries URLs minted now.
+    const lost = (existing?.lost ?? 0) + 1;
+    if (lost > ASSEMBLE_LOST_RESUBMIT_MAX) {
+      return {
+        kind: "failed",
+        error: `video-finish lost the assemble job to a container restart ${lost} times (re-submitted ${ASSEMBLE_LOST_RESUBMIT_MAX}); resubmit`,
+      };
+    }
+    console.warn(JSON.stringify({ ev: "assemble.job_lost_resubmit", job_id: jobId, lost, reason: FINISH_JOB_LOST_REASON }));
+    const again = await submitAsync(env, await opts.repayload(), opts.affinity);
+    if (again.kind !== "ok") {
+      return {
+        kind: "failed",
+        error: `video-finish lost the assemble job to a container restart and the re-submit failed (${again.detail})`,
+        ...(again.kind === "unreachable" || again.kind === "capacity" ? { unreachable: true as const } : {}),
+        ...(again.kind === "capacity" ? { capacity: true as const } : {}),
+      };
+    }
+    return { kind: "pending", poll: { jobId: again.jobId, submittedAt: Date.now(), notFoundStreak: 0, lost } };
+  }
   if (expired) {
     return {
       kind: "failed",
@@ -739,12 +802,13 @@ async function tickVideoFinishAssembleInner(
         "expired, so the job cannot complete. Resubmit, or reduce the film.",
     };
   }
+  const carried = existing?.lost ? { lost: existing.lost } : {};
   if (hit.kind === "pending") {
-    return { kind: "pending", poll: { jobId, submittedAt, notFoundStreak: 0 } };
+    return { kind: "pending", poll: { jobId, submittedAt, notFoundStreak: 0, ...carried } };
   }
   const streak = notFoundStreak + 1;
   if (streak >= ASSEMBLE_NOTFOUND_STREAK) {
     return { kind: "failed", error: "video-finish assemble job not found on any replica; resubmit" };
   }
-  return { kind: "pending", poll: { jobId, submittedAt, notFoundStreak: streak } };
+  return { kind: "pending", poll: { jobId, submittedAt, notFoundStreak: streak, ...carried } };
 }
