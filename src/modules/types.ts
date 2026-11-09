@@ -46,7 +46,7 @@ export type HookName =
   | "plan.enhance"   // expand a storyboard before render: LLM auto-direction. Chainable.
   | "image.generate" // prompt -> a single generated image. Pick one.
   | "cast.image"     // character portrait + bible -> LoRA training reference images. Cast-prep, pick one.
-  | "notify"         // film done -> deliver a render-complete notification (email / webhook / ...). Chain.
+  | "notify"         // film terminal -> deliver a render.complete or render.failed notice (email / webhook / ...). Chain.
   | "master"         // assembled film's audio bed -> mastered audio (music upscale + loudness). Pre-mux. Chain.
   | "film.finish";   // assembled+muxed film -> film with title / credit cards. Post-mux, before done. Chain.
 
@@ -158,7 +158,7 @@ export const HOOK_BLURBS: Record<HookName, string> = {
   "plan.enhance": "LLM auto-direction",
   "image.generate": "prompt -> a generated image",
   "cast.image": "character refs from a portrait + bible",
-  notify: "render-complete notification (email / webhook)",
+  notify: "render complete or failed notice (email / webhook)",
   master: "film-level audio mastering: music upscale + loudness",
   "film.finish": "title / credit cards on the finished film",
 };
