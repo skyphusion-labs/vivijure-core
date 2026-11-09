@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.42.1
+
 ## [1.42.0] -- 2026-11-09
 
 ### Feat: the caller picks the dialogue module (vivijure-core#339)
