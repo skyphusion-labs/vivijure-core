@@ -117,6 +117,7 @@ import {
   slotsMissingAdapters,
   partitionContiguous,
   KEYFRAME_STALL_SECONDS,
+  KEYFRAME_R2_ADOPT_GRACE_SECONDS,
   KEYFRAME_SHOTS_PER_JOB,
   resolveKeyframeJobs,
   ceilingAgeSeconds,
@@ -4541,6 +4542,19 @@ function clearKeyframeFlight(job: FilmJob): void {
   job.keyframe_wait = undefined;
   job.keyframe_partials = undefined;
   job.keyframe_partial_loras = undefined;
+  job.keyframe_r2_full_at = undefined;
+}
+
+/** core#493: true once a PENDING keyframe poll may adopt the full R2 set and cancel the job. The first
+ *  pending poll that sees the full set stamps `keyframe_r2_full_at` and holds; a later one adopts once
+ *  KEYFRAME_R2_ADOPT_GRACE_SECONDS have passed. Call only after `keyframeSetCompleteInR2` is true.
+ *  The stale-poll recovery at the stall ceiling does not go through this. */
+export function pendingKeyframeAdoptDue(job: FilmJob, now: number = Date.now()): boolean {
+  if (typeof job.keyframe_r2_full_at !== "number") {
+    job.keyframe_r2_full_at = now;
+    return false;
+  }
+  return now - job.keyframe_r2_full_at >= KEYFRAME_R2_ADOPT_GRACE_SECONDS * 1000;
 }
 
 function buildKeyframeInput(
@@ -4707,7 +4721,8 @@ async function pollParallelKeyframes(
     job.keyframe_job_ids = stillIds.some((id) => id) ? stillIds : undefined;
     parkKeyframePartials(job, newOutputs);
     job.keyframe_wait = wait;
-    if (await keyframeSetCompleteInR2(env, job)) {
+    // core#493: hold for the grace first, so a job that already wrote its PNG can still return.
+    if (await keyframeSetCompleteInR2(env, job) && pendingKeyframeAdoptDue(job)) {
       await recoverStalledKeyframePhase(env, job, modules, false);
     }
     return;
@@ -4817,8 +4832,12 @@ async function recoverStalledKeyframePhase(env: Env, job: FilmJob, preModules: R
   // poll tokens without cancelling is exactly what orphaned it. Best-effort, honest-degrade-logged.
   await cancelInFlightKeyframe(env, job, preModules);
   job.keyframe_recovered = true;
+  // core#493: a job that already returned has its output parked. Keep it over the bare R2 key, so its
+  // shot keeps everything only the output carries (the plate count record, trained LoRAs).
+  const parked = takeParkedKeyframeOutputs(job);
   clearKeyframeFlight(job);
-  await afterKeyframeOutput(env, job, { project: job.project, keyframes: adopted }, preModules);
+  const out = mergeKeyframeOutputs(job.project, [{ project: job.project, keyframes: adopted }, ...parked]);
+  await afterKeyframeOutput(env, job, out, preModules);
   return true;
 }
 
@@ -5133,6 +5152,7 @@ async function advanceFilmJobLocked(
       else if (!(p as { pending?: boolean }).pending) {
         job.keyframe_poll_attempts = undefined;
         job.keyframe_wait = undefined;
+        job.keyframe_r2_full_at = undefined; // core#493: the job returned; the grace is over
         const out = (p as { output: KeyframeOutput }).output;
         const v = hookOutputViolation(job.keyframe_binding ?? "keyframe", "keyframe", out);
         if (v) { job.phase = "failed"; job.error = v; }
@@ -5144,7 +5164,10 @@ async function advanceFilmJobLocked(
         const wait = (p as { wait?: string }).wait;
         if (wait === "accepted" || wait === "running") job.keyframe_wait = wait;
         else job.keyframe_wait = undefined;
-        if (await keyframeSetCompleteInR2(env, job)) {
+        // core#493: but not on the FIRST pending poll that sees it. The backend writes the PNG before the
+        // job returns, so a healthy job has a window where R2 is full and RunPod says IN_PROGRESS.
+        // Adopting there cancelled a finished job and lost its output. Hold for the grace first.
+        if (await keyframeSetCompleteInR2(env, job) && pendingKeyframeAdoptDue(job)) {
           // R2 PRESENCE IS AUTHORITATIVE, even on a *pending* poll (#129 sibling, mirrors #154 for finish):
           // the keyframe job's RunPod envelope can freeze at IN_PROGRESS after the GPU already wrote every
           // renders/<project>/keyframes/shot_NN.png to R2, so the poll reads pending forever. Don't wait for
