@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
-coverage/
 *.log
 .DS_Store
+# core#359: the CI sparse-checkout of vivijure-cf, and the safe local path for the module manifests
+# (core#355). Rooted and with no trailing slash, so a symlink named vivijure is ignored too.
+/vivijure

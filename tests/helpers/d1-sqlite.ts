@@ -16,30 +16,17 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { vivijureMigrationsDir } from "../../scripts/vivijure-cf-dir.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../..");
 
-/** Locate vivijure-cf's migrations. Mirrors the checkout layouts vitest.config.ts already probes. */
+/** Locate vivijure-cf's migrations: VIVIJURE_CF_DIR, then the same checkout layouts vitest.config.ts
+ *  probes (scripts/vivijure-cf-dir.mjs, core#355). It THROWS rather than degrade. A harness that
+ *  silently proceeds with no schema produces an empty table, and an empty table makes every assertion
+ *  below vacuously true -- a green run about nothing. Failing loudly is the only honest option. */
 export function cfMigrationsDir(): string {
-  const candidates = [
-    resolve(repoRoot, "vivijure/migrations"), // CI sparse-checkout into repo-root/vivijure
-    resolve(repoRoot, "../vivijure-cf/migrations"), // sibling clone
-    resolve(repoRoot, "../vivijure/migrations"), // legacy sibling alias
-    resolve(repoRoot, "../../vivijure/migrations"), // vivijure-local CI layout
-  ];
-  const hit = candidates.find((c) => existsSync(resolve(c, "0001_init.sql")));
-  if (!hit) {
-    // REFUSE rather than degrade. A harness that silently proceeds with no schema produces an
-    // empty table, and an empty table makes every assertion below vacuously true -- a green run
-    // about nothing. Failing loudly is the only honest option.
-    throw new Error(
-      "vivijure-cf migrations not found (looked for 0001_init.sql in: " +
-        candidates.join(", ") +
-        "). Clone skyphusion-labs/vivijure-cf as a sibling, or sparse-checkout it to ./vivijure.",
-    );
-  }
-  return hit;
+  return vivijureMigrationsDir(repoRoot);
 }
 
 /** Top-level migrations only, in lexical order. `manual/` and `demo/` are deliberately excluded:

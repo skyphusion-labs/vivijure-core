@@ -356,6 +356,10 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
   if (!videoFinishReachable(env)) {
     job.phase = "failed";
     job.error = "video-finish URL not configured";
+    // core#357: the film path degradeMuxUnavailable shape. A staged song fails the render; the silent
+    // cut is retained, not delivered, so it is linked without becoming film_key. Without this a scatter
+    // render that paid for every shard ended with no notice at all.
+    await fireNotifyForScatter(env, job, undefined, { event: "render.failed", key: silentKey });
     return;
   }
   const outKey = job.mux_output_key ?? scatterOutKey(job.scatter_id);
