@@ -375,17 +375,19 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
     audioUrl: undefined as string | undefined,
     remuxAudioOnly: true,
   };
+  // core#513: one presign, for the first submit and for a re-submit after a job lost to a restart.
+  const presigned = async (): Promise<typeof payload> => ({
+    ...payload,
+    clips: [{ url: await presignR2Get(env, silentKey, 1800) }],
+    outputUrl: await presignR2Put(env, outKey, 1800),
+    audioUrl: await presignR2Get(env, audioKey, 1800),
+  });
   if (!job.assemble_poll) {
     const gate = await finishSlotGate(env, job.scatter_id, job.assemble_wait, { step: "mux", fairnessKey: job.project });
     if (gate.kind === "waiting") { job.assemble_wait = gate.wait; job.phase = "mux"; job.error = undefined; return; }
-    payload = {
-      ...payload,
-      clips: [{ url: await presignR2Get(env, silentKey, 1800) }],
-      outputUrl: await presignR2Put(env, outKey, 1800),
-      audioUrl: await presignR2Get(env, audioKey, 1800),
-    };
+    payload = await presigned();
   }
-  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.scatter_id });
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.scatter_id, repayload: presigned });
   if (tick.kind === "waiting") {
     job.assemble_wait = tick.wait;
     job.phase = "mux";
@@ -540,14 +542,13 @@ async function assembleScatterClips(
     outputKey,
     keepClipAudio: true,
   };
-  if (!job.assemble_poll) {
-    const gate = await finishSlotGate(env, job.scatter_id, job.assemble_wait, { step: "assemble", fairnessKey: job.project });
-    if (gate.kind === "waiting") { job.assemble_wait = gate.wait; job.phase = "gather"; job.error = undefined; return; }
-    // ASSEMBLE_PRESIGN_TTL_SECONDS, not the old hardcoded 1800. Under chunked assemble batch N
-    // downloads its clips only after batch N-1 has finished encoding, and the final pass reads
-    // the FIRST partial at the very END of the job, so every URL here has to cover the whole
-    // job rather than its first half hour. Minted in parallel: a chunked film needs 1 + 3n
-    // signatures and sequential awaits add up.
+  // core#513: one presign, for the first submit and for a re-submit after a job lost to a restart.
+  // ASSEMBLE_PRESIGN_TTL_SECONDS, not the old hardcoded 1800. Under chunked assemble batch N
+  // downloads its clips only after batch N-1 has finished encoding, and the final pass reads
+  // the FIRST partial at the very END of the job, so every URL here has to cover the whole
+  // job rather than its first half hour. Minted in parallel: a chunked film needs 1 + 3n
+  // signatures and sequential awaits add up.
+  const presignGather = async (): Promise<FinishPayload> => {
     const [presigned, outputUrl, partialUrls] = await Promise.all([
       Promise.all(
         clips.map(async (c) => ({
@@ -557,9 +558,14 @@ async function assembleScatterClips(
       presignR2Put(env, outputKey, ASSEMBLE_PRESIGN_TTL_SECONDS),
       mintPartialUrlPool(env, outputKey, clips.length),
     ]);
-    payload = { ...payload, clips: presigned, outputUrl, partialUrls };
+    return { ...payload, clips: presigned, outputUrl, partialUrls };
+  };
+  if (!job.assemble_poll) {
+    const gate = await finishSlotGate(env, job.scatter_id, job.assemble_wait, { step: "assemble", fairnessKey: job.project });
+    if (gate.kind === "waiting") { job.assemble_wait = gate.wait; job.phase = "gather"; job.error = undefined; return; }
+    payload = await presignGather();
   }
-  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.scatter_id });
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.scatter_id, repayload: presignGather });
   if (tick.kind === "waiting") {
     job.assemble_wait = tick.wait;
     job.phase = "gather";

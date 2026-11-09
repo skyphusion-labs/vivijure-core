@@ -27,8 +27,8 @@ describe("the key", () => {
     expect(finishClipScope({ film_id: "film-a", finish_retry_gen: 2 })).toBe("film-a/r2");
   });
 
-  it("a suffix step is not scoped, and its shape is recorded rather than changed", () => {
-    expect(finishStepOutputKey("p", shot({ chain: ["MODULE_U"] }), [UP], "film-a")).toBe("renders/p/clips/s1_own-gpu_up.mp4");
+  it("a suffix step is scoped too since core#385, and is still not shot-named", () => {
+    expect(finishStepOutputKey("p", shot({ chain: ["MODULE_U"] }), [UP], "film-a")).toBe("renders/p/clips/film-a/s1_own-gpu_up.mp4");
     expect(finishStepIsShotNamed(shot({ chain: ["MODULE_U"] }), [UP])).toBe(false);
   });
 
