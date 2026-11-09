@@ -1,35 +1,14 @@
 import { defineConfig } from "vitest/config";
 import { existsSync } from "node:fs";
+import { vivijureModulesDir } from "./scripts/vivijure-cf-dir.mjs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
 
-/** Resolve vivijure module manifests for quality-tier-drift (CI vs nested dev layout). */
-function vivijureModulesDir(): string {
-  const candidates = [
-    resolve(root, "vivijure/modules"), // CI: vivijure-cf sparse-checkout into repo-root/vivijure (see ci/publish workflows)
-    resolve(root, "../vivijure-cf/modules"), // sibling clone (local or propagandhi) (~/dev/{core,vivijure-cf})
-    resolve(root, "../vivijure/modules"), // legacy alias when a sibling is named plain "vivijure"
-    resolve(root, "../../vivijure/modules"), // vivijure-local CI: workspace/{core,vivijure}
-  ];
-  // Prefer data-only manifest.ts leaves (cf#285 / core quality-tier-drift); fall back to
-  // entrypoints for checkouts that predate the leaf extract.
-  const hit = candidates.find(
-    (c) =>
-      existsSync(resolve(c, "keyframe/src/manifest.ts")) ||
-      existsSync(resolve(c, "keyframe/src/index.ts")),
-  );
-  if (!hit) {
-    throw new Error(
-      "vivijure module manifests not found. Clone skyphusion-labs/vivijure-cf " +
-        "(CI: sparse-checkout to vivijure/; dev: sibling ../vivijure-cf).",
-    );
-  }
-  return hit;
-}
-
-const modules = vivijureModulesDir();
+// Module manifests for quality-tier-drift: VIVIJURE_CF_DIR first, then ./vivijure (CI), then the
+// fixed siblings. See scripts/vivijure-cf-dir.mjs (core#355).
+const modules = vivijureModulesDir(root);
 
 /** Prefer leaf MANIFEST files (cf#285) so the guard does not import module entrypoints. */
 function manifestEntry(mod: string): string {
