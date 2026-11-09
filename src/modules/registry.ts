@@ -106,11 +106,47 @@ export function moduleBindingNames(env: Record<string, unknown>): string[] {
 
 // --------------------------------------------------------------------------- config validation
 
+/** core#343: a caller sent an enum value its module does not declare. Thrown by `validateConfig`, so a
+ *  bad value is refused by name instead of becoming the default. `field`, `value` and `allowed` let a
+ *  host build its own 400; the message already names all three. */
+export class ConfigValueError extends Error {
+  readonly field: string;
+  readonly value: unknown;
+  readonly allowed: readonly string[];
+  constructor(field: string, value: unknown, allowed: readonly string[]) {
+    super(`config "${field}": ${JSON.stringify(value) ?? String(value)} is not supported (allowed: ${allowed.join(", ")})`);
+    this.name = "ConfigValueError";
+    this.field = field;
+    this.value = value;
+    this.allowed = allowed;
+  }
+}
+
+/** core#343: the refusal `validateConfig` would throw for this config, as a sentence, or null. For a
+ *  start path that fails a job by name before anything is spent, the same way an unknown dialogue
+ *  module is refused (core#339). */
+export function configValueRefusal(
+  schema: ConfigSchema | undefined,
+  user: Record<string, unknown> | undefined,
+): string | null {
+  try {
+    validateConfig(schema, user);
+    return null;
+  } catch (e) {
+    if (e instanceof ConfigValueError) return e.message;
+    throw e;
+  }
+}
+
 /** Clamp + coerce a user's config values against a module's declared schema. Unknown keys are
- *  dropped; missing keys fall back to the field default; numbers are clamped to [min, max]; an
- *  out-of-set enum falls back to its default. The result is exactly what the core sends a module as
- *  `config`, so a module never has to defend against junk. (Mirrors the backend's forgiving
- *  config parsing: clamp, do not throw.) */
+ *  dropped; missing keys fall back to the field default; numbers are clamped to [min, max].
+ *
+ *  An enum is NOT clamped (core#343). An ABSENT value (the key missing, or `undefined`) takes the
+ *  field default: the caller asked for nothing. A PRESENT value that is not in `values`, `null`
+ *  included, throws `ConfigValueError` naming the field, the value and the allowed set: the caller
+ *  asked for something specific and cannot have it, and handing them the default instead made every
+ *  validator below this point unable to see the request (core#343). The result is exactly what the
+ *  core sends a module as `config`, so a module never has to defend against junk. */
 export function validateConfig(
   schema: ConfigSchema | undefined,
   user: Record<string, unknown> | undefined,
@@ -134,7 +170,9 @@ export function validateConfig(
         out[key] = typeof v === "boolean" ? v : field.default;
         break;
       case "enum":
-        out[key] = field.values.includes(v as string) ? v : field.default;
+        if (v === undefined) out[key] = field.default;
+        else if (field.values.includes(v as string)) out[key] = v;
+        else throw new ConfigValueError(key, v, field.values);
         break;
       case "string":
         out[key] = typeof v === "string" ? v : field.default;

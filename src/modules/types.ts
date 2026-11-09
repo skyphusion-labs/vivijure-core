@@ -204,6 +204,8 @@ export type ConfigField =
       scope?: ConfigScope;
     }
   | { type: "bool"; default: boolean; label?: string; scope?: ConfigScope }
+  // core#343: a PRESENT value outside values is refused by validateConfig (ConfigValueError); only an
+  // ABSENT value takes default.
   | { type: "enum"; values: string[]; default: string; label?: string; scope?: ConfigScope }
   | { type: "string"; default: string; label?: string; scope?: ConfigScope };
 

@@ -36,6 +36,7 @@ import {
   resolveFetcher,
   servingForHook,
   validateConfig,
+  configValueRefusal,
   dispatchChain,
 } from "./modules/registry.js";
 import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook, selectForChain } from "./modules/render-pipeline.js";
@@ -3590,6 +3591,42 @@ async function submitBudgetRefusal(env: Env, job: FilmJob, modules: RegisteredMo
   return admission.reason ?? "film refused at submit: it cannot fit the assemble budget";
 }
 
+/** core#343: the first config a film start would send a module with an enum value that module does not
+ *  declare, as a sentence naming the module, or null. Checked against the keyframe module (when the
+ *  start has one) and the motion backend each motion config goes to. A start path fails the job with
+ *  this before anything is spent, the same way it refuses an unknown dialogue module (core#339). */
+export function filmStartConfigRefusal(
+  modules: RegisteredModule[],
+  start: {
+    keyframe?: RegisteredModule | null;
+    keyframe_config?: Record<string, unknown>;
+    motion_backend?: string | null;
+    motion_config?: Record<string, unknown>;
+    motion_configs?: Record<string, Record<string, unknown>>;
+  },
+): string | null {
+  const named = (m: RegisteredModule, cfg: Record<string, unknown> | undefined): string | null => {
+    const r = configValueRefusal(m.config_schema, cfg);
+    return r ? `${m.name} ${r}` : null;
+  };
+  if (start.keyframe) {
+    const r = named(start.keyframe, start.keyframe_config);
+    if (r) return r;
+  }
+  const serving = servingForHook(modules, "motion.backend");
+  const mb = start.motion_backend ? serving.find((m) => m.name === start.motion_backend) : serving[0];
+  if (mb) {
+    const r = named(mb, start.motion_config);
+    if (r) return r;
+  }
+  for (const [name, cfg] of Object.entries(start.motion_configs ?? {})) {
+    const m = serving.find((x) => x.name === name);
+    const r = m ? named(m, cfg) : null;
+    if (r) return r;
+  }
+  return null;
+}
+
 export async function startFilmFromKeyframes(
   env: Env,
   args: {
@@ -3718,7 +3755,8 @@ export async function startFilmFromKeyframes(
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   // core#339: a dialogue choice that names no dialogue module is refused before anything is spent.
   const dialoguePick = pickDialogueModule(modules, job.dialogue_backend);
-  const refusal = dialoguePick.ok ? await submitBudgetRefusal(env, job, modules) : dialoguePick.error;
+  // core#343: an enum value a module does not declare is refused by name before anything is spent.
+  const refusal = !dialoguePick.ok ? dialoguePick.error : (filmStartConfigRefusal(modules, job) ?? await submitBudgetRefusal(env, job, modules));
   if (refusal) {
     endJob(job, "failed"); // core#490: it ends now, not when the placeholder was built
     job.error = refusal;
@@ -3902,6 +3940,7 @@ export async function startFilmJob(
   };
   const fetcher = kf ? resolveFetcher(envRec, kf.binding) : null;
   const dialogueStartPick = pickDialogueModule(modules, job.dialogue_backend);
+  const startConfigRefusal = filmStartConfigRefusal(modules, { ...job, keyframe: kf, keyframe_config: args.keyframe_config });
   const budgetRefusal = kf && fetcher ? await submitBudgetRefusal(env, job, modules) : null;
   if (!kf || !fetcher) {
     endJob(job, "failed");
@@ -3914,6 +3953,10 @@ export async function startFilmJob(
     // core#339: refused before anything is spent. The name the caller sent is not a dialogue module.
     endJob(job, "failed");
     job.error = dialogueStartPick.error;
+  } else if (startConfigRefusal) {
+    // core#343: an enum value the module does not declare is refused by name, before anything is spent.
+    endJob(job, "failed");
+    job.error = startConfigRefusal;
   } else if (budgetRefusal) {
     endJob(job, "failed");
     job.error = budgetRefusal;
