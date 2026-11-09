@@ -212,6 +212,7 @@ import { getCastById, markLoraReady } from "./cast-db.js";
 import { claimFilmAdvance, holdFilmAdvance, releaseFilmAdvance, type FilmAdvanceClaim } from "./film-advance-lease.js";
 import { withD1Retry } from "./d1-retry.js";
 import { cancelJob, endJob } from "./job-end.js";
+import { pickDialogueModule } from "./modules/dialogue-select.js";
 import { deriveLoraDestKey } from "./lora-keys.js";
 import { keyframeProvenanceHash, lineProvenanceHash, writeProv, provVerdict } from "./clip-provenance.js";
 export * from "./film-model.js";
@@ -921,7 +922,15 @@ async function linesStillToSynthesize(env: Env, job: FilmJob, dialogueModule: Re
 }
 
 async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
-  const dialogueModule = servingForHook(preModules, "dialogue")[0];
+  // core#339: the caller's dialogue module, else the ui.order default. An unknown choice is refused.
+  const pick = pickDialogueModule(preModules, job.dialogue_backend);
+  if (!pick.ok) {
+    const lined = linedDialogueShots(job.dialogue_lines);
+    endJob(job, "failed");
+    job.error = incompleteFilmError("dialogue", 0, lined.length, lined.map((l) => l.shot_id), pick.error);
+    return;
+  }
+  const dialogueModule = pick.module;
   const lines = await linesStillToSynthesize(env, job, dialogueModule);
   // Nothing to synthesize. Do not call the dialogue provider. finalize's existing
   // loop mints silence (or a native-audio neighborhood mark) for every unlined shot.
@@ -931,7 +940,7 @@ async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: Registe
   }
   const envRec = env as unknown as Record<string, unknown>;
   const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
-  if (!fetcher) {
+  if (!dialogueModule || !fetcher) {
     endJob(job, "failed");
     job.error = incompleteFilmError("dialogue", 0, lines.length, lines.map((l) => l.shot_id), "no dialogue module bound");
     return;
@@ -939,7 +948,7 @@ async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: Registe
   const req = {
     hook: "dialogue" as const,
     input: { project: job.project, lines } as DialogueInput,
-    config: {},
+    config: job.dialogue_config?.[dialogueModule.name] ?? {}, // core#339: the caller's config, else none, as before
     context: { project: job.project, job_id: job.film_id },
   };
   emitStructuredEvent({ ev: "dialogue.pre_clip", film_id: job.film_id, project: job.project, shots: lines.length });
@@ -973,7 +982,14 @@ async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: Regis
     job.error = incompleteFilmError("dialogue", lined.length - holes.length, lined.length, holes);
     return;
   }
-  const provider = servingForHook(preModules, "dialogue")[0]?.name;
+  // core#339: the provenance names the module that made the lines, which is the selected one.
+  const pick = pickDialogueModule(preModules, job.dialogue_backend);
+  if (!pick.ok) {
+    endJob(job, "failed");
+    job.error = incompleteFilmError("dialogue", lined.length, lined.length, [], pick.error);
+    return;
+  }
+  const provider = pick.module?.name;
   for (const l of lined) {
     const key = job.dialogue_audio![l.shot_id];
     // A line on a silent door is not cut to a driven clip's length (core#442), as in a film on that door.
@@ -1020,13 +1036,14 @@ async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: Regis
 async function advancePreClipDialoguePhase(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
   if (job.dialogue_poll) {
     const envRec = env as unknown as Record<string, unknown>;
-    const dialogueModule = servingForHook(preModules, "dialogue")[0];
+    const pick = pickDialogueModule(preModules, job.dialogue_backend); // core#339: the module that took the batch
+    const dialogueModule = pick.ok ? pick.module : undefined;
     const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
     const lined = linedDialogueShots(job.dialogue_lines);
-    if (!fetcher) {
+    if (!dialogueModule || !fetcher) {
       job.dialogue_poll = undefined;
       endJob(job, "failed");
-      job.error = incompleteFilmError("dialogue", 0, lined.length, lined.map((l) => l.shot_id), "dialogue module no longer bound");
+      job.error = incompleteFilmError("dialogue", 0, lined.length, lined.map((l) => l.shot_id), pick.ok ? "dialogue module no longer bound" : pick.error);
       return;
     }
     const p = await pollModule<DialogueOutput>(fetcher, { poll: job.dialogue_poll });
@@ -1099,9 +1116,13 @@ async function enterDialogueOrFinish(env: Env, job: FilmJob, preModules?: Regist
   // pre-clip leg finalizes on.
   const lined = linedDialogueShots(lines);
   const envRec = env as unknown as Record<string, unknown>;
-  const dialogueModule = servingForHook(preModules ?? await discoverModules(envRec), "dialogue")[0];
+  // core#339: a selection that names a module not serving dialogue FAILS the film by name. It is a
+  // caller error, not a missing install, so it does not take the silent-film degrade below.
+  const pick = pickDialogueModule(preModules ?? await discoverModules(envRec), job.dialogue_backend);
+  if (!pick.ok) { failDialogue(job, lined, pick.error); return; }
+  const dialogueModule = pick.module;
   const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
-  if (!fetcher) {
+  if (!dialogueModule || !fetcher) {
     degradeDialogueUnavailable(job, lined, "no dialogue module installed; shipped a silent film");
     await enterSpeechOrFinish(env, job, preModules);
     return;
@@ -1109,7 +1130,7 @@ async function enterDialogueOrFinish(env: Env, job: FilmJob, preModules?: Regist
   const req = {
     hook: "dialogue" as const,
     input: { project: job.project, lines } as DialogueInput,
-    config: {},
+    config: job.dialogue_config?.[dialogueModule.name] ?? {}, // core#339: the caller's config, else none, as before
     context: { project: job.project, job_id: job.film_id },
   };
   const r = await invokeModule<DialogueInput, DialogueOutput>(fetcher, req);
@@ -1147,9 +1168,11 @@ async function advanceDialoguePhase(env: Env, job: FilmJob, preModules?: Registe
   // Fall through to the completeness check (which fails on the holes) rather than to a silent finish.
   if (job.dialogue_poll) {
     const envRec = env as unknown as Record<string, unknown>;
-    const dialogueModule = servingForHook(preModules ?? await discoverModules(envRec), "dialogue")[0];
+    const pick = pickDialogueModule(preModules ?? await discoverModules(envRec), job.dialogue_backend); // core#339
+    if (!pick.ok) { failDialogue(job, lined, pick.error); return; }
+    const dialogueModule = pick.module;
     const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
-    if (!fetcher) { failDialogue(job, lined, "dialogue module no longer bound"); return; }
+    if (!dialogueModule || !fetcher) { failDialogue(job, lined, "dialogue module no longer bound"); return; }
     const p = await pollModule<DialogueOutput>(fetcher, { poll: job.dialogue_poll });
     if (!p.ok) { failDialogue(job, lined, `poll failed: ${p.error}`); return; }
     if ((p as { pending?: boolean }).pending) return;  // still synthesizing
@@ -3588,6 +3611,10 @@ export async function startFilmFromKeyframes(
     finish_config?: Record<string, Record<string, unknown>>;
     /** cf#537: which finish modules this render wants. Omitted = the default-participation set. */
     finish_select?: HookSelection;
+    /** core#339: which module serves `dialogue`. Omitted = the first by ui.order. An unknown name is refused. */
+    dialogue_backend?: string;
+    /** core#339: per-module dialogue config, keyed by module name, already clamped by the resolver. */
+    dialogue_config?: Record<string, Record<string, unknown>>;
     speech_config?: Record<string, Record<string, unknown>>;
     film_finish_config?: Record<string, Record<string, unknown>>;
     master_config?: Record<string, Record<string, unknown>>;
@@ -3653,6 +3680,8 @@ export async function startFilmFromKeyframes(
     held_end_frames: args.held_end_frames,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
+    dialogue_backend: normalizeBackendChoice(args.dialogue_backend),
+    dialogue_config: args.dialogue_config && Object.keys(args.dialogue_config).length ? args.dialogue_config : undefined,
     speech_config: args.speech_config ?? {},
     film_finish_config: args.film_finish_config ?? {},
     master_config: args.master_config ?? {},
@@ -3687,7 +3716,9 @@ export async function startFilmFromKeyframes(
   const plateByShot = new Map((args.keyframes || []).map((k) => [k.shot_id, k.plate_count]));
   job.keyframes = matched.map((m) => keyframeRef({ ...m, plate_count: plateByShot.get(m.shot_id) }));
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
-  const refusal = await submitBudgetRefusal(env, job, modules);
+  // core#339: a dialogue choice that names no dialogue module is refused before anything is spent.
+  const dialoguePick = pickDialogueModule(modules, job.dialogue_backend);
+  const refusal = dialoguePick.ok ? await submitBudgetRefusal(env, job, modules) : dialoguePick.error;
   if (refusal) {
     endJob(job, "failed"); // core#490: it ends now, not when the placeholder was built
     job.error = refusal;
@@ -3770,6 +3801,10 @@ export async function startFilmJob(
     finish_config?: Record<string, Record<string, unknown>>;
     /** cf#537: which finish modules this render wants. Omitted = the default-participation set. */
     finish_select?: HookSelection;
+    /** core#339: which module serves `dialogue`. Omitted = the first by ui.order. An unknown name is refused. */
+    dialogue_backend?: string;
+    /** core#339: per-module dialogue config, keyed by module name, already clamped by the resolver. */
+    dialogue_config?: Record<string, Record<string, unknown>>;
     speech_config?: Record<string, Record<string, unknown>>;
     film_finish_config?: Record<string, Record<string, unknown>>;
     master_config?: Record<string, Record<string, unknown>>;
@@ -3849,6 +3884,8 @@ export async function startFilmJob(
     retake_shots: args.retake_shots?.length ? args.retake_shots : undefined,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
     finish_select: args.finish_select,
+    dialogue_backend: normalizeBackendChoice(args.dialogue_backend),
+    dialogue_config: args.dialogue_config && Object.keys(args.dialogue_config).length ? args.dialogue_config : undefined,
     speech_config: args.speech_config ?? {},
     film_finish_config: args.film_finish_config ?? {},
     master_config: args.master_config ?? {},
@@ -3864,6 +3901,7 @@ export async function startFilmJob(
     quality_tier: args.quality_tier,
   };
   const fetcher = kf ? resolveFetcher(envRec, kf.binding) : null;
+  const dialogueStartPick = pickDialogueModule(modules, job.dialogue_backend);
   const budgetRefusal = kf && fetcher ? await submitBudgetRefusal(env, job, modules) : null;
   if (!kf || !fetcher) {
     endJob(job, "failed");
@@ -3872,6 +3910,10 @@ export async function startFilmJob(
       : kf
         ? `keyframe module ${kf.name} (${kf.binding}) is not bound`
         : (explicitKeyframeChoice ? `keyframe module ${explicitKeyframeChoice} not installed` : "no keyframe module installed");
+  } else if (!dialogueStartPick.ok) {
+    // core#339: refused before anything is spent. The name the caller sent is not a dialogue module.
+    endJob(job, "failed");
+    job.error = dialogueStartPick.error;
   } else if (budgetRefusal) {
     endJob(job, "failed");
     job.error = budgetRefusal;

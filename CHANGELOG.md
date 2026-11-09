@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.42.0
+
 ## [1.41.3] -- 2026-11-09
 
 ### Fix: the notify hook table names `render.failed`, and a scatter render whose mux door is not configured says it failed (vivijure-core#357)
