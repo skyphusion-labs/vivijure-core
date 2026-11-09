@@ -9,6 +9,7 @@
 
 import type { DbEnv } from "./db-env.js";
 import { newPublicId } from "./public-id.js";
+import { normalizeProjectName } from "./storyboard-validate.js";
 
 export interface StoryboardProject {
   // Internal autoincrement PK -- join/FK key; NEVER leaves the core (the API exposes public_id).
@@ -188,11 +189,91 @@ export async function updateProjectMeta(
   return row ? rowToProject(row) : null;
 }
 
+// ---- board key collisions (core#518, vivijure-backend#487) ----
+//
+// The backend keys every stored artifact of a render by the BOARD TITLE, not the project name:
+// `normalizeProjectName(title)` builds `bundles/<key>-<hex>.tar.gz`, the studio remaps the render's
+// `project` to `<key>`, and the backend writes `renders/<key>/...` and `loras/<key>/...` and reads them
+// back as prior state. Two projects whose titles share a key would reuse each other's keyframes and
+// LoRAs. So a board is refused when another project in this tenant already holds its key.
+//
+// The rule is core's `normalizeProjectName`, which is the one that reaches the backend (stricter than
+// the backend's own `_slug`, which leaves a key core produces unchanged; tests/project-key-contract-487).
+
+/** The backend project key a board would render under, or null when it has no usable title (an
+ *  untitled draft cannot be bundled: storyboard validation requires a title). */
+export function boardKeySlug(board: unknown): string | null {
+  if (typeof board !== "object" || board === null || Array.isArray(board)) return null;
+  const title = (board as { title?: unknown }).title;
+  if (typeof title !== "string" || title.trim().length === 0) return null;
+  return normalizeProjectName(title);
+}
+
+export interface BoardKeyHolder {
+  /** The holder's public id (never the internal PK). */
+  id: string;
+  name: string;
+  title: string;
+}
+
+/** A board refused because another project already renders under its key. A host maps it to 409. */
+export class BoardKeyCollisionError extends Error {
+  readonly slug: string;
+  readonly existing: BoardKeyHolder;
+  constructor(slug: string, existing: BoardKeyHolder) {
+    super(
+      `board title "${existing.title}" of project "${existing.name}" (${existing.id}) already uses the ` +
+      `render key "${slug}". Two boards with one key would share each other's stored keyframes and ` +
+      `LoRAs. Give this board a different title.`,
+    );
+    this.name = "BoardKeyCollisionError";
+    this.slug = slug;
+    this.existing = existing;
+  }
+}
+
+/** The other project in this tenant whose saved board renders under `slug`, or null.
+ *
+ *  Reads every project with a saved board, not a bounded page: a cap would make "no holder" mean "not in
+ *  the first N", which is the absence this check exists to rule out. Only the title is read from SQL
+ *  (`json_extract`), so the cost is one short string per project. A row whose stored board is not valid
+ *  JSON is skipped by `json_valid` rather than failing the save. */
+export async function findBoardKeyHolder(
+  env: DbEnv,
+  slug: string,
+  excludeId: number,
+): Promise<BoardKeyHolder | null> {
+  const result = await env.DB.prepare(
+    `SELECT public_id, name, json_extract(last_storyboard_json, '$.title') AS title
+       FROM storyboard_projects
+      WHERE id != ?
+        AND last_storyboard_json IS NOT NULL
+        AND json_valid(last_storyboard_json)
+      ORDER BY created_at ASC, id ASC`
+  )
+    .bind(excludeId)
+    .all<{ public_id: string; name: string; title: unknown }>();
+  for (const r of result.results || []) {
+    if (typeof r.title !== "string" || r.title.trim().length === 0) continue;
+    if (normalizeProjectName(r.title) === slug) return { id: r.public_id, name: r.name, title: r.title };
+  }
+  return null;
+}
+
+/** Save `storyboard` as project `id`'s last board. Throws `BoardKeyCollisionError`, writing nothing,
+ *  when another project's board already uses its key (core#518). Saving a project's own board again, or
+ *  retitling it, is never refused by itself. Not transactional: two concurrent first saves of one key can
+ *  both pass, which a host serializing saves per tenant would close. */
 export async function setLastStoryboard(
   env: DbEnv,
   id: number,
   storyboard: unknown,
 ): Promise<StoryboardProject | null> {
+  const slug = boardKeySlug(storyboard);
+  if (slug !== null) {
+    const holder = await findBoardKeyHolder(env, slug, id);
+    if (holder) throw new BoardKeyCollisionError(slug, holder);
+  }
   const sbJson = JSON.stringify(storyboard);
   const row = await env.DB.prepare(
     `UPDATE storyboard_projects
