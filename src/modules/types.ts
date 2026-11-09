@@ -41,7 +41,7 @@ export type HookName =
   | "motion.backend" // keyframe (+ motion prompt) -> shot clip. GPU or cloud, pick one per shot.
   | "finish"         // post-process a clip: interpolation / upscale / face restore. Chainable.
   | "score"          // add audio to a film: music / narration / beat-sync. Chainable.
-  | "dialogue"       // per-shot dialogue lines -> TTS audio (one voice per cast member). Pick one.
+  | "dialogue"       // per-shot dialogue lines -> TTS audio (one voice per cast member). Pick one: the caller's dialogue_backend, else the first by ui.order (core#339).
   | "speech"         // per-shot dialogue audio -> cleaned / enhanced dialogue audio. Post-dialogue, pre-finish. Chainable.
   | "plan.enhance"   // expand a storyboard before render: LLM auto-direction. Chainable.
   | "image.generate" // prompt -> a single generated image. Pick one.
