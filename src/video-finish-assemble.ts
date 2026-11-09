@@ -491,6 +491,46 @@ async function refusalText(resp: Response): Promise<string> {
     .slice(0, SUBMIT_DETAIL_MAX_CHARS);
 }
 
+/**
+ * core#308: the longest a single request to the video-finish door may take before the tick gives up on
+ * it. Before this the submit (and the status poll) had no bound at all: a door that never answered
+ * started no capacity clock and no transport clock, so `assemble` sat with no error, which reads the
+ * same as work in progress (vivijure-cf#841, film-40e0cd09: about 4.5 minutes, then it failed only
+ * because the platform gave up first).
+ *
+ * The number, and why. The door is a Cloudflare Container behind a Durable Object. The container
+ * library vivijure-cf runs (`@cloudflare/containers` 0.3.7, `dist/lib/container.js`) gives up a start
+ * after TIMEOUT_TO_GET_CONTAINER_MS (8 s) plus TIMEOUT_TO_GET_PORTS_MS (20 s), 28 s, and vivijure-cf
+ * overrides neither. Past that the library has already failed the request itself, so a request still
+ * open is not a slow cold start. The door's own work on a submit is to accept and queue (it answers
+ * 202 and the job runs after), and a poll reads in-memory state. 60 s is about twice the start ceiling.
+ * It is a documented bound, not a measured p99: no cold-start latency for this door is recorded.
+ *
+ * A submit that times out is `unreachable`, so it takes the core#377 transport hold (15 minutes with
+ * backoff, then it fails by name) like any other transport failure. A poll that times out is a miss,
+ * counted by the not-found streak, the same as a poll whose transport threw.
+ */
+export const FINISH_DOOR_TIMEOUT_SECONDS = 60;
+
+/** core#308: run one door request with a deadline. The signal is passed to the transport so one that
+ *  honours it closes the connection; the race bounds the call even for a transport that ignores it. */
+async function withDoorDeadline<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ctl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const e = new Error(`no answer within ${FINISH_DOOR_TIMEOUT_SECONDS}s`);
+      ctl.abort(e);
+      reject(e);
+    }, FINISH_DOOR_TIMEOUT_SECONDS * 1000);
+  });
+  try {
+    return await Promise.race([run(ctl.signal), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function submitAsync(env: Env, payload: FinishPayload, affinity?: string): Promise<SubmitOutcome> {
   const headers = await mediaFinishHeaders(env);
   const init = {
@@ -500,7 +540,7 @@ async function submitAsync(env: Env, payload: FinishPayload, affinity?: string):
   };
   let resp: Response | null = null;
   try {
-    resp = await videoFinishFetch(env, "/async/finish", init);
+    resp = await withDoorDeadline((signal) => videoFinishFetch(env, "/async/finish", { ...init, signal }));
   } catch (e) {
     if (isMediaFinishAuthError(e)) throw e;
     // The transport failed: NXDOMAIN, connection refused, or a container that died before binding
@@ -561,7 +601,8 @@ async function pollVia(
   const headers = await mediaFinishHeaders(env);
   let resp: Response;
   try {
-    resp = await send(`/async/status/${encodeURIComponent(jobId)}`, { headers });
+    // core#308: bounded like the submit. A poll that never answers is a miss, as a thrown transport is.
+    resp = await withDoorDeadline((signal) => send(`/async/status/${encodeURIComponent(jobId)}`, { headers, signal }));
   } catch {
     return { kind: "missing" };
   }
