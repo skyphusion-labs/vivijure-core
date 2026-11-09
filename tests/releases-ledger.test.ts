@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
+import { PUBLISHED_ANNOTATIONS, SOURCE_ANNOTATIONS } from "../scripts/ledger-close.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RELEASES_PATH = resolve(root, "RELEASES.md");
@@ -65,6 +66,10 @@ function parseLedger(md: string): LedgerRow[] {
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // Short or full git sha, or empty. Refuse placeholders.
 const SHA_OR_EMPTY = /^(?:[0-9a-f]{7,40})?$/i;
+// core#334: a version the registry never served carries one of these exact annotations in place of
+// a date or sha. Only the exact strings count, so a free-form claim is still refused.
+const isPublishedAnnotation = (v: string) => PUBLISHED_ANNOTATIONS.includes(v.trim());
+const isSourceAnnotation = (v: string) => SOURCE_ANNOTATIONS.includes(v.trim());
 
 describe("RELEASES.md published column (core#126)", () => {
   const md = readFileSync(RELEASES_PATH, "utf8");
@@ -97,7 +102,7 @@ describe("RELEASES.md published column (core#126)", () => {
   it("when published is filled, it is an ISO date (YYYY-MM-DD) from the registry close step", () => {
     const bad = rows.filter((r) => {
       const p = r.published.trim();
-      return p.length > 0 && !ISO_DATE.test(p);
+      return p.length > 0 && !ISO_DATE.test(p) && !isPublishedAnnotation(p);
     });
     expect(
       bad,
@@ -107,7 +112,7 @@ describe("RELEASES.md published column (core#126)", () => {
   });
 
   it("when source commit is filled, it is a git sha (not a free-form claim)", () => {
-    const bad = rows.filter((r) => !SHA_OR_EMPTY.test(r.sourceCommit.trim()));
+    const bad = rows.filter((r) => !SHA_OR_EMPTY.test(r.sourceCommit.trim()) && !isSourceAnnotation(r.sourceCommit));
     expect(
       bad,
       bad
@@ -215,8 +220,8 @@ describe("RELEASES.md published column (core#126)", () => {
     const commitDate = (commit: string): string => commitDateMap.get(commit) ?? "";
     const bare = (t: string) => t.replace(/`/g, "").trim();
 
-    const filledSha = rows.filter((r) => r.sourceCommit.trim().length > 0);
-    const filledPub = rows.filter((r) => r.published.trim().length > 0);
+    const filledSha = rows.filter((r) => r.sourceCommit.trim().length > 0 && !isSourceAnnotation(r.sourceCommit));
+    const filledPub = rows.filter((r) => r.published.trim().length > 0 && !isPublishedAnnotation(r.published));
 
     // REFUSALS FIRST. Each is a state in which every claim below would pass while measuring
     // nothing, so none of them may be a silent skip.
