@@ -5,6 +5,10 @@
 // Key custody (#60): invoke-scoped tenant keys can GET /health and submit jobs but get 401 on
 // PATCH /endpoints/{id}. DIY operators with a full graphql-R/W key get silent reconcile; hosted
 // tenants get honest guidance instead of a cryptic "no workers available" failure.
+//
+// REST v1 retires 2026-11-15. A 404 or 410 on the read is terminal: it must not look like the
+// healthy no-op used for a transient miss (network error, 5xx). 401 and 403 stay the scoped-key
+// path. RUNPOD_REST_BASE stays on v1; the successor base is named in the error only.
 
 export const RUNPOD_REST_BASE = "https://rest.runpod.io/v1";
 
@@ -23,6 +27,13 @@ export interface EndpointReconcileOpts {
   endpointId: string;
   spec: EndpointWorkersSpec;
   fetchImpl?: typeof fetch;
+  /**
+   * Kill switch. When true, do not call REST and return a healthy no-op.
+   * Fail-closed on a retired v1 would otherwise block submit. This package does not read
+   * process.env; the submit helper maps RUNPOD_RECONCILE_DISABLED onto this flag. Callers
+   * that invoke reconcile themselves pass it directly.
+   */
+  disabled?: boolean;
 }
 
 /** Pure: does the live workersMax need restoring to the spec? */
@@ -32,6 +43,16 @@ export function endpointWorkersMaxNeedsRestore(
 ): boolean {
   if (current == null || !Number.isFinite(current)) return false;
   return current < expected;
+}
+
+/** Honest operator-facing text when REST v1 answers 404 or 410. Not a transient read. */
+export function retiredV1ReadGuidance(status: number): string {
+  return (
+    `RunPod REST v1 returned HTTP ${status} for this endpoint. ` +
+    "https://rest.runpod.io/v1 retires on 2026-11-15 with 410 Gone, and a 404 is the same terminal miss. " +
+    "workersMax was not restored. This is not a healthy no-op. " +
+    "Successor base: https://api.runpod.io/v2."
+  );
 }
 
 /** Honest operator-facing text when a scoped invoke key cannot PATCH. */
@@ -106,12 +127,16 @@ export async function patchEndpointWorkersMax(
 }
 
 /**
- * Reconcile one endpoint before submit. When the key cannot manage endpoints (401), returns honest
- * guidance instead of proceeding into a dead submit.
+ * Reconcile one endpoint before submit. When the key cannot manage endpoints (401 or 403), returns
+ * honest guidance instead of proceeding into a dead submit. A 404 or 410 is also a failure: REST v1
+ * retiring must not be reported as a healthy no-op. Network errors and 5xx stay best-effort.
  */
 export async function reconcileRunpodEndpointWorkersMax(
   opts: EndpointReconcileOpts,
 ): Promise<EndpointReconcileResult> {
+  if (opts.disabled) {
+    return { ok: true, action: "none" };
+  }
   const { apiKey, endpointId, spec } = opts;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const expected = spec.workersMax;
@@ -128,8 +153,17 @@ export async function reconcileRunpodEndpointWorkersMax(
       status: live.status,
     };
   }
+  if (live.status === 404 || live.status === 410) {
+    return {
+      ok: false,
+      error: `RunPod REST v1 endpoint read is terminal: HTTP ${live.status}`,
+      guidance: retiredV1ReadGuidance(live.status),
+      status: live.status,
+    };
+  }
   if (live.workersMax == null) {
-    // Best-effort: do not block submit on a transient config read failure.
+    // Best-effort: do not block submit on a transient config read failure (network error, 5xx,
+    // or any other non-terminal status). 404 and 410 are returned above.
     return { ok: true, action: "none" };
   }
   if (!endpointWorkersMaxNeedsRestore(live.workersMax, expected)) {

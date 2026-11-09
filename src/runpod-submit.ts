@@ -762,12 +762,25 @@ function parseWorkersMaxSpec(raw: unknown): number | null {
   return null;
 }
 
+/** Explicit on-values only. "0" and "false" stay off. Core does not read process.env; the host passes env. */
+function reconcileDisabledFlag(raw: unknown): boolean {
+  if (raw === true || raw === 1) return true;
+  if (typeof raw === "string") {
+    const v = raw.trim().toLowerCase();
+    return v === "1" || v === "true" || v === "yes" || v === "on";
+  }
+  return false;
+}
+
 async function reconcileEndpointIfConfigured(
   env: Env,
   apiKey: string,
   endpointId: string,
   opts?: RunpodTransportOpts,
 ): Promise<RunpodResult | null> {
+  const disabled = reconcileDisabledFlag(
+    (env as { RUNPOD_RECONCILE_DISABLED?: unknown }).RUNPOD_RECONCILE_DISABLED,
+  );
   const specRaw =
     (env as { RUNPOD_WORKERS_MAX?: unknown }).RUNPOD_WORKERS_MAX ??
     (env as { RUNPOD_ENDPOINT_WORKERS_MAX?: unknown }).RUNPOD_ENDPOINT_WORKERS_MAX;
@@ -782,6 +795,7 @@ async function reconcileEndpointIfConfigured(
     endpointId,
     spec: { workersMax },
     fetchImpl: opts?.fetchImpl,
+    disabled,
   });
   if (rec.ok) return null;
   const msg = rec.guidance ? `${rec.error}. ${rec.guidance}` : rec.error;

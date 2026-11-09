@@ -341,4 +341,26 @@ describe("the account-level workers-max reconcile is skipped on a proxied tenant
     );
     expect(calls.map((c) => hostOf(c.url))).toContain("rest.runpod.io");
   });
+
+  it("RUNPOD_RECONCILE_DISABLED skips the REST read even when workersMax is set", async () => {
+    const { fetchImpl, calls } = recordingFetch(() => jsonResponse(okEnvelope));
+    await submitRenderJob(
+      { ...directEnv, RUNPOD_WORKERS_MAX: 3, RUNPOD_RECONCILE_DISABLED: "1" } as never,
+      { bundleKey: "bundles/x.tar.gz" },
+      fastOpts(fetchImpl),
+    );
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.map((c) => hostOf(c.url))).not.toContain("rest.runpod.io");
+    expect(calls.map((c) => hostOf(c.url))).toContain("api.runpod.ai");
+  });
+
+  it("CONTROL: RUNPOD_RECONCILE_DISABLED=0 still reaches rest.runpod.io", async () => {
+    const { fetchImpl, calls } = recordingFetch(() => jsonResponse({ workersMax: 3 }));
+    await submitRenderJob(
+      { ...directEnv, RUNPOD_WORKERS_MAX: 3, RUNPOD_RECONCILE_DISABLED: "0" } as never,
+      { bundleKey: "bundles/x.tar.gz" },
+      fastOpts(fetchImpl),
+    );
+    expect(calls.map((c) => hostOf(c.url))).toContain("rest.runpod.io");
+  });
 });
