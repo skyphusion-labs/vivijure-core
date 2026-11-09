@@ -55,6 +55,24 @@ export const EXIT = {
 };
 
 export const PACKAGE = "@skyphusion-labs/vivijure-core";
+
+/**
+ * Annotations a ledger row carries INSTEAD of a date, for a version the registry never served
+ * (core#334). A row is history and is never deleted; an empty cell cannot say "this never shipped"
+ * because it reads identically to "shipped, not yet closed". A cell holding one of these IS closed:
+ * `published` is NEVER_PUBLISHED (tagged, no npm package) or NEVER_RELEASED (no tag either), and
+ * `source commit` is NO_COMMIT when there is no tag to point at. An EMPTY cell is still open.
+ */
+export const NEVER_PUBLISHED = "NEVER PUBLISHED";
+export const NEVER_RELEASED = "NEVER RELEASED";
+export const NO_COMMIT = "NONE";
+export const PUBLISHED_ANNOTATIONS = [NEVER_PUBLISHED, NEVER_RELEASED];
+export const SOURCE_ANNOTATIONS = [NO_COMMIT];
+
+/** A row is closed when BOTH cells are non-empty: a registry date and sha, or an annotation above. */
+export function isClosed(row) {
+  return Boolean(row.sourceCommit && row.published);
+}
 const TAG_PREFIX = "vivijure-core-v";
 
 /** One ledger row, as parsed. `sourceCommit` / `published` are "" when the cell is empty. */
@@ -88,7 +106,7 @@ export function isIsoDate(v) {
  */
 export function decideClose({ row, tagCommit, registryIso }) {
   if (!row) return { action: "refuse", exit: EXIT.rowNotFound, reason: "no ledger row for that version" };
-  if (row.sourceCommit && row.published) {
+  if (isClosed(row)) {
     return { action: "already-closed", exit: EXIT.ok, reason: "row already closed; refusing to rewrite it" };
   }
   if (!tagCommit) {
@@ -141,7 +159,7 @@ export function fillRow(markdown, row, sourceCommit, published) {
 export function findUnclosedPublishedRows(rows, publishedVersions, exemptVersion = null) {
   const serving = new Set(publishedVersions);
   return rows.filter(
-    (r) => serving.has(r.version) && r.version !== exemptVersion && !(r.sourceCommit && r.published),
+    (r) => serving.has(r.version) && r.version !== exemptVersion && !isClosed(r),
   );
 }
 

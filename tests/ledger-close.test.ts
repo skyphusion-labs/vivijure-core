@@ -6,6 +6,7 @@ import {
   deriveNewestServed,
   fillRow,
   findUnclosedPublishedRows,
+  isClosed,
   isIsoDate,
   parseLedgerRows,
 } from "../scripts/ledger-close.mjs";
@@ -246,5 +247,43 @@ describe("core#318 compareVersions is numeric per segment", () => {
     const d = deriveNewestServed(["1.8.0", "1.9.0", "1.10.0"], "1.10.0");
     expect(d.ok).toBe(true);
     expect(d.version).toBe("1.10.0");
+  });
+});
+
+// core#334: two rows record a release that never reached npm. They are annotated, not deleted, and
+// an annotation is a CLOSED cell while an empty cell is still open.
+const ROW_1180 =
+  "| `vivijure-core-v1.18.0` | 1.18.0 | 6259624 | NEVER PUBLISHED | **TAGGED, NEVER PUBLISHED to npm.** |";
+const ROW_1190 =
+  "| `vivijure-core-v1.19.0` | 1.19.0 | NONE | NEVER RELEASED | **NEVER RELEASED: no tag.** |";
+const OPEN_ROW_1190 = "| `vivijure-core-v1.19.0` | 1.19.0 |  |  | **MINOR.** |";
+
+describe("core#334 annotated rows are closed, empty cells are still open", () => {
+  it("1.18.0 (tagged, never published): the annotation closes it, even if a registry served it", () => {
+    const rows = parseLedgerRows(ROW_1180);
+    expect(rows[0].published).toBe("NEVER PUBLISHED");
+    expect(isClosed(rows[0])).toBe(true);
+    expect(findUnclosedPublishedRows(rows, ["1.18.0", "1.20.0"])).toEqual([]);
+    expect(decideClose({ row: rows[0], tagCommit: "6259624abc", registryIso: null }).action).toBe("already-closed");
+  });
+
+  it("1.19.0 (never released): the annotation closes it, even if a registry served it", () => {
+    const rows = parseLedgerRows(ROW_1190);
+    expect(rows[0].sourceCommit).toBe("NONE");
+    expect(isClosed(rows[0])).toBe(true);
+    expect(findUnclosedPublishedRows(rows, ["1.19.0", "1.20.0"])).toEqual([]);
+    expect(decideClose({ row: rows[0], tagCommit: null, registryIso: null }).action).toBe("already-closed");
+  });
+
+  it("CONTROL: a real empty cell is still flagged, so the annotation is not 'anything closes'", () => {
+    const rows = parseLedgerRows(OPEN_ROW_1190);
+    expect(isClosed(rows[0])).toBe(false);
+    expect(findUnclosedPublishedRows(rows, ["1.19.0", "1.20.0"]).map((r: { version: string }) => r.version)).toEqual(["1.19.0"]);
+  });
+
+  it("CONTROL: a half-annotated row (one empty cell) is still open", () => {
+    const half = parseLedgerRows("| `vivijure-core-v1.18.0` | 1.18.0 | 6259624 |  | **x** |");
+    expect(isClosed(half[0])).toBe(false);
+    expect(findUnclosedPublishedRows(half, ["1.18.0", "1.20.0"])).toHaveLength(1);
   });
 });
