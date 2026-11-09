@@ -444,6 +444,9 @@ export interface FilmJob {
   jobs_cancel_asked?: boolean;
   // Consecutive ticks in which a keyframe poll failed in transport. Reset by a tick with none.
   keyframe_poll_attempts?: number;
+  // core#427: when that run of failing ticks began. The film fails only once it has also lasted
+  // CLIP_POLL_TOLERANCE_SECONDS, so fast client polls cannot spend the tolerance. Reset with the count.
+  keyframe_poll_failing_since?: number;
   keyframe_job_ids?: string[];
   // Chunks that already returned output while sibling chunks are still polling. Merged once
   // every poll finishes (last-write-wins on a duplicate shot_id).
