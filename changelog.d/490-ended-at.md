@@ -1,7 +1,0 @@
-### Fix: a finished film or scatter job reports how long it ran, however late it is first polled (vivijure-core#490)
-
-A film's and a scatter job's poll view reported `executionTimeMs` as `now - created_at` even after the job had finished, so a job first polled late recorded a late figure. Measured on vivijure-core#490 over 191 finished studio renders: the stored figure ran over the film's own end by p50 38.9 s and up to 5.2 days. `phase_started_at` could not serve as the end stamp: a cancel, the advance catch path and the start-path failures never write it, and three live films (`film-8a5d078`, `film-203070d`, `film-b741ee8`) would have under-reported, one by 24 minutes.
-
-Now both job docs carry `ended_at`, written by one helper (`endJob` / `cancelJob` in `src/job-end.ts`) at every terminal transition: done, failed and cancelled. All 66 terminal sites go through it, and `tests/job-end-490.test.ts` scans `src/` and fails on a terminal phase or a cancel written any other way. The poll views report `ended_at - created_at` for a finished job and `now - created_at` while it runs. A finish retry clears the stamp while it runs; a retry that fails restores the film it reopened, stamp and all.
-
-**For a host.** `FilmJob` and `ScatterJob` gain an optional `ended_at`. A render row's `execution_time_ms` for a job that finishes after this release is its real runtime. A doc written before it has no stamp and keeps the old figure. Billing does not read this figure: RunPod bills GPU time from its own records. This is a correctness fix, not a cost fix.

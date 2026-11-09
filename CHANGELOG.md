@@ -3,7 +3,37 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.41.3
+## [1.41.3] -- 2026-11-09
+
+### Fix: the notify hook table names `render.failed`, and a scatter render whose mux door is not configured says it failed (vivijure-core#357)
+
+#348 widened the `notify` contract to `render.failed`, but the hook table still said "render-complete notification" at `HookName` and in `HOOK_BLURBS`. A module author reads those lines first. Both now name both events.
+
+On the scatter door, `fireNotifyForScatter` returned early with no `film_key` and always sent `render.complete`. The scatter mux leg for an unconfigured video-finish door fails the render and leaves `film_key` unset, so a scatter render that paid for every shard ended with no notice at all. That leg now sends `render.failed` and links the retained silent cut without making it `film_key`, the same shape the film path's `degradeMuxUnavailable` uses. `fireNotifyForScatter` takes the same `{ event, key }` options as the film path's `fireNotify`.
+
+**For a host.** The `GET /api/modules` blurb for `notify` changes text. A notify module can now get `render.failed` from a scatter render, which a module that handles only `render.complete` must not announce as a finished film; the contract already says so.
+
+### Fix: a 4xx from the URL beat door fails on the first read instead of burning the attempt cap (vivijure-core#358)
+
+`analyzeViaUrl` classed every non-2xx from the beat door as transient. That is the safe direction for a paid film, but a 400 or a 404 is the container answering and refusing, so three attempts gave the same verdict three times. New `beatDoorStatusTransient(status)`: a 4xx is permanent except 408 and 429, which mean "come back". A 404 on this door means the container has no `/analyze` route, which is a deploy or config mismatch. Every other status, 5xx included, stays transient, unchanged. No 4xx has been observed from this door; this records the cost before one shows up.
+
+**For a host.** A film whose beat door answers 4xx (not 408 or 429) now fails on the first beat read with the same `beats were not read: beat-sync container returned HTTP <status>` error, instead of on the third.
+
+### Fix: a finished film or scatter job reports how long it ran, however late it is first polled (vivijure-core#490)
+
+A film's and a scatter job's poll view reported `executionTimeMs` as `now - created_at` even after the job had finished, so a job first polled late recorded a late figure. Measured on vivijure-core#490 over 191 finished studio renders: the stored figure ran over the film's own end by p50 38.9 s and up to 5.2 days. `phase_started_at` could not serve as the end stamp: a cancel, the advance catch path and the start-path failures never write it, and three live films (`film-8a5d078`, `film-203070d`, `film-b741ee8`) would have under-reported, one by 24 minutes.
+
+Now both job docs carry `ended_at`, written by one helper (`endJob` / `cancelJob` in `src/job-end.ts`) at every terminal transition: done, failed and cancelled. All 66 terminal sites go through it, and `tests/job-end-490.test.ts` scans `src/` and fails on a terminal phase or a cancel written any other way. The poll views report `ended_at - created_at` for a finished job and `now - created_at` while it runs. A finish retry clears the stamp while it runs; a retry that fails restores the film it reopened, stamp and all.
+
+**For a host.** `FilmJob` and `ScatterJob` gain an optional `ended_at`. A render row's `execution_time_ms` for a job that finishes after this release is its real runtime. A doc written before it has no stamp and keeps the old figure. Billing does not read this figure: RunPod bills GPU time from its own records. This is a correctness fix, not a cost fix.
+
+### Fix: a pending keyframe poll no longer cancels a finished job and loses its output (vivijure-core#493)
+
+The backend writes each keyframe PNG to R2 before its job returns. So a healthy job always has a window where R2 holds the full set and RunPod still says IN_PROGRESS. The pending-poll adopt (#129 sibling, which exists for an envelope that freezes at IN_PROGRESS) ran on the first poll in that window. It cancelled a job that had finished, and it lost everything only in the job output, including the plate count record. Measured on vivijure-core#493: RunPod job `2092b5e5-...-u1` was CANCELLED with a full output carrying `plate_count`, and its studio row had none.
+
+Now the first pending poll that sees the full set stamps `keyframe_r2_full_at` and holds. The adopt runs on a later pending poll once `KEYFRAME_R2_ADOPT_GRACE_SECONDS` (120 s) have passed. A healthy job returns inside that window and takes the normal path. A frozen envelope is adopted about 2 minutes later than before, still far inside the 20 minute stall ceiling. An adopt also keeps the outputs that sibling keyframe jobs already returned, which the parallel path parks, so those shots keep their records instead of taking the bare R2 key.
+
+**For a host.** `FilmJob` gains an optional `keyframe_r2_full_at`. A keyframes-only preview whose envelope freezes finishes up to about 2 minutes later. No contract change.
 
 ## [1.41.2] -- 2026-11-06
 
