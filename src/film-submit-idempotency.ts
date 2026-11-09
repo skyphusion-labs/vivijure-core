@@ -146,6 +146,9 @@ export function naturalKeyForStartFilmJob(args: {
   dialogue_lines?: unknown;
   cast_loras?: Record<string, number>;
   film_titles?: unknown;
+  delivery_width?: number;
+  delivery_height?: number;
+  delivery_fps?: number;
 }): FilmSubmitIdentity {
   return {
     entry: "startFilmJob",
@@ -177,6 +180,9 @@ export function naturalKeyForStartFilmJob(args: {
       dialogue_lines: args.dialogue_lines ?? null,
       cast_loras: args.cast_loras ?? null,
       film_titles: args.film_titles ?? null,
+      // core#431: render-affecting. A part pinned to one frame or rate is not the same film as one pinned
+      // to another, or as one left to the clips; without these the second submit inherits the first.
+      ...deliveryPin(args),
     },
   };
 }
@@ -202,6 +208,9 @@ export function naturalKeyForStartFromKeyframes(args: {
   parent_render_id?: number;
   audio_key?: string;
   dialogue_lines?: unknown;
+  delivery_width?: number;
+  delivery_height?: number;
+  delivery_fps?: number;
 }): FilmSubmitIdentity {
   return {
     entry: "startFilmFromKeyframes",
@@ -230,8 +239,20 @@ export function naturalKeyForStartFromKeyframes(args: {
       parent_render_id: args.parent_render_id ?? null,
       audio_key: args.audio_key ?? null,
       dialogue_lines: args.dialogue_lines ?? null,
+      // core#431: render-affecting, as on startFilmJob.
+      ...deliveryPin(args),
     },
   };
+}
+
+/** core#431: the delivery pin in the fingerprint. Spread only when set, so a submit that pins nothing keeps
+ *  the key it had before this field existed and an in-flight submit across the upgrade still deduplicates. */
+function deliveryPin(args: { delivery_width?: number; delivery_height?: number; delivery_fps?: number }): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (args.delivery_width !== undefined) out.delivery_width = args.delivery_width;
+  if (args.delivery_height !== undefined) out.delivery_height = args.delivery_height;
+  if (args.delivery_fps !== undefined) out.delivery_fps = args.delivery_fps;
+  return out;
 }
 
 /**
