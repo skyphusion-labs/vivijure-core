@@ -210,6 +210,7 @@ import { resolveStagedAudioKey } from "./audio-stage.js";
 import { getCastById, markLoraReady } from "./cast-db.js";
 import { claimFilmAdvance, holdFilmAdvance, releaseFilmAdvance, type FilmAdvanceClaim } from "./film-advance-lease.js";
 import { withD1Retry } from "./d1-retry.js";
+import { cancelJob, endJob } from "./job-end.js";
 import { deriveLoraDestKey } from "./lora-keys.js";
 import { keyframeProvenanceHash, lineProvenanceHash, writeProv, provVerdict } from "./clip-provenance.js";
 export * from "./film-model.js";
@@ -281,14 +282,14 @@ function completeKeyframesOnly(job: FilmJob, kfOut: KeyframeOutput): void {
   const kfs = kfOut.keyframes || [];
   const missing = missingSceneIds(job.scenes, kfs.map((k) => k.shot_id));
   if (!kfs.length || missing.length) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = missing.length
       ? incompleteFilmError("keyframes", kfs.length, job.scenes.length, missing)
       : "keyframe stage produced no keyframes";
     return;
   }
   job.keyframes = kfs.map(keyframeRef);
-  job.phase = "done";
+  endJob(job, "done");
 }
 
 /** Storyboard shots with no artifact. Empty means the film is whole. */
@@ -486,7 +487,7 @@ async function afterKeyframeOutput(env: Env, job: FilmJob, kfOut: KeyframeOutput
   try {
     confined = confineKeyframeOutput(job.project, kfOut);
   } catch (e) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = e instanceof Error ? e.message : String(e);
     return;
   }
@@ -529,7 +530,7 @@ function endFrameShot<T extends { shot_id: string }>(
 async function advanceToClips(env: Env, job: FilmJob, kfOut: KeyframeOutput, preModules?: RegisteredModule[]): Promise<void> {
   const { matched, missing } = joinKeyframesToScenes(job.scenes, kfOut.keyframes || []);
   if (!matched.length || missing.length) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = job.scenes.length
       ? incompleteFilmError("keyframes", matched.length, job.scenes.length, missing)
       : "keyframe stage produced none of the requested shots (this film has no scenes; the bundle storyboard is empty or shot ids did not match)";
@@ -771,7 +772,7 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
   const doneClips = clipJob.shots.filter((s) => s.status === "done" && s.clip_key);
   const missingClips = missingSceneIds(job.scenes, doneClips.map((s) => s.shot_id));
   if (missingClips.length) {
-    job.phase = "failed";
+    endJob(job, "failed");
     const reasons = describeClipFailures(clipJob);
     job.error = incompleteFilmError(
       "clips",
@@ -795,7 +796,7 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
     // resolve an unknown choice to null because motion.backend has a built-in fallback; there is no
     // fallback here, and silently delivering a film without the step someone asked for is the cf#500
     // failure from the other side.
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = `finish module(s) requested but not serving: ${picked.missing.join(", ")}`;
     return;
   }
@@ -808,7 +809,7 @@ async function enterFinishPhase(env: Env, job: FilmJob, clipJob: ClipJob, preMod
     // no consumer and synthesizing it would be spend with no destination. It is still a silence the
     // payload does not carry; the record for it belongs in the same projection cf#836 is adding,
     // not in a second ad-hoc channel here.
-    job.phase = job.clips_only ? "done" : "assemble";
+    if (job.clips_only) endJob(job, "done"); else job.phase = "assemble";
     return;
   }
   // #584 dialogue-aware finish order: an audio-consuming finish module (lip-sync) runs FIRST on the
@@ -930,7 +931,7 @@ async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: Registe
   const envRec = env as unknown as Record<string, unknown>;
   const fetcher = dialogueModule ? resolveFetcher(envRec, dialogueModule.binding) : null;
   if (!fetcher) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = incompleteFilmError("dialogue", 0, lines.length, lines.map((l) => l.shot_id), "no dialogue module bound");
     return;
   }
@@ -943,7 +944,7 @@ async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: Registe
   emitStructuredEvent({ ev: "dialogue.pre_clip", film_id: job.film_id, project: job.project, shots: lines.length });
   const r = await invokeModule<DialogueInput, DialogueOutput>(fetcher, req);
   if (!r.ok) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = incompleteFilmError("dialogue", 0, lines.length, lines.map((l) => l.shot_id), r.error);
     return;
   }
@@ -955,7 +956,7 @@ async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: Registe
   if ("output" in r) {
     const v = hookOutputViolation(dialogueModule.name, "dialogue", r.output);
     if (v) {
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = incompleteFilmError("dialogue", 0, lines.length, lines.map((l) => l.shot_id), v);
       return;
     }
@@ -967,7 +968,7 @@ async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: Regis
   const lined = linedDialogueShots(job.dialogue_lines);
   const holes = lined.filter((l) => !job.dialogue_audio?.[l.shot_id]).map((l) => l.shot_id);
   if (holes.length) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = incompleteFilmError("dialogue", lined.length - holes.length, lined.length, holes);
     return;
   }
@@ -1023,14 +1024,14 @@ async function advancePreClipDialoguePhase(env: Env, job: FilmJob, preModules: R
     const lined = linedDialogueShots(job.dialogue_lines);
     if (!fetcher) {
       job.dialogue_poll = undefined;
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = incompleteFilmError("dialogue", 0, lined.length, lined.map((l) => l.shot_id), "dialogue module no longer bound");
       return;
     }
     const p = await pollModule<DialogueOutput>(fetcher, { poll: job.dialogue_poll });
     if (!p.ok) {
       job.dialogue_poll = undefined;
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = incompleteFilmError("dialogue", 0, lined.length, lined.map((l) => l.shot_id), p.error);
       return;
     }
@@ -1039,7 +1040,7 @@ async function advancePreClipDialoguePhase(env: Env, job: FilmJob, preModules: R
     const v = hookOutputViolation(dialogueModule.name, "dialogue", out);
     if (v) {
       job.dialogue_poll = undefined;
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = incompleteFilmError("dialogue", 0, lined.length, lined.map((l) => l.shot_id), v);
       return;
     }
@@ -1053,7 +1054,7 @@ async function advancePreClipDialoguePhase(env: Env, job: FilmJob, preModules: R
  *  drift from each other the way the whole leg drifted from the pre-clip one (cf#834). */
 function failDialogue(job: FilmJob, lined: DialogueLine[], extra: string): void {
   job.dialogue_poll = undefined;
-  job.phase = "failed";
+  endJob(job, "failed");
   const holes = lined.filter((l) => !job.dialogue_audio?.[l.shot_id]).map((l) => l.shot_id);
   job.error = incompleteFilmError("dialogue", lined.length - holes.length, lined.length, holes, extra);
 }
@@ -1827,12 +1828,12 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
     // through this check into assemble (GHSA-hcr9-8jc2-9q4c).
     const blocked = finishPhaseBlockers(finishShots);
     if (blocked.length) {
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = `finish failed for ${blocked.length} shot(s): ` +
         blocked.map((fs) => `${fs.shot_id} at ${fs.chain[fs.idx] ?? "?"} (${fs.error ?? "no error"})`).join("; ");
       return;
     }
-    job.phase = job.clips_only ? "done" : "assemble";
+    if (job.clips_only) endJob(job, "done"); else job.phase = "assemble";
   }
 }
 
@@ -2085,7 +2086,7 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
   if (!complete) return;
   job.film_finish_resume = undefined;
   job.assemble_wait = undefined;
-  job.phase = "done";
+  endJob(job, "done");
   if (job.finish_incomplete?.length) {
     emitStructuredEvent({
       ev: "film.finish_incomplete",
@@ -2124,7 +2125,7 @@ async function transitionToDone(env: Env, job: FilmJob, preModules?: RegisteredM
   if (owesFilm) {
     const verdict = filmKey ? await validateFilmArtifact(env, filmKey) : null;
     if (!verdict || verdict.verdict === "fail") {
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = verdict
         ? `assembled film at ${filmKey} is not deliverable: ${verdict.reason}`
         : `no assembled film in R2 for ${job.film_id} (probed ${defaultFilmOutputKey(job.film_id)})`;
@@ -2933,7 +2934,7 @@ async function degradeAssembleUnavailable(
   job.finish_unavailable = { at: "assemble", reason, retained: "clips", clips: finalClips };
   noteFinishIncomplete(job, { stage: "assemble", step: "assemble", code: "unavailable", detail: reason, kept: "the per-shot clips" });
   emitFinishUnavailable(job);
-  job.phase = "failed";
+  endJob(job, "failed");
   job.error = reason;
   await fireNotify(env, job, preModules, { event: "render.failed" });
 }
@@ -2971,7 +2972,7 @@ async function degradeMuxUnavailable(env: Env, job: FilmJob, silentKey: string, 
     job.finish_unavailable = { at: "mux", reason: reasonKept, retained: "silent_film" };
     noteFinishIncomplete(job, { stage: "mux", step: "mux", code: "unavailable", detail: reasonKept, kept: "the silent cut" });
     emitFinishUnavailable(job);
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = reasonKept;
     await fireNotify(env, job, preModules, { event: "render.failed", key: silentKey });
     return;
@@ -3002,7 +3003,7 @@ async function failIfSongBeatsUnread(env: Env, job: FilmJob, preModules?: Regist
       job.error = `beats read transient (attempt ${attempts}/${FINISH_STEP_MAX_ATTEMPTS}), retrying: ${read.error}`;
       return true;
     }
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = `beats were not read: ${read.error}`;
     return true;
   }
@@ -3124,14 +3125,14 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
     // remux it. The rule is DEGRADE WHEN A RETRY CANNOT HELP, FAIL WHEN IT CAN. The two mux
     // degrades that survive are both the former: the tier being unset (#519) and the container
     // reporting the bed unusable (hasAudio:false, #245/#249/#77).
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = `video-finish mux failed: ${tick.error}`;
     noteFinishIncomplete(job, { stage: "mux", step: "mux", code: tick.capacity ? "wait_exhausted" : "failed", detail: tick.error, kept: "the silent cut" });
     return;
   }
   const body = tick.result as FinishContainerResult;
   if (!body.ok) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = `video-finish mux failed: ${body.error || "unknown error"}`;
     return;
   }
@@ -3307,7 +3308,7 @@ async function enterAssemblePhase(
   finalClips: { shot_id: string; clip_key: string }[],
   preModules?: RegisteredModule[],
 ): Promise<void> {
-  if (!finalClips.length) { job.phase = "failed"; job.error = "no clips to assemble"; return; }
+  if (!finalClips.length) { endJob(job, "failed"); job.error = "no clips to assemble"; return; }
   if (await failIfSongBeatsUnread(env, job, preModules)) return;
 
   // Derive completion from R2 presence: if the concat output is already in R2, a prior
@@ -3402,7 +3403,7 @@ async function enterAssemblePhase(
         basis: admission.basis,
         reason: admission.reason,
       });
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = admission.reason;
       return;
     }
@@ -3470,13 +3471,13 @@ async function enterAssemblePhase(
       await degradeAssembleUnavailable(env, job, finalClips, reason, preModules);
       return;
     }
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = tick.error;
     noteFinishIncomplete(job, { stage: "assemble", step: "assemble", code: "failed", detail: tick.error, kept: "the per-shot clips" });
     return;
   }
   const body = tick.result as FinishContainerResult;
-  if (!body.ok) { job.phase = "failed"; job.error = `video-finish failed: ${body.error || "unknown error"}`; return; }
+  if (!body.ok) { endJob(job, "failed"); job.error = `video-finish failed: ${body.error || "unknown error"}`; return; }
   // Record the assembled artifact`s measured length against ITS key. A film with no film.finish step
   // installed never reaches the chain, so without this the delivered length would be unknown for the
   // ordinary uncarded film -- the common case, not an edge one.
@@ -3509,7 +3510,7 @@ async function enterAssemblePhase(
     );
     const shortfalls = findClipDurationShortfalls(finalClips, actual, planned, fraction);
     if (shortfalls.length > 0) {
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = `duration gate: ${shortfalls.length} shot(s) delivered below ${Math.round(fraction * 100)}% of plan: ` +
         shortfalls.map((sf) => `${sf.shot_id} ${sf.actual.toFixed(2)}s vs planned ${sf.planned.toFixed(2)}s (floor ${sf.floor.toFixed(2)}s)`).join("; ");
       console.warn(`film ${job.film_id}: ${job.error}`);
@@ -3655,7 +3656,8 @@ export async function startFilmFromKeyframes(
     film_finish_config: args.film_finish_config ?? {},
     master_config: args.master_config ?? {},
     keyframe_binding: null,
-    phase: "failed",
+    // Overwritten by endJob below: the job is failed until its clip job starts (core#490).
+    phase: "clips",
     created_at: Date.now(),
     phase_started_at: Date.now(),
     derive_mode: args.derive_mode,
@@ -3670,7 +3672,9 @@ export async function startFilmFromKeyframes(
     // an empty array, and the two start paths produce byte-comparable job docs.
     dialogue_lines: dialogueLines && dialogueLines.length ? dialogueLines : undefined,
   };
+  endJob(job, "failed", job.created_at);
   if (!matched.length) {
+    endJob(job, "failed"); // core#490: it ends now, not when the placeholder was built
     job.error = `no keyframes matched requested shots (missing: ${missing.join(", ")})`;
     // A submit that spent nothing must not hold the window against a legitimate retry.
     await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
@@ -3684,6 +3688,7 @@ export async function startFilmFromKeyframes(
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   const refusal = await submitBudgetRefusal(env, job, modules);
   if (refusal) {
+    endJob(job, "failed"); // core#490: it ends now, not when the placeholder was built
     job.error = refusal;
     await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
     await putFilm(env, job);
@@ -3732,7 +3737,7 @@ export async function startFilmFromKeyframes(
     retake_shots: job.retake_shots,
   }, modules);
   job.clip_job_id = clip.job_id;
-  job.phase = summarizeJob(clip).failed === clip.shots.length ? "failed" : "clips";
+  if (summarizeJob(clip).failed === clip.shots.length) endJob(job, "failed"); else job.phase = "clips";
   if (job.phase === "failed") {
     job.error = "every clip submission failed";
     await releaseFilmSubmitClaim(env, guard.claimKey, job.film_id);
@@ -3860,14 +3865,14 @@ export async function startFilmJob(
   const fetcher = kf ? resolveFetcher(envRec, kf.binding) : null;
   const budgetRefusal = kf && fetcher ? await submitBudgetRefusal(env, job, modules) : null;
   if (!kf || !fetcher) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = pairErr
       ? pairErr
       : kf
         ? `keyframe module ${kf.name} (${kf.binding}) is not bound`
         : (explicitKeyframeChoice ? `keyframe module ${explicitKeyframeChoice} not installed` : "no keyframe module installed");
   } else if (budgetRefusal) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = budgetRefusal;
   } else {
     const config = validateConfig(kf.config_schema, args.keyframe_config);
@@ -3888,7 +3893,7 @@ export async function startFilmJob(
     if (n <= 1 && shotIds.length > KEYFRAME_SHOTS_PER_JOB) {
       // vivijure-core#453: one job of every shot would outrun the keyframe door's time limit, so refuse
       // before anything is bought rather than start a job that cannot finish.
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error =
         `this film has ${shotIds.length} shots and must draw its keyframes in one job, because ${oneJobBecause ?? "one job was asked for"}. ` +
         `One keyframe job carries at most ${KEYFRAME_SHOTS_PER_JOB} shots. Train the cast adapters first and submit with them ` +
@@ -3909,10 +3914,10 @@ export async function startFilmJob(
         config,
         context: { project: args.project, job_id: job.film_id },
       });
-      if (!r.ok) { job.phase = "failed"; job.error = r.error; }
+      if (!r.ok) { endJob(job, "failed"); job.error = r.error; }
       else if ((r as { pending?: boolean }).pending) { job.keyframe_poll = (r as { poll: string }).poll; job.keyframe_job_id = (r as { jobId?: string }).jobId; }
-      else if ("output" in r) { const v = hookOutputViolation(kf.name, "keyframe", r.output); if (v) { job.phase = "failed"; job.error = v; } else { await afterKeyframeOutput(env, job, r.output as KeyframeOutput, modules); } }
-      else { job.phase = "failed"; job.error = "keyframe module returned neither output nor a poll token"; }
+      else if ("output" in r) { const v = hookOutputViolation(kf.name, "keyframe", r.output); if (v) { endJob(job, "failed"); job.error = v; } else { await afterKeyframeOutput(env, job, r.output as KeyframeOutput, modules); } }
+      else { endJob(job, "failed"); job.error = "keyframe module returned neither output nor a poll token"; }
     } else {
       invokeAttempted = true;
       await startParallelKeyframes(env, job, {
@@ -4076,6 +4081,8 @@ async function retryFilmFinishLocked(
   job.finish_retry_failed = undefined;
   const completedAt = await renderCompletedAt(env, job.film_id);
   job.finish_retry_prior = JSON.stringify(job);
+  // core#490: the retry is running, so the film has not ended. The snapshot keeps the old stamp.
+  job.ended_at = undefined;
   job.finish_retry_completed_at = completedAt;
   job.finish_retry_seq = Math.max(job.finish_retry_seq ?? 0, job.finish_retry_gen ?? 0) + 1;
   job.finish_retry_gen = job.finish_retry_seq;
@@ -4374,8 +4381,7 @@ async function cancelFilmJobLocked(env: Env, filmId: string): Promise<FilmJob | 
   // #536: the motion-phase sibling -- STOP any in-flight clip shots RunPod jobs too, so a user cancel off
   // the clips phase does not leave the GPU running (the follow-up the cancelInFlightKeyframe comment named).
   if (job.clip_job_id) await cancelInFlightClips(env, job.clip_job_id, modules);
-  job.cancelled = true;
-  job.phase = "failed";
+  cancelJob(job);
   job.error = "cancelled";
   await putFilm(env, job);
   return job;
@@ -4587,7 +4593,7 @@ async function startParallelKeyframes(
       job.keyframe_job_ids = pending.map((r) => r.jobId).filter((id): id is string => typeof id === "string" && id.length > 0);
       await cancelInFlightKeyframe(env, job, args.modules);
     }
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = failed.error;
     return;
   }
@@ -4606,14 +4612,14 @@ async function startParallelKeyframes(
           job.keyframe_polls = pending.map((p) => p.poll);
           await cancelInFlightKeyframe(env, job, args.modules);
         }
-        job.phase = "failed";
+        endJob(job, "failed");
         job.error = v;
         return;
       }
       outputs.push(r.output as KeyframeOutput);
       continue;
     }
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = "keyframe module returned neither output nor a poll token";
     return;
   }
@@ -4621,7 +4627,7 @@ async function startParallelKeyframes(
   if (!pending.length) {
     const merged = mergeKeyframeOutputs(job.project, outputs);
     const v = hookOutputViolation(args.moduleName, "keyframe", merged);
-    if (v) { job.phase = "failed"; job.error = v; return; }
+    if (v) { endJob(job, "failed"); job.error = v; return; }
     await afterKeyframeOutput(env, job, merged, args.modules);
     return;
   }
@@ -4697,7 +4703,7 @@ async function pollParallelKeyframes(
 
   if (fail) {
     await cancelInFlightKeyframe(env, job, modules);
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = fail;
     return;
   }
@@ -4716,7 +4722,7 @@ async function pollParallelKeyframes(
   const merged = mergeKeyframeOutputs(job.project, [...takeParkedKeyframeOutputs(job), ...newOutputs]);
   clearKeyframeFlight(job);
   const v = hookOutputViolation(job.keyframe_binding ?? "keyframe", "keyframe", merged);
-  if (v) { job.phase = "failed"; job.error = v; return; }
+  if (v) { endJob(job, "failed"); job.error = v; return; }
   await afterKeyframeOutput(env, job, merged, modules);
 }
 
@@ -4805,7 +4811,7 @@ async function recoverStalledKeyframePhase(env: Env, job: FilmJob, preModules: R
   if (dropped.length) {
     // Cancel first: cancelInFlightKeyframe only acts on a film still in the keyframe phase.
     await cancelInFlightKeyframe(env, job, preModules);
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = incompleteFilmError("keyframes", adopted.length, job.scenes.length, dropped);
     console.warn(`film ${job.film_id}: ${job.error}`);
     return true;
@@ -4932,7 +4938,7 @@ async function recoverStalledPhase(env: Env, job: FilmJob, preModules?: Register
   }
 
   if (verdict.expired) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = verdict.error as string;
     return true;
   }
@@ -4995,7 +5001,7 @@ async function persistFilmJobFailed(env: Env, filmId: string, error: string): Pr
     if (!obj) return null;
     const job = parseFilmDoc(await obj.text());
     if (job.phase === "done" || job.phase === "failed") return job;
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = error.slice(0, 2000);
     await putFilm(env, job);
     return job;
@@ -5113,12 +5119,12 @@ async function advanceFilmJobLocked(
   // Phase 1: poll the keyframe job; on completion, presign + hand off to the clip orchestrator.
   if (job.phase === "keyframe" && job.keyframe_polls?.length) {
     const fetcher = job.keyframe_binding ? resolveFetcher(envRec, job.keyframe_binding) : null;
-    if (!fetcher) { job.phase = "failed"; job.error = "keyframe module no longer bound"; }
+    if (!fetcher) { endJob(job, "failed"); job.error = "keyframe module no longer bound"; }
     else await pollParallelKeyframes(env, job, fetcher, modules);
     await putFilm(env, job);
   } else if (job.phase === "keyframe" && job.keyframe_poll) {
     const fetcher = job.keyframe_binding ? resolveFetcher(envRec, job.keyframe_binding) : null;
-    if (!fetcher) { job.phase = "failed"; job.error = "keyframe module no longer bound"; }
+    if (!fetcher) { endJob(job, "failed"); job.error = "keyframe module no longer bound"; }
     else {
       const p = await pollModule<KeyframeOutput>(fetcher, { poll: job.keyframe_poll });
       if (!p.ok) {
@@ -5126,7 +5132,7 @@ async function advanceFilmJobLocked(
         if (lasting !== null) {
           // Before the phase moves: the cancel only runs for a film still in keyframe.
           await cancelInFlightKeyframe(env, job, modules);
-          job.phase = "failed";
+          endJob(job, "failed");
           job.error = lasting;
         }
       }
@@ -5135,7 +5141,7 @@ async function advanceFilmJobLocked(
         job.keyframe_wait = undefined;
         const out = (p as { output: KeyframeOutput }).output;
         const v = hookOutputViolation(job.keyframe_binding ?? "keyframe", "keyframe", out);
-        if (v) { job.phase = "failed"; job.error = v; }
+        if (v) { endJob(job, "failed"); job.error = v; }
         else await afterKeyframeOutput(env, job, out, modules);
       } else {
         job.keyframe_poll_attempts = undefined;

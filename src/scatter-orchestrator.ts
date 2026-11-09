@@ -70,6 +70,7 @@ import {
 import type { PreparedRenderUpdate } from "./renders-db.js";
 import { resolveCastLoras, untrainedCastMessage } from "./cast-loras.js";
 import { fireNotifyForScatter } from "./scatter-notify.js";
+import { cancelJob, endJob, jobElapsedMs } from "./job-end.js";
 import { isTransientD1Error, withD1Retry, d1ErrorCode } from "./d1-retry.js";
 
 export type { ScatterJob } from "./scatter-orchestrator-types.js";
@@ -350,11 +351,11 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
   const audioKey = job.audio_key;
   if (!silentKey || !audioKey) {
     job.film_key = silentKey;
-    job.phase = "done";
+    endJob(job, "done");
     return;
   }
   if (!videoFinishReachable(env)) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = "video-finish URL not configured";
     return;
   }
@@ -393,13 +394,13 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
   }
   job.assemble_poll = undefined;
   if (tick.kind === "failed") {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = tick.error;
     return;
   }
   const body = tick.result;
   if (!body.ok) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = `scatter mux failed: ${body.error || "unknown"}`;
     return;
   }
@@ -409,7 +410,7 @@ async function muxScatterAudio(env: Env, job: ScatterJob): Promise<void> {
   }
   accumulateFinishElapsed(job, body.elapsedMs);
   job.film_key = outKey;
-  job.phase = "done";
+  endJob(job, "done");
 }
 
 async function maybeFinalizeScatter(
@@ -432,7 +433,7 @@ async function maybeFinalizeScatter(
     await saveScatterJob(env, job);
     return;
   }
-  job.phase = "done";
+  endJob(job, "done");
   await finalizeScatterDone(env, job, preModules);
 }
 
@@ -521,7 +522,7 @@ async function assembleScatterClips(
   clips: { shot_id: string; clip_key: string }[],
 ): Promise<void> {
   if (!videoFinishReachable(env)) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = "video-finish URL not configured";
     return;
   }
@@ -567,13 +568,13 @@ async function assembleScatterClips(
   }
   job.assemble_poll = undefined;
   if (tick.kind === "failed") {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = tick.error;
     return;
   }
   const body = tick.result;
   if (!body.ok) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = `video-finish gather failed: ${body.error || "unknown"}`;
     return;
   }
@@ -592,7 +593,7 @@ async function assembleScatterClips(
     );
     const shortfalls = findClipDurationShortfalls(clips, actual, planned, fraction);
     if (shortfalls.length > 0) {
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = `duration gate: ${shortfalls.length} shot(s) delivered below ${Math.round(fraction * 100)}% of plan: ` +
         shortfalls.map((sf) => `${sf.shot_id} ${sf.actual.toFixed(2)}s vs planned ${sf.planned.toFixed(2)}s (floor ${sf.floor.toFixed(2)}s)`).join("; ");
       console.warn(`scatter ${job.scatter_id}: ${job.error}`);
@@ -618,7 +619,7 @@ async function assembleScatterClips(
     expectedSeconds,
   }));
   if (expectedSeconds > 0 && assembledSeconds > 0 && assembledSeconds < expectedSeconds * 0.5) {
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = `assemble dropped clips: ${assembledSeconds.toFixed(1)}s assembled vs ~${expectedSeconds.toFixed(1)}s expected across ${job.expected_shot_ids.length} shots`;
     return;
   }
@@ -634,7 +635,7 @@ async function assembleScatterClips(
     await muxScatterAudio(env, job);
   } else {
     job.film_key = outputKey;
-    job.phase = "done";
+    endJob(job, "done");
   }
 }
 
@@ -689,7 +690,7 @@ async function advanceScatterGather(
   if (clips.length !== job.expected_shot_ids.length) {
     const err = "gather: missing clips after finish decision";
     await markFinishFailed(env, job.scatter_id, err);
-    job.phase = "failed";
+    endJob(job, "failed");
     job.error = err;
     return;
   }
@@ -915,7 +916,7 @@ export async function advanceScatterJob(
   if (job.phase === "shards") {
     const decision = gatherDecision([...present], job.expected_shot_ids, shardStatuses);
     if (decision.kind === "failed") {
-      job.phase = "failed";
+      endJob(job, "failed");
       job.error = decision.reason;
       await markRenderFailedByJobId(env, scatterId, decision.reason);
     } else if (decision.kind === "finish") {
@@ -964,7 +965,7 @@ export function scatterJobToPollView(job: ScatterJob): RunpodJobView {
     statusRaw: job.phase,
     output,
     error: job.error,
-    executionTimeMs: Math.max(0, Date.now() - job.created_at),
+    executionTimeMs: jobElapsedMs(job),
   };
 }
 
@@ -972,8 +973,7 @@ export async function cancelScatterJob(env: Env, scatterId: string): Promise<Run
   const job = await loadScatterJob(env, scatterId);
   if (!job) return null;
   if (job.phase === "done" || job.phase === "failed") return scatterJobToPollView(job);
-  job.cancelled = true;
-  job.phase = "failed";
+  cancelJob(job);
   job.error = "cancelled";
   for (const filmId of job.shard_film_ids) {
     await cancelFilmJob(env, filmId);
