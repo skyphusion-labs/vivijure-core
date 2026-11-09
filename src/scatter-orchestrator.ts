@@ -259,6 +259,9 @@ export async function startScatterRender(env: Env, args: StartScatterArgs): Prom
       // a scattered render silently reverts to the default-participation set for every shard while
       // the single-film path honours the caller, which is the two-panel parity split in miniature.
       finish_select: mapped.finish_select,
+      // core#339: every shard synthesizes its own lines, so each needs the caller's dialogue module.
+      dialogue_backend: mapped.dialogue_backend,
+      dialogue_config: mapped.dialogue_config,
       speech_config: mapped.speech_config,
       master_config: mapped.master_config,
       clips_only: true,

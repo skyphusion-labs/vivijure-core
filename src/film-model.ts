@@ -467,6 +467,11 @@ export interface FilmJob {
   // FinishInput for lip-sync. Absent/empty => a silent film. dialogue_poll holds the in-flight batch.
   dialogue_lines?: DialogueLine[];
   dialogue_poll?: string;
+  // core#339: the caller's dialogue module, by name. Absent = the first serving module by ui.order.
+  // Persisted because the dialogue legs poll across ticks and must resolve the same module each time.
+  dialogue_backend?: string;
+  // core#339: per-module dialogue config, keyed by module name. Absent = {} to the module, as before.
+  dialogue_config?: Record<string, Record<string, unknown>>;
   dialogue_audio?: Record<string, string>; // shot_id -> dialogue audio R2 key
   /** Seconds of each LINE WAV after pad/trim. Used to raise ClipShotInput.seconds. */
   dialogue_audio_seconds?: Record<string, number>;

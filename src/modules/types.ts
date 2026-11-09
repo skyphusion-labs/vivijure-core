@@ -41,7 +41,7 @@ export type HookName =
   | "motion.backend" // keyframe (+ motion prompt) -> shot clip. GPU or cloud, pick one per shot.
   | "finish"         // post-process a clip: interpolation / upscale / face restore. Chainable.
   | "score"          // add audio to a film: music / narration / beat-sync. Chainable.
-  | "dialogue"       // per-shot dialogue lines -> TTS audio (one voice per cast member). Pick one.
+  | "dialogue"       // per-shot dialogue lines -> TTS audio (one voice per cast member). Pick one: the caller's dialogue_backend, else the first by ui.order (core#339).
   | "speech"         // per-shot dialogue audio -> cleaned / enhanced dialogue audio. Post-dialogue, pre-finish. Chainable.
   | "plan.enhance"   // expand a storyboard before render: LLM auto-direction. Chainable.
   | "image.generate" // prompt -> a single generated image. Pick one.
@@ -711,6 +711,27 @@ export interface PollRequest {
 export type PollFailureOutcome = "backend-error" | "failed" | "gone" | "cancelled";
 
 /**
+ * core#502: a module's own word on whether a failed poll is worth another try. Closed.
+ *
+ * - `transient` -- the job failed for a reason a new submit can clear (high load, a provider
+ *   restart). The host drops the dead token and submits again, within its attempt cap.
+ * - `deterministic` -- the identical job fails identically. The host fails the step now.
+ *
+ * A separate field, not `reason`: core#306 kept `reason` off the poll arm because
+ * `backend-error` and `cancelled` mean different things on the two arms, and that still holds.
+ * OPTIONAL and additive. Absent, the host classifies the `error` prose as it always has. A value
+ * outside the set is treated as absent and logged; it is never guessed into a class. Set it only
+ * where the condition names the class.
+ */
+export type PollRetry = "transient" | "deterministic";
+
+export const POLL_RETRY_VALUES: readonly PollRetry[] = ["transient", "deterministic"];
+
+export function isPollRetry(v: unknown): v is PollRetry {
+  return typeof v === "string" && (POLL_RETRY_VALUES as readonly string[]).includes(v);
+}
+
+/**
  * Backend-neutral wait phase while a job is still pending (cf#307 / vivijure-cf#307).
  *
  * RunPod's `IN_QUEUE` vs `IN_PROGRESS` is the measured case (cold start vs sampling), but modules
@@ -738,6 +759,8 @@ export type PollResponse<O = unknown> =
       error: string;
       /** Structured closed outcome. Prefer over parsing `error` prose. */
       outcome?: PollFailureOutcome;
+      /** core#502: whether another try can help. Read before the `error` prose; see PollRetry. */
+      retry?: PollRetry;
       /** RunPod envelope status string when known (cf#298). */
       runpodStatus?: string;
       /** Exception class from structured `error_type` when known (cf#298). */

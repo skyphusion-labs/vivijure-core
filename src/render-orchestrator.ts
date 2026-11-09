@@ -20,7 +20,7 @@ import {
   validateConfig,
 } from "./modules/registry.js";
 import { tenantR2FromEnv, withTenantR2 } from "./modules/tenant-r2.js";
-import { INVOKE_FAILURE_DISPOSITION, isInvokeFailureReason } from "./modules/types.js";
+import { INVOKE_FAILURE_DISPOSITION, isInvokeFailureReason, isPollRetry, type PollRetry } from "./modules/types.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
 
@@ -215,17 +215,32 @@ export function isClipPollTransportError(error: string | undefined): boolean {
     || /unreachable|timed? ?out|timeout|network|econnreset|connection (reset|lost)|fetch failed/i.test(e);
 }
 
+/** core#502: the module's declared poll disposition, or undefined to fall back to prose. A value
+ *  outside the closed set is logged and read as absent; it is never mapped onto a class. */
+export function declaredPollRetry(r: { retry?: unknown }): PollRetry | undefined {
+  if (r.retry === undefined) return undefined;
+  if (isPollRetry(r.retry)) return r.retry;
+  console.warn(`poll failure carried an unknown retry value ${JSON.stringify(r.retry)}; classifying its error prose instead (core#502)`);
+  return undefined;
+}
+
 /** Apply a /poll outcome to a shot (pure): failure -> failed; still pending -> unchanged; output ->
  *  done with the clip key. `project` confines a module-returned clip_key to renders/<project>/. */
 export function applyPoll(shot: ClipShot, r: PollResponse<MotionBackendOutput>, project: string, now: number = Date.now()): void {
   if (!r.ok) {
+    // core#502: the module's declared disposition comes first. Only a module ANSWERING sets it (the
+    // host's own transport failures on the /poll hop are built by pollModule and never carry it), so a
+    // declared "transient" is a failed provider job and takes the resubmit leg, never the re-poll leg.
+    // Absent or unknown: today's prose classification, unchanged.
+    const declared = declaredPollRetry(r);
+    const transient = (declared ?? classifyTransientFailure(r.error)) === "transient";
     // #719: one TRANSIENT poll failure must not STICKILY fail a healthy in-flight render. Mirror the
     // finish chain's bounded-attempts contract: tolerate up to CLIP_POLL_MAX_ATTEMPTS CONSECUTIVE
     // transient errors (the shot stays pending; the next sweep re-polls; any successful poll resets
     // the count), then fail loud with the real error. A DETERMINISTIC module-reported failure still
     // fails immediately.
-    if (classifyTransientFailure(r.error) === "transient") {
-      if (isClipPollTransportError(r.error)) {
+    if (transient) {
+      if (declared === undefined && isClipPollTransportError(r.error)) {
         const attempts = (shot.poll_attempts ?? 0) + 1;
         const since = shot.poll_failing_since ?? now;
         if (!pollToleranceSpent(attempts, since, now)) {
