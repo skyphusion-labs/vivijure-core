@@ -1,4 +1,4 @@
-// Best-effort notify on scatter gather completion (mirrors film-orchestrator fireNotify).
+// Best-effort notify on a scatter render's terminal state (mirrors film-orchestrator fireNotify).
 
 import type { Env } from "./platform/orchestrator-context.js";
 import { discoverModules, invokeModule, resolveFetcher, servingForHook, validateConfig } from "./modules/registry.js";
@@ -8,22 +8,28 @@ import { presignR2Get, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 
 
+/** core#357: `render.failed` is not a completion, as on the film path. A failure still announces, and
+ *  presigns `opts.key` when a retained cut should be linked without becoming `film_key`. A completion
+ *  with no artifact has nothing to announce. */
 export async function fireNotifyForScatter(
   env: Env,
   job: ScatterJob,
   preModules?: RegisteredModule[],
+  opts?: { event?: "render.complete" | "render.failed"; key?: string },
 ): Promise<void> {
-  if (!job.film_key) return;
+  const event = opts?.event ?? "render.complete";
+  const key = opts?.key ?? job.film_key;
+  if (event === "render.complete" && !key) return;
   try {
     const envRec = env as unknown as Record<string, unknown>;
     const notifiers = servingForHook(preModules ?? await discoverModules(envRec), "notify");
     if (!notifiers.length) return;
-    const download_url = await presignR2Get(env, job.film_key, FILM_DOWNLOAD_TTL_SECONDS);
+    const download_url = key ? await presignR2Get(env, key, FILM_DOWNLOAD_TTL_SECONDS) : undefined;
     const input: NotifyInput = {
-      event: "render.complete",
+      event,
       film_id: job.scatter_id,
       project: job.project,
-      download_url,
+      ...(download_url ? { download_url } : {}),
     };
     const context = { project: job.project, job_id: job.scatter_id };
     for (const m of notifiers) {

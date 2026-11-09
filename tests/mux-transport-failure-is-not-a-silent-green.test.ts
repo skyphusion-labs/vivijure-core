@@ -230,6 +230,27 @@ describe("cf#746(a) inverse controls: the degrades that SHOULD survive", () => {
     expect(read().film_key).toBeUndefined();
   });
 
+  it("a 404 from the URL beat door fails on the first read, not after the cap (core#358)", async () => {
+    // The container is up and has no /analyze route: a deploy mismatch. Three reads would give the
+    // same verdict three times, so the film fails on the first, and says why.
+    _resetModuleDiscoveryCache();
+    let analyzeCalls = 0;
+    const { env, read } = envFor(muxJob({ beats_read: false }), async (u) => {
+      if (u.includes("/analyze")) {
+        analyzeCalls += 1;
+        return new Response("not found", { status: 404 });
+      }
+      throw new TypeError("fetch failed");
+    });
+    (env as unknown as Record<string, unknown>).AUDIO_BEAT_SYNC_URL = "https://beats.video-finish.test";
+    const first = await advanceFilmJob(env, FILM);
+    expect(first?.job.phase).toBe("failed");
+    expect(first?.job.error).toMatch(/beats were not read: beat-sync container returned HTTP 404/);
+    expect(analyzeCalls).toBe(1);
+    expect(read().silent_film_key).toBe(SILENT);
+    expect(read().film_key).toBeUndefined();
+  });
+
   it("a transient beat read stays in phase, then fails once the finish cap is used", async () => {
     _resetModuleDiscoveryCache();
     const calls: Array<{ job_id?: string; project?: string; film_key?: string }> = [];

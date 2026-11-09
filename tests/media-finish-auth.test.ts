@@ -12,7 +12,7 @@ import { tickVideoFinishAssemble } from "../src/video-finish-assemble.js";
 import { callAudioMix, callVideoFinish, shouldMultiTrackMix } from "../src/film-orchestrator.js";
 import { callVideoFinishInspect } from "../src/clip-content-validate.js";
 import { callImagePrep } from "../src/bundle-assembler.js";
-import { analyzeAudioBeats } from "../src/beat-analyze.js";
+import { analyzeAudioBeats, beatDoorStatusTransient } from "../src/beat-analyze.js";
 import type { FilmJob } from "../src/film-model.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
@@ -415,7 +415,7 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
     }
   }
 
-  it("a non-2xx from the url door is TRANSIENT, not a reason to destroy the film", async () => {
+  it("a 5xx from the url door is TRANSIENT, not a reason to destroy the film", async () => {
     const r = await viaUrl(() => new Response(JSON.stringify({ ok: false, error: "bad gateway" }), { status: 502 }));
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -453,6 +453,31 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
       expect(r.transient).toBe(true);
       expect(r.error).toMatch(/door unreachable: fetch failed/);
     }
+  });
+
+  // core#358: a 4xx is the container answering and refusing. Retrying it only spends the cap.
+  for (const status of [400, 401, 403, 404, 410, 422]) {
+    it(`a ${status} from the url door is PERMANENT (core#358)`, async () => {
+      const r = await viaUrl(() => new Response(JSON.stringify({ error: "no" }), { status }));
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.transient).toBe(false);
+        expect(r.error).toBe(`beat-sync container returned HTTP ${status}`);
+      }
+    });
+  }
+
+  for (const status of [408, 429, 500, 503, 520]) {
+    it(`a ${status} from the url door stays TRANSIENT (core#358)`, async () => {
+      const r = await viaUrl(() => new Response("busy", { status }));
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.transient).toBe(true);
+    });
+  }
+
+  it("beatDoorStatusTransient: 4xx permanent except 408 and 429; every other status transient", () => {
+    expect([399, 400, 404, 407, 408, 409, 428, 429, 430, 499, 500, 599].map(beatDoorStatusTransient))
+      .toEqual([true, false, false, false, true, false, false, true, false, false, true, true]);
   });
 
   it("THE OTHER SIDE: an answered 200 that is not a plan stays PERMANENT", async () => {
