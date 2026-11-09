@@ -1277,15 +1277,17 @@ export function finishShotLedgerReconciles(fs: FinishShot): boolean {
  *  be advanced off a sibling step's artifact -- the mid-chain phantom-adopt the silent-render bug warned of. */
 export function finishStepOutputKey(project: string, fs: FinishShot, modules?: RegisteredModule[], scope?: string): string | null {
   const key = unscopedFinishStepOutputKey(project, fs, modules);
-  if (!key || !scope || !finishStepIsShotNamed(fs, modules)) return key;
+  if (!key || !scope) return key;
+  // core#379 scoped the shot-named steps; core#385 scopes the suffix steps too. A suffix key is derived
+  // from the input clip, and the input can be a clip every film of the project shares
+  // (`clips/<shot>_<backend>.mp4`), so two films wrote one `<shot>_<backend>_up.mp4`. Now every step
+  // with a modelled key writes into the film's folder, under the same file name it had before.
   return `renders/${project}/clips/${scope}/${key.slice(key.lastIndexOf("/") + 1)}`;
 }
 
 /**
- * core#379: true when this step's output is named off the shot, so every film of a project shares one
- * object. Only these are film-scoped. An `append_suffix` step (upscale `_up`, blender `_bl`, lip-sync
- * `_ls`) derives its key from its input clip and stays beside it, so two films whose input is the same
- * shared clip still share its output. That exposure is known and not fixed here.
+ * core#379: true when this step's output is named off the shot rather than off its input clip. Since
+ * core#385 this no longer decides whether the key is film-scoped: every modelled step is.
  */
 export function finishStepIsShotNamed(fs: FinishShot, modules?: RegisteredModule[]): boolean {
   const binding = fs.chain[fs.idx] ?? "";

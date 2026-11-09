@@ -277,8 +277,10 @@ export interface FinishArtifactsDecl {
   /** How the module names its output clip in R2:
    *  - `shot_named`: `renders/<project>/clips/<shot_id><filename>` (the module names off the shot id;
    *    e.g. finish-rife's `filename: "_finished.mp4"`).
-   *  - `append_suffix`: insert `suffix` into the INPUT clip key before its extension (the
-   *    append-convention modules; e.g. lip-sync `_ls`, upscale `_up`). */
+   *  - `append_suffix`: insert `suffix` into the INPUT clip's file name before its extension (the
+   *    append-convention modules; e.g. lip-sync `_ls`, upscale `_up`).
+   *  In a film either kind lands in the film's folder, `clips/<film>/` (core#379, core#385), and the
+   *  core sends that key as `FinishInput.output_key`. */
   output_key:
     | { kind: "shot_named"; filename: string }
     | { kind: "append_suffix"; suffix: string };
@@ -847,9 +849,10 @@ export interface FinishInput {
   // URLs and is correct; that is the R2 case, not a partial presigned one.
   video_url?: string;   // presigned GET of clip_key
   output_url?: string;  // presigned PUT for the step's expected output key
-  output_key?: string;  // Where this step writes. For a `shot_named` step it is set with or without
-                        // output_url, so one film cannot replace another film's clip (core#379). Otherwise
-                        // it is the R2 key behind output_url (echoed by the satellite).
+  output_key?: string;  // Where this step writes: the film's own folder, `renders/<project>/clips/<film>/`.
+                        // Set for every step whose key the core models, with or without output_url, so
+                        // one film cannot replace another film's clip (core#379 shot_named, core#385
+                        // append_suffix). A module MUST write here when it is set, not beside its input.
   audio_url?: string;   // presigned GET of audio_key. An audio-consuming satellite's presigned branch
                         // can REQUIRE it: the retired musetalk satellite returned a top-level `error`
                         // without one, a hard job failure. The core presigns all-or-nothing for it.
