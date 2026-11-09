@@ -3808,6 +3808,11 @@ export async function startFilmJob(
      *  refuses films of different frames. Absent, the frame comes from the measured clips. */
     delivery_width?: number;
     delivery_height?: number;
+    /** core#431: the rate this film is delivered at. Parts of a long film set it with the frame, because the
+     *  join refuses films of different rates, and a part with interpolation ships faster than one without.
+     *  It wins over the rate the finish chain produced (resolveDeliveryFps), and a clip above it carries a
+     *  note (`finished clip is N fps, delivered at M fps`). Absent, the rate comes from the finish chain. */
+    delivery_fps?: number;
     /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
     reuse_finished?: boolean;
     /** With reuse_finished: shots whose clip is bought again though its inputs are proven the same. An unchanged
@@ -3895,6 +3900,7 @@ export async function startFilmJob(
     finish_config: args.finish_config ?? {},
     delivery_width: args.delivery_width,
     delivery_height: args.delivery_height,
+    delivery_fps: args.delivery_fps,
     reuse_finished: args.reuse_finished || undefined,
     retake_shots: args.retake_shots?.length ? args.retake_shots : undefined,
     // cf#537: absent stays ABSENT on the persisted doc. It is a third state, not a default to fill in.
