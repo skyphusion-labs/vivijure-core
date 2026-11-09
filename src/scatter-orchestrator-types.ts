@@ -55,5 +55,9 @@ export interface ScatterJob {
   assemble_wait?: string;
   error?: string;
   created_at: number;
+  // core#490: wall clock of the latest terminal write (done, failed, cancelled). Written only by
+  // endJob / cancelJob in job-end.ts. The poll view reports ended_at - created_at for a finished job.
+  // Absent on docs written before core#490 and on a job that is running.
+  ended_at?: number;
   cancelled?: boolean;
 }

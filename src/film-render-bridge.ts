@@ -18,6 +18,7 @@ import {
   type ResolvedModuleRenderConfigs,
 } from "./render-module-config.js";
 import type { RegisteredModule } from "./modules/types.js";
+import { jobElapsedMs } from "./job-end.js";
 
 export { KEYFRAME_STALL_SECONDS };
 
@@ -193,6 +194,6 @@ export function filmJobToPollView(job: FilmJob, clipJob: ClipJob | null, keyfram
     statusRaw: job.cancelled ? "CANCELLED" : job.phase,
     output,
     error: job.error,
-    executionTimeMs: Math.max(0, Date.now() - job.created_at),
+    executionTimeMs: jobElapsedMs(job),
   };
 }
