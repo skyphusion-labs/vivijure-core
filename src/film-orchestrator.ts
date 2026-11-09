@@ -101,7 +101,6 @@ import {
   reclaimFinishShotsFromR2,
   finishStepOutputKey,
   finishClipScope,
-  finishStepIsShotNamed,
   finishStepAppliedTag,
   finishShotLedgerReconciles,
   MASTER_STEP_MAX_ATTEMPTS,
@@ -1388,9 +1387,9 @@ export async function attachFinishPresigns(
 ): Promise<void> {
   const outKey = finishStepOutputKey(job.project, fs, modules, finishClipScope(job));
   if (!outKey) return;
-  // core#379: a shot-named step is told its film's key with or without presigned URLs, because a module
-  // on the credentialed path writes there too.
-  if (finishStepIsShotNamed(fs, modules)) input.output_key = outKey;
+  // core#379 / core#385: every step with a modelled key is told its film's key, with or without presigned
+  // URLs, because a module on the credentialed path writes there too.
+  input.output_key = outKey;
   try {
     // `<output_key>.hash`, NOT `<output_key minus .mp4>.hash`. ONE key, three call sites that must
     // agree: the #583 adoption gate reads `${artifactKey}.hash` (finishArtifactHashMatches), the
