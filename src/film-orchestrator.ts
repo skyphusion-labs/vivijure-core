@@ -3108,18 +3108,22 @@ async function enterMuxPhase(env: Env, job: FilmJob, preModules?: RegisteredModu
     audioUrl: undefined as string | undefined,
     remuxAudioOnly: true,
   };
-  if (!job.assemble_poll) {
-    const gate = await finishSlotGate(env, job.film_id, job.assemble_wait, { step: "mux", fairnessKey: job.project });
-    if (gate.kind === "waiting") { job.assemble_wait = gate.wait; job.phase = "mux"; job.error = undefined; return; }
+  // core#513: one presign, for the first submit and for a re-submit after a job lost to a restart.
+  const presigned = async (): Promise<typeof payload> => {
     const [videoUrl, audioUrl, outputUrl] = await Promise.all([
       presignR2Get(env, silentKey, 1800),
       presignR2Get(env, audioToMux, 1800),
       presignR2Put(env, outKey, 1800),
     ]);
-    payload = { ...payload, clips: [{ url: videoUrl }], outputUrl, audioUrl };
+    return { ...payload, clips: [{ url: videoUrl }], outputUrl, audioUrl };
+  };
+  if (!job.assemble_poll) {
+    const gate = await finishSlotGate(env, job.film_id, job.assemble_wait, { step: "mux", fairnessKey: job.project });
+    if (gate.kind === "waiting") { job.assemble_wait = gate.wait; job.phase = "mux"; job.error = undefined; return; }
+    payload = await presigned();
   }
 
-  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.film_id });
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.film_id, repayload: presigned });
   if (tick.kind === "waiting") {
     job.assemble_wait = tick.wait;
     job.phase = "mux";
@@ -3383,6 +3387,40 @@ async function enterAssemblePhase(
     height: delivery.height,
     fps: deliveryFps,
   };
+  // core#513: one presign, for the first submit and for a re-submit after a job lost to a restart.
+  // ASSEMBLE_PRESIGN_TTL_SECONDS, not the old hardcoded 1800. Under chunked assemble batch N
+  // downloads its clips only after batch N-1 has finished encoding, and the final pass reads
+  // the FIRST partial at the very END of the job, so every URL here has to cover the whole
+  // job rather than its first half hour. Minted in parallel: a chunked film needs 1 + 3n
+  // signatures and sequential awaits add up.
+  // vivijure-cf#1338: a shot on a driven door that bills by length is held to its planned seconds with its
+  // last frame, since its line was not padded. Planned seconds are the same ones admission used.
+  const presignAssemble = async (known?: Awaited<ReturnType<typeof readShotDurationsFromBundle>>): Promise<FinishPayload> => {
+    // The first submit passes the durations admission just read; a re-submit reads them again.
+    const planned = resolvePlannedSeconds(job.scenes, known ?? await readShotDurationsFromBundle(env, job.bundle_key));
+    const holdModules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
+    const holdFor = (shotId: string): number | undefined => assembleHoldSeconds(
+      motionUsageForShot(job, holdModules, shotId),
+      doorBillsPerClip(motionDoorModuleForShot(job, holdModules, shotId)),
+      planned[shotId] ?? 0,
+    );
+    const [clips, outputUrl, partialUrls] = await Promise.all([
+      Promise.all(
+        finalClips.map(async (c) => {
+          const hold = holdFor(c.shot_id);
+          return {
+            url: await presignR2Get(env, c.clip_key, ASSEMBLE_PRESIGN_TTL_SECONDS),
+            ...(hold !== undefined ? { holdToSeconds: hold } : {}),
+          };
+        }),
+      ),
+      presignR2Put(env, outputKey, ASSEMBLE_PRESIGN_TTL_SECONDS),
+      // The pool is what makes chunked assemble live; without it the container takes the
+      // single-pass path and peak disk is 3-4x total input again (cf#784).
+      mintPartialUrlPool(env, outputKey, finalClips.length),
+    ]);
+    return { ...payload, clips, outputUrl, partialUrls };
+  };
   // Before admission and presign: a film waiting for a slot pays no R2 reads on each sweep tick.
   if (!job.assemble_poll) {
     const gate = await finishSlotGate(env, job.film_id, job.assemble_wait, { step: "assemble", fairnessKey: job.project });
@@ -3437,33 +3475,11 @@ async function enterAssemblePhase(
     // signatures and sequential awaits add up.
     // vivijure-cf#1338: a shot on a driven door that bills by length is held to its planned seconds with its
     // last frame, since its line was not padded. Planned seconds are the same ones admission used above.
-    const planned = resolvePlannedSeconds(job.scenes, bundleDurations);
-    const holdModules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
-    const holdFor = (shotId: string): number | undefined => assembleHoldSeconds(
-      motionUsageForShot(job, holdModules, shotId),
-      doorBillsPerClip(motionDoorModuleForShot(job, holdModules, shotId)),
-      planned[shotId] ?? 0,
-    );
-    const [clips, outputUrl, partialUrls] = await Promise.all([
-      Promise.all(
-        finalClips.map(async (c) => {
-          const hold = holdFor(c.shot_id);
-          return {
-            url: await presignR2Get(env, c.clip_key, ASSEMBLE_PRESIGN_TTL_SECONDS),
-            ...(hold !== undefined ? { holdToSeconds: hold } : {}),
-          };
-        }),
-      ),
-      presignR2Put(env, outputKey, ASSEMBLE_PRESIGN_TTL_SECONDS),
-      // The pool is what makes chunked assemble live; without it the container takes the
-      // single-pass path and peak disk is 3-4x total input again (cf#784).
-      mintPartialUrlPool(env, outputKey, finalClips.length),
-    ]);
-    payload = { ...payload, clips, outputUrl, partialUrls };
+    payload = await presignAssemble(bundleDurations);
   }
   // Async /finish: the Worker must not sit on a 17-shot concat. 524 is what
   // that wait looks like. Submit 202s; later ticks poll.
-  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.film_id });
+  const tick = await tickVideoFinishAssemble(env, payload, job.assemble_poll, { wait: job.assemble_wait, affinity: job.film_id, repayload: () => presignAssemble() });
   if (tick.kind === "waiting") {
     // No slot is free. The clips stay in R2 and the 1-minute sweep drives the next attempt.
     job.assemble_wait = tick.wait;
