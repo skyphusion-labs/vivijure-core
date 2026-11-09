@@ -7,7 +7,8 @@ import {
   pickOneForHook,
   type RenderPipelineSelection,
 } from "./modules/render-pipeline.js";
-import { servingForHook } from "./modules/registry.js";
+import { servingForHook, validateConfig } from "./modules/registry.js";
+import { dialogueModules } from "./modules/dialogue-select.js";
 import { HOOK_NAMES, type HookName, type HookSelection, type RegisteredModule, type RenderConfigProjection, type RenderHookSelection } from "./modules/types.js";
 
 export type RenderTier = "draft" | "standard" | "final";
@@ -36,6 +37,9 @@ export function renderConfigProjection(): RenderConfigProjection {
 export interface ModuleRenderOverridesWire {
   motion_backend?: string;
   keyframe_backend?: string;
+  /** core#339: which module serves `dialogue` (pick one). Omitted = the first by ui.order. A name that
+   *  does not serve dialogue is refused when the film starts, never replaced with the default. */
+  dialogue_backend?: string;
   config?: Record<string, Record<string, unknown>>;
   /** cf#537: the caller's per-render participation statement, keyed by hook.
    *
@@ -59,6 +63,11 @@ export interface ResolvedModuleRenderConfigs {
   speech_config: Record<string, Record<string, unknown>>;
   film_finish_config: Record<string, Record<string, unknown>>;
   master_config: Record<string, Record<string, unknown>>;
+  /** core#339: the caller's dialogue module, carried to the film job. Absent when the caller sent none. */
+  dialogue_backend?: string;
+  /** core#339: config for each dialogue module the caller sent config for, clamped to its schema.
+   *  Only those: a module the caller sent nothing for still gets `{}`, as before. */
+  dialogue_config: Record<string, Record<string, unknown>>;
   /** cf#537: the resolved per-render finish participation, carried to the film job as its own field.
    *  ABSENT here means the caller sent none -- it must NEVER be derived from `finish_config`, whose
    *  Record shape cannot distinguish "no config" from "not requested" after a JSON round trip. That
@@ -108,7 +117,8 @@ export function parseModuleRenderOverrides(raw: unknown): ModuleRenderOverridesW
     isRecord(raw.config) ||
     isRecord(raw.select) ||
     typeof raw.motion_backend === "string" ||
-    typeof raw.keyframe_backend === "string"
+    typeof raw.keyframe_backend === "string" ||
+    typeof raw.dialogue_backend === "string"
   ) {
     const out: ModuleRenderOverridesWire = {};
     // Whitespace-only backend names are omitted (not an explicit choice). Coupling then defaults a
@@ -118,6 +128,9 @@ export function parseModuleRenderOverrides(raw: unknown): ModuleRenderOverridesW
     }
     if (typeof raw.keyframe_backend === "string" && raw.keyframe_backend.trim()) {
       out.keyframe_backend = raw.keyframe_backend.trim();
+    }
+    if (typeof raw.dialogue_backend === "string" && raw.dialogue_backend.trim()) {
+      out.dialogue_backend = raw.dialogue_backend.trim();
     }
     if (isRecord(raw.config)) {
       const config: Record<string, Record<string, unknown>> = {};
@@ -213,6 +226,11 @@ export function resolveModuleRenderConfigs(
   for (const m of pipeline.filmFinish) film_finish_config[m.name] = m.config;
   const master_config: Record<string, Record<string, unknown>> = {};
   for (const m of pipeline.master) master_config[m.name] = m.config;
+  const dialogue_config: Record<string, Record<string, unknown>> = {};
+  for (const m of dialogueModules(modules)) {
+    const sent = parsed.config?.[m.name];
+    if (sent) dialogue_config[m.name] = validateConfig(m.config_schema, sent);
+  }
 
   return {
     motion_backend: pipeline.motion_backend?.name,
@@ -223,6 +241,8 @@ export function resolveModuleRenderConfigs(
     speech_config,
     film_finish_config,
     master_config,
+    ...(parsed.dialogue_backend ? { dialogue_backend: parsed.dialogue_backend } : {}),
+    dialogue_config,
     // cf#537: carried as its own field. The finish set is derived TWICE and independently -- here at
     // resolve time (for config) and again at mint time from the LIVE registry (film-orchestrator's
     // enterFinishPhase). The mint site does not read this resolved plan, so a selection that reached

@@ -133,6 +133,8 @@ export function naturalKeyForStartFilmJob(args: {
   motion_config?: Record<string, unknown>;
   finish_config?: Record<string, Record<string, unknown>>;
   finish_select?: HookSelection;
+  dialogue_backend?: string;
+  dialogue_config?: Record<string, Record<string, unknown>>;
   speech_config?: Record<string, Record<string, unknown>>;
   film_finish_config?: Record<string, Record<string, unknown>>;
   master_config?: Record<string, Record<string, unknown>>;
@@ -161,6 +163,9 @@ export function naturalKeyForStartFilmJob(args: {
       // The `?? null` convention keeps absent, {mode:"default"} and {mode:"named",modules:[]} as three
       // distinct canonical JSON values, so the three wire states survive the fingerprint.
       finish_select: args.finish_select ?? null,
+      // core#339: render-affecting. Two submits differing only in dialogue module are two films.
+      dialogue_backend: args.dialogue_backend?.trim() || null,
+      dialogue_config: args.dialogue_config && Object.keys(args.dialogue_config).length ? args.dialogue_config : null,
       speech_config: args.speech_config ?? null,
       film_finish_config: args.film_finish_config ?? null,
       master_config: args.master_config ?? null,
@@ -188,6 +193,8 @@ export function naturalKeyForStartFromKeyframes(args: {
   motion_configs?: Record<string, Record<string, unknown>>;
   finish_config?: Record<string, Record<string, unknown>>;
   finish_select?: HookSelection;
+  dialogue_backend?: string;
+  dialogue_config?: Record<string, Record<string, unknown>>;
   speech_config?: Record<string, Record<string, unknown>>;
   film_finish_config?: Record<string, Record<string, unknown>>;
   master_config?: Record<string, Record<string, unknown>>;
@@ -213,6 +220,9 @@ export function naturalKeyForStartFromKeyframes(args: {
       // The `?? null` convention keeps absent, {mode:"default"} and {mode:"named",modules:[]} as three
       // distinct canonical JSON values, so the three wire states survive the fingerprint.
       finish_select: args.finish_select ?? null,
+      // core#339: render-affecting. Two submits differing only in dialogue module are two films.
+      dialogue_backend: args.dialogue_backend?.trim() || null,
+      dialogue_config: args.dialogue_config && Object.keys(args.dialogue_config).length ? args.dialogue_config : null,
       speech_config: args.speech_config ?? null,
       film_finish_config: args.film_finish_config ?? null,
       master_config: args.master_config ?? null,
