@@ -74,8 +74,8 @@ const okEnvelope = { id: "job-1", status: "IN_QUEUE" };
 /**
  * The HOST a call went to, parsed.
  *
- * `url.includes("rest.runpod.io")` is not an assertion about a host: it is satisfied by any URL
- * that merely CONTAINS the string, including `https://evil.example/?x=rest.runpod.io`. CodeQL
+ * `url.includes("api.runpod.io")` is not an assertion about a host: it is satisfied by any URL
+ * that merely CONTAINS the string, including `https://evil.example/?x=api.runpod.io`. CodeQL
  * flags it as js/incomplete-url-substring-sanitization (high), and it is also the unanchored-matcher
  * defect this crew keeps paying for -- in a file whose whole subject is "which origin did the
  * credential go to". A parsed hostname cannot be satisfied that way.
@@ -318,7 +318,7 @@ describe("a plane refusal is reported as OURS, not as a RunPod failure", () => {
 });
 
 describe("the account-level workers-max reconcile is skipped on a proxied tenant", () => {
-  it("makes no rest.runpod.io call and goes straight to the plane", async () => {
+  it("makes no RunPod management (api.runpod.io) call and goes straight to the plane", async () => {
     const { fetchImpl, calls } = recordingFetch(() => jsonResponse(okEnvelope));
     await submitRenderJob(
       { ...proxiedEnv, RUNPOD_WORKERS_MAX: 3 } as never,
@@ -326,11 +326,11 @@ describe("the account-level workers-max reconcile is skipped on a proxied tenant
       fastOpts(fetchImpl),
     );
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.map((c) => hostOf(c.url))).not.toContain("rest.runpod.io");
+    expect(calls.map((c) => hostOf(c.url))).not.toContain("api.runpod.io");
     expect(calls[0].url).toBe(`${PLANE_BASE}/${EP}/run`);
   });
 
-  it("CONTROL: the same variable unbound DOES reach rest.runpod.io", async () => {
+  it("CONTROL: the same variable unbound DOES reach the api.runpod.io management read", async () => {
     // Without this the assertion above passes on any env that simply never reconciles, which is
     // indistinguishable from the skip being the thing that prevented it.
     const { fetchImpl, calls } = recordingFetch(() => jsonResponse({ workersMax: 3 }));
@@ -339,7 +339,7 @@ describe("the account-level workers-max reconcile is skipped on a proxied tenant
       { bundleKey: "bundles/x.tar.gz" },
       fastOpts(fetchImpl),
     );
-    expect(calls.map((c) => hostOf(c.url))).toContain("rest.runpod.io");
+    expect(calls.map((c) => hostOf(c.url))).toContain("api.runpod.io");
   });
 
   it("RUNPOD_RECONCILE_DISABLED skips the REST read even when workersMax is set", async () => {
@@ -350,17 +350,17 @@ describe("the account-level workers-max reconcile is skipped on a proxied tenant
       fastOpts(fetchImpl),
     );
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.map((c) => hostOf(c.url))).not.toContain("rest.runpod.io");
+    expect(calls.map((c) => hostOf(c.url))).not.toContain("api.runpod.io");
     expect(calls.map((c) => hostOf(c.url))).toContain("api.runpod.ai");
   });
 
-  it("CONTROL: RUNPOD_RECONCILE_DISABLED=0 still reaches rest.runpod.io", async () => {
+  it("CONTROL: RUNPOD_RECONCILE_DISABLED=0 still reaches api.runpod.io", async () => {
     const { fetchImpl, calls } = recordingFetch(() => jsonResponse({ workersMax: 3 }));
     await submitRenderJob(
       { ...directEnv, RUNPOD_WORKERS_MAX: 3, RUNPOD_RECONCILE_DISABLED: "0" } as never,
       { bundleKey: "bundles/x.tar.gz" },
       fastOpts(fetchImpl),
     );
-    expect(calls.map((c) => hostOf(c.url))).toContain("rest.runpod.io");
+    expect(calls.map((c) => hostOf(c.url))).toContain("api.runpod.io");
   });
 });

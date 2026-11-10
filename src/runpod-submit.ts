@@ -812,9 +812,9 @@ async function submitToRunpodEndpoint(
   const route = await runpodRoute(env as RunpodRouteEnv);
   const credentialErr = runpodMissingCredential(route);
   if (credentialErr) return credentialErr;
-  // The workers-max reconcile is an ACCOUNT-level call to rest.runpod.io (see
+  // The workers-max reconcile is an ACCOUNT-level call to api.runpod.io/v2 (see
   // runpod-endpoint-reconcile.ts), not one of the four verbs the plane proxy serves, and a
-  // proxied tenant holds no RunPod key by design. Presenting the plane token to rest.runpod.io
+  // proxied tenant holds no RunPod key by design. Presenting the plane token to api.runpod.io
   // would 401; routing it through the proxy is impossible because the proxy has no such verb --
   // deliberately, since endpoint configuration on a SHARED pool endpoint is ours to own and not a
   // tenant's to set. So it is SKIPPED, not attempted and swallowed, and the skip is silent
