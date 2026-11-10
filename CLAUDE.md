@@ -12,7 +12,8 @@ platform ICD. Published as **`@skyphusion-labs/vivijure-core`**.
 | CF-native | `skyphusion-labs/vivijure-cf` | Workers, D1, R2, service bindings |
 | Local | `skyphusion-labs/vivijure-local` | Node, SQLite, S3/MinIO, HTTP sidecars |
 
-Wire contract for HTTP routes stays in host `docs/CONTRACT.md`. **Module wire contract SoT is this
+Wire contract for HTTP routes is `vivijure-cf` `docs/CONTRACT.md`; `vivijure-local` tracks gaps in
+`docs/PARITY.md`. **Module wire contract SoT is this
 package** (`src/modules/types.ts` here = `vivijure-module/2` on npm). **Planner vs module boundary:**
 [docs/CORE-VS-MODULES.md](docs/CORE-VS-MODULES.md). Adoption history: [docs/HOST-ADOPTION.md](docs/HOST-ADOPTION.md).
 
