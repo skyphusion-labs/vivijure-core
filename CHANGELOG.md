@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.44.0
+
 ## [1.43.0] -- 2026-11-09
 
 ### Fix: a video-finish submit that never answers is bounded (vivijure-core#308)
