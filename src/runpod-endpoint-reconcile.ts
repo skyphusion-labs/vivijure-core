@@ -15,8 +15,8 @@
 // transient miss (network error, 5xx) (#527). On v2 a 404 means the endpoint is not found or not
 // visible to this key. 401 and 403 stay the scoped-key path.
 //
-// Not this API: https://api.runpod.ai/v2/{id}/run|status|cancel|health is the serverless INVOKE
-// API (runpod-submit.ts), a different host and product, and it is untouched here.
+// Not this API: the serverless INVOKE API (run, status, cancel, health in runpod-submit.ts) is a
+// different host and product, not REST v1, and it is untouched here.
 
 export const RUNPOD_REST_BASE = "https://api.runpod.io/v2";
 
