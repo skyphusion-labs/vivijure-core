@@ -114,4 +114,107 @@ describe("reconcileRunpodEndpointWorkersMax", () => {
       expect(r.guidance).toContain("idle scale-down");
     }
   });
+
+  it("a 410 from retired REST v1 is a failure, not a healthy no-op", async () => {
+    const fetchImpl = vi.fn(async () => new Response("gone", { status: 410 }));
+    const r = await reconcileRunpodEndpointWorkersMax({
+      apiKey: "k",
+      endpointId: "ep1",
+      spec: { workersMax: 4 },
+      fetchImpl,
+    });
+    expect(r).not.toEqual({ ok: true, action: "none" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.status).toBe(410);
+      expect(r.error).toContain("410");
+      expect(r.guidance).toContain("2026-11-15");
+      expect(r.guidance).toContain("https://api.runpod.io/v2");
+      expect(r.guidance).not.toContain("idle scale-down");
+    }
+  });
+
+  it("a 404 from REST v1 is the same terminal failure", async () => {
+    const fetchImpl = vi.fn(async () => new Response("missing", { status: 404 }));
+    const r = await reconcileRunpodEndpointWorkersMax({
+      apiKey: "k",
+      endpointId: "ep1",
+      spec: { workersMax: 4 },
+      fetchImpl,
+    });
+    expect(r).not.toEqual({ ok: true, action: "none" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.status).toBe(404);
+      expect(r.guidance).toContain("https://api.runpod.io/v2");
+    }
+  });
+
+  it("a 502 stays a healthy no-op so submit is not blocked on a transient read", async () => {
+    const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 502 }));
+    const r = await reconcileRunpodEndpointWorkersMax({
+      apiKey: "k",
+      endpointId: "ep1",
+      spec: { workersMax: 4 },
+      fetchImpl,
+    });
+    expect(r).toEqual({ ok: true, action: "none" });
+  });
+
+  it("a network error stays a healthy no-op", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connect ECONNRESET");
+    });
+    const r = await reconcileRunpodEndpointWorkersMax({
+      apiKey: "k",
+      endpointId: "ep1",
+      spec: { workersMax: 4 },
+      fetchImpl,
+    });
+    expect(r).toEqual({ ok: true, action: "none" });
+  });
+
+  it("GET 401 stays the scoped-key failure, not the retirement failure", async () => {
+    const fetchImpl = vi.fn(async () => new Response("unauthorized", { status: 401 }));
+    const r = await reconcileRunpodEndpointWorkersMax({
+      apiKey: "scoped",
+      endpointId: "ep1",
+      spec: { workersMax: 2 },
+      fetchImpl,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.status).toBe(401);
+      expect(r.guidance).toContain("idle scale-down");
+      expect(r.guidance).not.toContain("https://api.runpod.io/v2");
+    }
+  });
+
+  it("GET 403 stays the scoped-key failure", async () => {
+    const fetchImpl = vi.fn(async () => new Response("forbidden", { status: 403 }));
+    const r = await reconcileRunpodEndpointWorkersMax({
+      apiKey: "scoped",
+      endpointId: "ep1",
+      spec: { workersMax: 2 },
+      fetchImpl,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.status).toBe(403);
+      expect(r.guidance).toContain("idle scale-down");
+    }
+  });
+
+  it("disabled skips the REST read even when v1 would return 410", async () => {
+    const fetchImpl = vi.fn(async () => new Response("gone", { status: 410 }));
+    const r = await reconcileRunpodEndpointWorkersMax({
+      apiKey: "k",
+      endpointId: "ep1",
+      spec: { workersMax: 4 },
+      fetchImpl,
+      disabled: true,
+    });
+    expect(r).toEqual({ ok: true, action: "none" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
