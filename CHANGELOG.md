@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.45.1
+
 ## [1.45.0] -- 2026-11-11
 
 **Feat: a config value can say which shots it fits (`requires` in `config_schema`), and a film that breaks it is refused at start (#507).**
