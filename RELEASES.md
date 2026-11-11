@@ -90,43 +90,21 @@ npm view @skyphusion-labs/vivijure-core@1.2.2 version
 # 5. CLOSE THE LEDGER ROW -- see "Closing the row" below. Not optional, not a tidy-up.
 ```
 
-> **STANDING CONDITION, not a one-off. First instance v1.10.0 (2026-08-07).** The rule above says
-> seed the ledger and `CHANGELOG.md` in the same PR as the version bump. **Once core#146's guard is
-> in force, no cycle can.** After a release, `main` sits on a tagged version, so a bare
-> `## Unreleased` is refused and the next FEATURE PR is the one that must open the next version.
-> That is the steady state, not a deviation: the bump lands in the first feature PR of the cycle and
-> the seed lands in the release PR. v1.10.0 was the first instance (bump in #169, seed in #170).
+> **SUPERSEDED 2026-11-10 (Conrad, fleet-chezmoi#1766): this repo cuts releases bump-at-release, like
+> every other skyphusion-labs repo.** It used to be open-once: the first feature PR of a cycle opened the
+> next version and the release PR only seeded the ledger and CHANGELOG (first instance v1.10.0, 2026-08-07;
+> v1.16.0 already opened and closed the cycle in the release PR). The estate ruling replaces that. Now: a
+> version moves ONLY in a release PR (bump `package.json` and `package-lock.json`, then run
+> `changelog-assemble.mjs`); feature and fix PRs do not bump; releases go through a PR (fleet-chezmoi#1622)
+> and an org admin tags the release PR's merge commit. The check before a release PR: if a tag already
+> exists for the version in `package.json`, the cycle is closed and the release PR bumps.
 >
-> **CORRECTED AT THE v1.16.0 CUT (rollins, 2026-08-15): NOTHING FORCES THAT BUMP ANY MORE, and the
-> paragraph above describes an obligation with no mechanism behind it.** core#224's `changelog.d/`
-> fragments removed the need for a feature PR to touch `CHANGELOG.md` at all, and touching
-> `CHANGELOG.md` was the only moment at which core#146's guard could see the version. A
-> fragment-only PR is post-release-main shaped -- top heading and `package.json` agree on the spent
-> version -- so it passes `tests/changelog-version.test.ts` green while opening no cycle. Measured
-> on this cut: both cycle PRs (#233, #235) used fragments, neither bumped, and
-> `changelog-assemble.mjs` then **refused** with *"does not open with an Unreleased-shaped heading.
-> Nothing to promote"*.
->
-> The refusal is loud, at cut time, and one step from recoverable, so this is a procedure-accuracy
-> defect and not a correctness hole -- but it means **the release PR now OPENS the cycle and CLOSES
-> it in the same commit**, which is what v1.16.0 did: bump, insert `## Unreleased / v<next>`, then
-> run the assemble script. Follow that, not the paragraph above.
->
-> **CLOSED by core#236.** `tests/changelog-version.test.ts` now refuses a `changelog.d/` fragment
-> sitting on a `package.json` version that is already tagged, with a released-form heading -- work
-> that has no version to be released under. So the obligation in the paragraph above has a mechanism
-> again, and it fires at REVIEW time on the PR that caused it rather than at cut time on whoever cuts
-> next. **A `src/` PR opening a cycle is once more forced rather than remembered:**
-> `changelog-entry-required.mjs` makes it add an entry, the fragment route is now refused on a spent
-> version, so the first such PR of a cycle has to bump. (The direct-`CHANGELOG.md` route still
-> satisfies that guard during the migration window; its own misfiling risk is core#212's, not this
-> one's.) Three neighbouring states stay green on purpose and are asserted so: an open cycle heading,
-> post-release main with an empty `changelog.d/`, and the release PR itself after assemble and before
-> the tag.
->
-> **This does NOT reintroduce the per-PR version pin that broke #144.** A version opens ONCE per
-> cycle. Every subsequent PR adds an entry under the already-open heading and touches no version
-> file, so the spent-version assertion never fires again until the next release.
+> **KNOWN GAP between this text and the guards (filed as a follow-up, not fixed here).**
+> `tests/changelog-version.test.ts` (core#236) refuses a `changelog.d/` fragment that sits on a
+> `package.json` version that is already tagged, and `scripts/changelog-entry-required.mjs` makes a
+> `src/` PR add an entry. Both were written for open-once, so until they are reworked a feature PR on
+> post-release `main` may still be pushed to bump. Do not read that refusal as the convention; it is the
+> guard that has not caught up with the ruling.
 
 ## Closing the row (step 5, and the one that gets skipped)
 
