@@ -18,8 +18,14 @@ import { ownedTmp } from "./helpers/owned-tmp.js";
 const reproTmp = ownedTmp("core-212-repro-");
 afterEach(() => reproTmp.cleanup());
 
+// The fixture repos ignore the user's and the system's git config (local#546). A global
+// core.hooksPath, commit signing or an fsmonitor would otherwise run inside every throwaway repo:
+// on a seat with a global commit hook, the commits were 389 ms of the 529 ms these git calls took.
+// The fixtures set their own user.name and user.email, so nothing they need comes from that config.
+const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+
 function git(root: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
+  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: GIT_ENV });
 }
 
 const BASE_CHANGELOG = "# Changelog\n\n## Unreleased\n\n## [1.0.0] -- 2026-01-01\n\n### old\n";
