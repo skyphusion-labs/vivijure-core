@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.45.0
+
 ## [1.44.0] -- 2026-11-10
 
 ### Fix: a 410 from REST v1 is not a healthy reconcile no-op (fleet-chezmoi#2081)

@@ -38,6 +38,7 @@ import {
 } from "./film-model.js";
 import { resolveFilmOutputKey } from "./film-output-key.js";
 import { plateCheckView } from "./plate-count.js";
+import { keyframeReuseView } from "./keyframe-reuse.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
 
 /** The `output_json` payload for a single-film job at phase `done`.
@@ -98,11 +99,16 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
   // every still it checked came out clean. Derived from the job doc alone, so both writers agree.
   const plateCheck = plateCheckView(job.keyframes);
   if (plateCheck) out.plate_check = plateCheck;
+  // core#532: the stills the backend returned from its store instead of drawing. Absent when none was
+  // reused, which is the contract's "absent means drawn".
+  const keyframeReuse = keyframeReuseView(job.keyframes);
+  if (keyframeReuse) out.keyframe_reuse = keyframeReuse;
   if (job.keyframes_only && job.keyframes?.length) {
     out.keyframes = job.keyframes.map((k) => ({
       shot_id: k.shot_id,
       key: k.keyframe_key,
       ...(k.plate_count ? { plate_count: k.plate_count } : {}),
+      ...(k.reused === true ? { reused: true } : {}),
     }));
     out.scenes = job.scenes;
   }

@@ -259,12 +259,14 @@ export async function clipKeysFromFilmJob(
 function confineKeyframeOutput(project: string, kfOut: KeyframeOutput): KeyframeOutput {
   const keyframes = (kfOut.keyframes || []).map((k: KeyframeShot) => {
     // The plate count report is module-supplied: keep it only in the documented shape, never guess.
-    const { plate_count: rawPlate, ...rest } = k;
+    // The reuse mark likewise: only a JSON true (core#532).
+    const { plate_count: rawPlate, reused: rawReused, ...rest } = k;
     const plate_count = parsePlateCount(rawPlate);
     return {
       ...rest,
       keyframe_key: assertProjectKey(project, k.keyframe_key),
       ...(plate_count ? { plate_count } : {}),
+      ...(rawReused === true ? { reused: true } : {}),
     };
   });
   let trained_loras = kfOut.trained_loras;
@@ -377,9 +379,15 @@ async function voiceRefOnShot(
 
 /** The job doc's ref for one keyframe. The plate count report rides along when the guard ran, so the
  *  render row can say a still may show an extra person (plateCheckView). */
-function keyframeRef(k: { shot_id: string; keyframe_key: string; plate_count?: unknown }): FilmKeyframeRef {
+function keyframeRef(k: { shot_id: string; keyframe_key: string; plate_count?: unknown; reused?: unknown }): FilmKeyframeRef {
   const plate_count = parsePlateCount(k.plate_count);
-  return { shot_id: k.shot_id, keyframe_key: k.keyframe_key, ...(plate_count ? { plate_count } : {}) };
+  return {
+    shot_id: k.shot_id,
+    keyframe_key: k.keyframe_key,
+    ...(plate_count ? { plate_count } : {}),
+    // core#532: the backend's reuse mark, so the render row can say this still was not redrawn.
+    ...(k.reused === true ? { reused: true as const } : {}),
+  };
 }
 
 function persistKeyframeRefs(job: FilmJob, kfOut: KeyframeOutput): void {
@@ -3764,9 +3772,14 @@ export async function startFilmFromKeyframes(
     return job;
   }
   // A still carried from the preview keeps its plate count report, so the animated film still says
-  // which stills may show an extra person. The host drops the report for a still it replaced.
-  const plateByShot = new Map((args.keyframes || []).map((k) => [k.shot_id, k.plate_count]));
-  job.keyframes = matched.map((m) => keyframeRef({ ...m, plate_count: plateByShot.get(m.shot_id) }));
+  // which stills may show an extra person. The host drops the report for a still it replaced. The reuse
+  // mark rides the same way (core#532): it says whether the backend drew the still when it was asked.
+  const refByShot = new Map((args.keyframes || []).map((k) => [k.shot_id, k]));
+  job.keyframes = matched.map((m) => keyframeRef({
+    ...m,
+    plate_count: refByShot.get(m.shot_id)?.plate_count,
+    reused: refByShot.get(m.shot_id)?.reused,
+  }));
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   // core#339: a dialogue choice that names no dialogue module is refused before anything is spent.
   const dialoguePick = pickDialogueModule(modules, job.dialogue_backend);
