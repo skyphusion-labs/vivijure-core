@@ -350,6 +350,10 @@ export interface FilmKeyframeRef {
   keyframe_key: string;
   /** The backend plate count guard report for this still, when it ran. Read by plateCheckView. */
   plate_count?: PlateCount;
+  /** The backend returned this still from its store instead of drawing it (core#532). Absent means
+   *  drawn. keyframeRef writes only `true`; a parked partial keeps the module's KeyframeShot shape.
+   *  Read by keyframeReuseView. */
+  reused?: boolean;
 }
 
 export interface FilmJob {

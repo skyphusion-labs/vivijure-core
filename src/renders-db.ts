@@ -83,6 +83,9 @@ export interface KeyframeRef {
   /** The backend plate count guard report, when it ran on this still. The history strip reads it to
    *  mark a still that may show an extra person. */
   plate_count?: PlateCount;
+  /** The backend returned this still from its store instead of drawing it (core#532). The history
+   *  strip reads it to mark the still as reused. */
+  reused?: true;
 }
 
 // Shape returned to clients by /api/storyboard/renders. snake_case mirrors
@@ -1100,7 +1103,12 @@ export function normalizeKeyframes(raw: unknown): KeyframeRef[] {
     if (typeof e.shot_id !== "string" || e.shot_id.length === 0) continue;
     if (typeof e.key !== "string" || e.key.length === 0) continue;
     const plate_count = parsePlateCount(e.plate_count);
-    out.push({ shot_id: e.shot_id, key: e.key, ...(plate_count ? { plate_count } : {}) });
+    out.push({
+      shot_id: e.shot_id,
+      key: e.key,
+      ...(plate_count ? { plate_count } : {}),
+      ...(e.reused === true ? { reused: true as const } : {}),
+    });
   }
   return out;
 }
