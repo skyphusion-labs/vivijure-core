@@ -43,6 +43,7 @@ import {
 import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook, selectForChain } from "./modules/render-pipeline.js";
 import { hookOutputViolation } from "./modules/conformance.js";
 import { emitStructuredEvent } from "./structured-events.js";
+import { doorTailSeconds, pickFitDoor, type DoorFitRecord } from "./door-fit.js";
 import { usageOf, doorBillsPerClip } from "./motion-usage.js";
 import {
   LINE_WAV_MAX_SECONDS,
@@ -998,6 +999,8 @@ async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: Regis
     return;
   }
   const provider = pick.module?.name;
+  // vivijure-cf#930: before any line is padded to its door, so a moved shot is padded for its new door.
+  applyDoorFit(job, preModules, lined);
   for (const l of lined) {
     const key = job.dialogue_audio![l.shot_id];
     // A line on a silent door is not cut to a driven clip's length (core#442), as in a film on that door.
@@ -1039,6 +1042,53 @@ async function finalizePreClipDialogue(env: Env, job: FilmJob, preModules: Regis
     return;
   }
   await advanceToClips(env, job, keyframeOutputFromJob(job), preModules);
+}
+
+/** vivijure-cf#930, Conrad's ruling 2026-11-11: a per-shot motion door applies to that one clip only, and the
+ *  film door stays the default for every other shot. A lined shot with no door of its own, whose film door's
+ *  clip floor would leave the speaker mouthing silence after the line, moves to the first door the caller
+ *  offered that takes it without a tail. Only per_shot_motion is written; motion_backend never changes. A
+ *  shot left with a tail is recorded too, so the row says so. Runs once per film. */
+function applyDoorFit(job: FilmJob, modules: RegisteredModule[], lined: DialogueLine[]): void {
+  if (job.door_fit) return;
+  const serving = servingForHook(modules, "motion.backend");
+  const record: DoorFitRecord = { swapped: [], tails: [] };
+  for (const l of lined) {
+    const line = job.dialogue_audio_seconds?.[l.shot_id];
+    if (typeof line !== "number" || !Number.isFinite(line) || line <= 0) continue;
+    const door = motionDoorModuleForShot(job, modules, l.shot_id);
+    if (!door) continue;
+    const planned = plannedShotSeconds(job, l.shot_id);
+    const { tail, clip } = doorTailSeconds(door, line, planned);
+    if (tail <= 0) continue;
+    const ownDoor = job.per_shot_motion?.[l.shot_id] !== undefined;
+    const fit = ownDoor || !job.door_fit_offer?.length
+      ? undefined
+      : pickFitDoor(job.door_fit_offer, serving, door.name, line, planned, (m) => {
+        try {
+          return !configRequiresRefusal(m.config_schema, validateConfig(m.config_schema, job.motion_configs?.[m.name]), { shot_id: l.shot_id, seconds: planned });
+        } catch {
+          return false; // a config the door refuses is not a door this shot can move to
+        }
+      });
+    if (fit) {
+      job.per_shot_motion = { ...(job.per_shot_motion ?? {}), [l.shot_id]: fit.name };
+      record.swapped.push({ shot_id: l.shot_id, from: door.name, to: fit.name, line_seconds: line, planned_seconds: planned, from_clip_seconds: clip });
+    } else {
+      record.tails.push({ shot_id: l.shot_id, door: door.name, line_seconds: line, clip_seconds: clip });
+    }
+    emitStructuredEvent({
+      ev: "motion.door_fit",
+      film_id: job.film_id,
+      project: job.project,
+      shot_id: l.shot_id,
+      from: door.name,
+      to: fit?.name ?? null,
+      line_seconds: line,
+      clip_seconds: clip,
+    });
+  }
+  if (record.swapped.length || record.tails.length) job.door_fit = record;
 }
 
 async function advancePreClipDialoguePhase(env: Env, job: FilmJob, preModules: RegisteredModule[]): Promise<void> {
@@ -3679,6 +3729,8 @@ export async function startFilmFromKeyframes(
     per_shot_motion?: Record<string, string>;
     motion_config?: Record<string, unknown>;
     motion_configs?: Record<string, Record<string, unknown>>;
+    /** vivijure-cf#930: doors a lined shot may move to for its own clip (see FilmJob.door_fit_offer). */
+    door_fit?: string[];
     /** vivijure-cf#1166: keep lines, clips and finish steps whose inputs are proven identical. */
     reuse_finished?: boolean;
     /** With reuse_finished: shots whose clip is bought again though its inputs are proven the same. An unchanged
@@ -3749,6 +3801,7 @@ export async function startFilmFromKeyframes(
     // core#442: kept, so pre-clip dialogue and advanceToClips see each shot's own door.
     per_shot_motion: args.per_shot_motion && Object.keys(args.per_shot_motion).length ? args.per_shot_motion : undefined,
     motion_configs: args.motion_configs && Object.keys(args.motion_configs).length ? args.motion_configs : undefined,
+    door_fit_offer: args.door_fit?.length ? [...args.door_fit] : undefined,
     style_prefix: typeof args.style_prefix === "string" ? args.style_prefix : undefined,
     voice_lock: typeof args.voice_lock === "string" ? args.voice_lock.trim() || undefined : undefined,
     voice_ref_keys: args.voice_ref_keys && Object.keys(args.voice_ref_keys).length ? args.voice_ref_keys : undefined,
@@ -3873,6 +3926,10 @@ export async function startFilmJob(
   args: {
     project: string; bundle_key: string; scenes: FilmScene[];
     motion_backend?: string; keyframe_backend?: string; keyframe_config?: Record<string, unknown>; motion_config?: Record<string, unknown>;
+    /** vivijure-cf#930: doors a lined shot may move to for its own clip (see FilmJob.door_fit_offer), and
+     *  their configs keyed by module name. */
+    door_fit?: string[];
+    motion_configs?: Record<string, Record<string, unknown>>;
     /** The frame this film is delivered at, both or neither. Parts of a long film set it, because the join
      *  refuses films of different frames. Absent, the frame comes from the measured clips. */
     delivery_width?: number;
@@ -3960,6 +4017,8 @@ export async function startFilmJob(
     project: args.project, bundle_key: args.bundle_key, scenes,
     motion_backend: motionBackend ?? null,
     motion_config: applyVoiceSeed(args.motion_config ?? {}, typeof args.voice_lock === "string" ? args.voice_lock : undefined) ?? args.motion_config ?? {},
+    motion_configs: args.motion_configs && Object.keys(args.motion_configs).length ? args.motion_configs : undefined,
+    door_fit_offer: args.door_fit?.length ? [...args.door_fit] : undefined,
     style_prefix: typeof args.style_prefix === "string" ? args.style_prefix : undefined,
     voice_lock: typeof args.voice_lock === "string" ? args.voice_lock.trim() || undefined : undefined,
     voice_ref_keys: args.voice_ref_keys && Object.keys(args.voice_ref_keys).length ? args.voice_ref_keys : undefined,
