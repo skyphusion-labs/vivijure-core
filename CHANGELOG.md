@@ -3,7 +3,27 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.45.0
+## [1.45.0] -- 2026-11-11
+
+**Feat: a config value can say which shots it fits (`requires` in `config_schema`), and a film that breaks it is refused at start (#507).**
+
+Additive in `vivijure-module/2`, so no api bump. A field may declare `requires: [{ when, shot_seconds: { min?, max? }, message? }]`: when its effective value (the caller's, else the default) equals `when`, every shot the module renders must have planned `seconds` in that range, inclusive. The range is in planned seconds because the core cannot know a module's own rounding: cf-veo, which snaps 7.5 s and up to an 8 s clip and makes 1080p only at 8 s, would declare `{ when: "1080p", shot_seconds: { min: 7.5 } }`. `filmStartConfigRefusal` checks each shot against the door it renders on (`per_shot_motion`, else the film's) with that door's config, and fails the film by name before anything is spent, instead of the door refusing at clip time after the keyframes were bought. `validateManifest` refuses a malformed rule. Exported: `configRequiresRefusal` (`modules/registry`).
+
+**Feat: the backend keyframe reuse mark reaches the render row, so a still that was not redrawn is no longer silent (#532).**
+
+When a shot is asked for again with the same parameters, the GPU backend returns the stored still and marks its keyframe entry `reused: true`. The core dropped the mark at the job doc, so a panel regen with unchanged settings returned the old still and read as a new take (vivijure-cf#1385). `FilmKeyframeRef` and `KeyframeRef` now carry an optional `reused`, kept only as a JSON `true` (additive, no module epoch change; `KeyframeShot.reused` was already in the contract). The render payload gains `keyframe_reuse: {stills, reused: [shot_id]}`, absent when no still was reused, and a keyframes-only payload keeps `reused` on each keyframe entry. A film animated from a preview keeps the mark for each carried still. Absent cannot tell a door that never reports the mark from one that drew every still.
+
+**Feat: a finish module declares how it changes the frame rate (`finish_artifacts.rate_factor`, vivijure-cf#879).**
+
+Additive in `vivijure-module/2`, so no api bump. `rate_factor: { knob, default, off_when? }` says the step multiplies the clip's frame rate by the value of `knob`, or by `default` when the knob is absent, unless `off_when` matches. finish-rife's reading is `{ "knob": "interpolation_factor", "default": 2, "off_when": { "knob": "interpolate", "equals": false } }`. `finishStepRateFactor` and `predictDeliveryFps` read the declaration first, and the delivery price and the submit budget pass each step's `finish_artifacts`. `validateManifest` refuses a malformed `rate_factor` by name. A manifest without one keeps the legacy binding-name reading until every finish module declares; then the fallback goes.
+
+**Fix: install-scope module config reaches every hook, and only the operator sets it (vivijure-cf#879).**
+
+A `config_schema` field marked `scope: "install"` is the operator's, set once in the studio settings. Before this, the stored value reached a module only on `notify`, and every other hook sent whatever the render config held, including an install-scope key a caller chose. Every core invoke now goes through `invokeRegistered` (`modules/invoke-registered.js`). It replaces each install-scope key with the stored value, or the schema default, and passes render-scope keys through. A module with no install-scope field reads no store. `invokeModule` stays the raw transport. `tests/invoke-registered-879.test.ts` fails when any other file calls it, or when a new hook in `HOOK_NAMES` is not classified as core-invoked or host-invoked. Hosts should move their own hook invokes (`plan.enhance`, `image.generate`, `cast.image`) to `invokeRegistered` too.
+
+### Fix: beat analysis signs only a key in served artifact space
+
+`analyzeAudioBeats` presigns the audio key before the beat-sync read. The key must be in served artifact space, the same prefixes the studio serve routes allow. A key outside that space, including one under `quarantine/`, is refused before any URL is signed. The refusal is permanent.
 
 ## [1.44.0] -- 2026-11-10
 
