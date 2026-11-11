@@ -68,6 +68,18 @@ export function validateManifest(raw: unknown): ModuleManifest | string {
         }
       }
     }
+    if (fa.rate_factor !== undefined) {
+      const rf = fa.rate_factor as Record<string, unknown>;
+      if (!rf || typeof rf !== "object" || typeof rf.knob !== "string" || !rf.knob)
+        return "finish_artifacts.rate_factor.knob missing";
+      if (typeof rf.default !== "number" || !Number.isFinite(rf.default) || rf.default < 1)
+        return "finish_artifacts.rate_factor.default must be a number of at least 1";
+      if (rf.off_when !== undefined) {
+        const w = rf.off_when as Record<string, unknown>;
+        if (!w || typeof w !== "object" || typeof w.knob !== "string" || !w.knob || w.equals === undefined)
+          return "finish_artifacts.rate_factor has a malformed off_when clause";
+      }
+    }
   }
   if (m.keyframe_label !== undefined) {
     if (typeof m.keyframe_label !== "string" || !m.keyframe_label.trim())

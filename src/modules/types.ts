@@ -307,6 +307,14 @@ export interface FinishArtifactsDecl {
    *  (e.g. `"lipsync:{version|v15}"`, `"interpolate:{interpolation_factor|2}x"`). No rules / no
    *  match -> the core marks the adopted step `<binding>:r2-adopted` so the adoption is never silent. */
   applied?: Array<{ when?: { knob: string; equals: string | number | boolean }; tag: string }>;
+  /** vivijure-cf#879 (MA-8): how this step changes the clip's frame rate, read from its validated
+   *  config. The rate is multiplied by the value of `knob` (or `default` when the knob is absent);
+   *  `off_when` names a knob value that turns the multiplication off. A factor that is not a number
+   *  above 1 counts as 1. Example, finish-rife:
+   *  `{ "knob": "interpolation_factor", "default": 2, "off_when": { "knob": "interpolate", "equals": false } }`.
+   *  OPTIONAL and additive. A module that changes no rate omits it. Until every finish module declares
+   *  `finish_artifacts`, a manifest without `rate_factor` is still read by the legacy binding-name rule. */
+  rate_factor?: { knob: string; default: number; off_when?: { knob: string; equals: string | number | boolean } };
 }
 
 /** A module's self-description, served at GET /module.json. */
