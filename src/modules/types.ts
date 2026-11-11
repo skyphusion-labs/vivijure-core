@@ -193,6 +193,22 @@ export type ConfigScope = "render" | "install";
 
 /** One configurable knob a module exposes. The UI renders the control from this; the core clamps
  *  the user's value against it before invoking. One declaration, one hop, same words down. */
+/**
+ * core#507: a value of this field that only fits some shots. When the field's effective value (the
+ * caller's, else the default) equals `when`, every shot the module renders must have `seconds` inside
+ * `shot_seconds` (inclusive). Stated in the shot's PLANNED seconds, because the core cannot know a
+ * module's own rounding: a module that snaps 7.5 s and up to an 8 s clip says `min: 7.5`. The core
+ * refuses a film that breaks a rule when it starts, before anything is spent, naming the field, the
+ * value and the first shot. OPTIONAL and additive in vivijure-module/2. A module still checks its own
+ * input at invoke time.
+ */
+export interface ConfigRequires {
+  when: string | number | boolean;
+  shot_seconds: { min?: number; max?: number };
+  /** Shown after the refusal, e.g. "Veo 3.1 makes 1080p only as an 8 second clip". */
+  message?: string;
+}
+
 export type ConfigField =
   | {
       type: "int" | "float";
@@ -202,12 +218,13 @@ export type ConfigField =
       label?: string;
       enum_labels?: Record<string, string>;
       scope?: ConfigScope;
+      requires?: ConfigRequires[];
     }
-  | { type: "bool"; default: boolean; label?: string; scope?: ConfigScope }
+  | { type: "bool"; default: boolean; label?: string; scope?: ConfigScope; requires?: ConfigRequires[] }
   // core#343: a PRESENT value outside values is refused by validateConfig (ConfigValueError); only an
   // ABSENT value takes default.
-  | { type: "enum"; values: string[]; default: string; label?: string; scope?: ConfigScope }
-  | { type: "string"; default: string; label?: string; scope?: ConfigScope };
+  | { type: "enum"; values: string[]; default: string; label?: string; scope?: ConfigScope; requires?: ConfigRequires[] }
+  | { type: "string"; default: string; label?: string; scope?: ConfigScope; requires?: ConfigRequires[] };
 
 export type ConfigSchema = Record<string, ConfigField>;
 
