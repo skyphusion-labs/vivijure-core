@@ -35,12 +35,18 @@ afterAll(() => sharedGuardTmp.cleanup());
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+// The fixture repos ignore the user's and the system's git config (local#546). A global
+// core.hooksPath, commit signing or an fsmonitor would otherwise run inside every throwaway repo:
+// on a seat with a global commit hook, the commits were 389 ms of the 529 ms these git calls took.
+// The fixtures set their own user.name and user.email, so nothing they need comes from that config.
+const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+
 function git(root: string, ...args: string[]): void {
-  execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
+  execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: GIT_ENV });
 }
 
 function rev(root: string): string {
-  return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8", env: GIT_ENV }).trim();
 }
 
 function buildRepo(tmp: OwnedTmp = guardTmp) {
