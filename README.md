@@ -15,7 +15,7 @@ server ([`vivijure-local`](https://github.com/skyphusion-labs/vivijure-local)). 
 `vivijure-cf` has adopted the published package (no duplicate orchestration `src/` remains) and
 `vivijure-local` consumes it via semver.
 
-**Vivijure Studio:** https://vivijure.dev · **Live demo:** https://demo.vivijure.com · **Skyphusion Labs:** https://skyphusion.org
+**Vivijure Studio:** https://vivijure.dev · **Skyphusion Labs:** https://skyphusion.org
 
 ## Where it fits
 
@@ -76,13 +76,15 @@ npm run build   # emits dist/ (also runs on npm install via prepare)
 npm run typecheck && npm test
 ```
 
-**Publish** (maintainers): merge to `main`, bump `package.json`, update `RELEASES.md` + `CHANGELOG.md`,
-ensure repo secret `NPM_TOKEN` is set, then (example for the current line; use the version you ship):
+**Publish** (maintainers): a release PR bumps `package.json`, `RELEASES.md` and `CHANGELOG.md` and
+merges through the gate. Then an org admin tags the PR's merge commit (npm publishing uses trusted
+publishing, so there is no `NPM_TOKEN` to set):
 
 ```bash
-git tag vivijure-core-v1.7.3
-git push origin vivijure-core-v1.7.3
-gh release create vivijure-core-v1.7.3 --title "vivijure-core v1.7.3" --notes-file notes.md
+sha="$(gh pr view <release-pr> --json mergeCommit -q .mergeCommit.oid)"
+git tag vivijure-core-vX.Y.Z "$sha"
+git push origin vivijure-core-vX.Y.Z
+gh release create vivijure-core-vX.Y.Z --title "vivijure-core vX.Y.Z" --notes-file notes.md
 ```
 
 Tag push triggers **Publish npm package** (`.github/workflows/publish-npm.yml`). GitHub Releases are

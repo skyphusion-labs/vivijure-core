@@ -79,7 +79,8 @@ Avoid package self-imports (`renders-db` must use `./film-advance-lease.js`, not
 | `vivijure` | `0.x` CF-native | `2.0.0` depends on `vivijure-core@^1` |
 | `vivijure-local` | consumes `vivijure-core` (semver) | `2.0.0` depends on `vivijure-core@^1` |
 
-Hosts pin semver once `vivijure-core` publishes to GitHub npm. Until then, sibling `file:../vivijure-core`.
+Hosts pin semver from npmjs (`@skyphusion-labs/vivijure-core`). A sibling `file:../vivijure-core` stays
+valid for local development.
 
 ## CI split
 
