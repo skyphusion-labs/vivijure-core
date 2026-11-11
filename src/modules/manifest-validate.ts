@@ -23,6 +23,26 @@ export function validateManifest(raw: unknown): ModuleManifest | string {
   const known = new Set<string>(HOOK_NAMES);
   const bad = (m.hooks as unknown[]).filter((h) => !known.has(h as string));
   if (bad.length) return `manifest declares unknown hooks: ${bad.join(", ")}`;
+  // core#507: a malformed `requires` would silently never fire, so it is refused at load.
+  if (m.config_schema !== undefined && m.config_schema !== null && typeof m.config_schema === "object") {
+    for (const [key, f] of Object.entries(m.config_schema as Record<string, unknown>)) {
+      const req = (f as { requires?: unknown } | null)?.requires;
+      if (req === undefined) continue;
+      if (!Array.isArray(req)) return `config_schema.${key}.requires is not an array`;
+      for (const r of req as unknown[]) {
+        const rule = r as Record<string, unknown> | null;
+        const w = rule?.when;
+        if (!rule || typeof rule !== "object" || !["string", "number", "boolean"].includes(typeof w))
+          return `config_schema.${key}.requires rule needs a when value`;
+        const ss = rule.shot_seconds as Record<string, unknown> | undefined;
+        const num = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v));
+        if (!ss || typeof ss !== "object" || (ss.min === undefined && ss.max === undefined) || !num(ss.min) || !num(ss.max))
+          return `config_schema.${key}.requires rule needs shot_seconds with a numeric min or max`;
+        if (rule.message !== undefined && typeof rule.message !== "string")
+          return `config_schema.${key}.requires rule message must be a string`;
+      }
+    }
+  }
   if (m.finish_artifacts !== undefined) {
     const fa = m.finish_artifacts as Record<string, unknown>;
     if (!fa || typeof fa !== "object") return "finish_artifacts is not an object";

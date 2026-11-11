@@ -37,6 +37,7 @@ import {
   servingForHook,
   validateConfig,
   configValueRefusal,
+  configRequiresRefusal,
   dispatchChain,
 } from "./modules/registry.js";
 import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook, selectForChain } from "./modules/render-pipeline.js";
@@ -3630,6 +3631,9 @@ export function filmStartConfigRefusal(
     motion_backend?: string | null;
     motion_config?: Record<string, unknown>;
     motion_configs?: Record<string, Record<string, unknown>>;
+    /** core#507: with these, each shot is also checked against its door's `requires` rules. */
+    scenes?: ReadonlyArray<{ shot_id: string; seconds: number }>;
+    per_shot_motion?: Record<string, string>;
   },
 ): string | null {
   const named = (m: RegisteredModule, cfg: Record<string, unknown> | undefined): string | null => {
@@ -3650,6 +3654,16 @@ export function filmStartConfigRefusal(
     const m = serving.find((x) => x.name === name);
     const r = m ? named(m, cfg) : null;
     if (r) return r;
+  }
+  // core#507: each shot against the door it renders on, with that door's config. Enum values passed the
+  // checks above, so validateConfig cannot throw here.
+  for (const shot of start.scenes ?? []) {
+    const doorName = start.per_shot_motion?.[shot.shot_id];
+    const door = doorName ? serving.find((x) => x.name === doorName) : mb;
+    if (!door) continue;
+    const cfg = start.motion_configs?.[door.name] ?? (door === mb ? start.motion_config : undefined);
+    const r = configRequiresRefusal(door.config_schema, validateConfig(door.config_schema, cfg), shot);
+    if (r) return `${door.name} ${r}`;
   }
   return null;
 }
