@@ -101,6 +101,9 @@ export function filmDonePayload(job: FilmJob, clipJob: ClipJob | null): Record<s
   if (plateCheck) out.plate_check = plateCheck;
   // core#532: the stills the backend returned from its store instead of drawing. Absent when none was
   // reused, which is the contract's "absent means drawn".
+  // vivijure-cf#930: shots moved to another door for their own clip, and lined shots still left with a
+  // silent-mouthing tail. Absent when no lined shot had a tail.
+  if (job.door_fit) out.door_fit = job.door_fit;
   const keyframeReuse = keyframeReuseView(job.keyframes);
   if (keyframeReuse) out.keyframe_reuse = keyframeReuse;
   if (job.keyframes_only && job.keyframes?.length) {

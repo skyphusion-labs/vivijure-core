@@ -3,6 +3,8 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
+## Unreleased / v1.47.0
+
 ## [1.46.0] -- 2026-11-11
 
 **Change: finish conventions come only from `finish_artifacts`; the binding-name fallbacks are gone (vivijure-cf#879).**

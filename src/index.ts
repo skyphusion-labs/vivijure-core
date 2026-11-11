@@ -54,6 +54,7 @@ export * from "./film-model.js";
 export * from "./plate-count.js";
 export * from "./keyframe-reuse.js";
 export * from "./motion-usage.js";
+export * from "./door-fit.js";
 export * from "./wav-duration.js";
 export * from "./render-orchestrator.js";
 export * from "./clip-validate.js";
