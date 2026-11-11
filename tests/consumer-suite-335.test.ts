@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VERDICT, decide, exitCodeFor, proveInstalled } from "../scripts/consumer-suite.mjs";
@@ -108,8 +108,8 @@ function fakeConsumer(opts: { baselineRed?: boolean; badLock?: boolean } = {}): 
   return d;
 }
 
-function cli(core: string, consumer: string): { status: number; out: string } {
-  const env = { ...process.env, GITHUB_STEP_SUMMARY: "" };
+function cli(core: string, consumer: string, tmp?: string): { status: number; out: string } {
+  const env = { ...process.env, GITHUB_STEP_SUMMARY: "", ...(tmp ? { TMPDIR: tmp } : {}) };
   try {
     const out = execFileSync("node", [SCRIPT, "--core", core, "--consumer", consumer, "--name", "fake"], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] });
     return { status: 0, out };
@@ -145,6 +145,23 @@ describe("consumer-suite.mjs end to end, real npm (core#335)", () => {
     const r = cli(fakeCore("export const ok = 1;\n"), fakeConsumer({ badLock: true }));
     expect(r.out).toContain("consumer-suite fake: UNMEASURED");
     expect(r.status).toBe(0);
+  }, 120_000);
+
+  // core#526: no pack directory survives a run, on the PASS path or the FAIL path. Each case gets its
+  // own TMPDIR so the count is exact and nothing else on the box can satisfy or spoil it.
+  const packDirs = (t: string) => readdirSync(t).filter((f) => f.startsWith("core-consumer-pack-"));
+  it("a PASS run leaves no core-consumer-pack-* directory in TMPDIR (core#526)", () => {
+    const t = dir();
+    const r = cli(fakeCore("export const ok = 1;\n"), fakeConsumer(), t);
+    expect(r.out).toContain("consumer-suite fake: PASS");
+    expect(packDirs(t)).toEqual([]);
+  }, 120_000);
+
+  it("a FAIL run leaves no core-consumer-pack-* directory in TMPDIR (core#526)", () => {
+    const t = dir();
+    const r = cli(fakeCore("export const BREAK = 1;\n"), fakeConsumer(), t);
+    expect(r.out).toContain("consumer-suite fake: FAIL");
+    expect(packDirs(t)).toEqual([]);
   }, 120_000);
 
   it("usage errors exit 2", () => {
