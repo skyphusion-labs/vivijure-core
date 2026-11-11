@@ -3,7 +3,15 @@
 Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish details live in
 [`RELEASES.md`](RELEASES.md). Entries are newest-first.
 
-## Unreleased / v1.46.0
+## [1.46.0] -- 2026-11-11
+
+**Change: finish conventions come only from `finish_artifacts`; the binding-name fallbacks are gone (vivijure-cf#879).**
+
+The core no longer reads a finish step's output key, adopted-step `applied` tag or frame-rate change off its binding name (`/RIFE/`, `/UPSCALE/`, `/LIPSYNC/`). Every shipped finish module declares `finish_artifacts`, and `tests/finish-artifacts-shipped-879.test.ts` checks the real vivijure-cf manifests: finish-rife (with `rate_factor`), finish-upscale and finish-blender. vivijure-local ships the same manifests as synced fixtures, finish-lipsync included. A finish module that declares nothing now gets the documented unmodelled behaviour: no R2 adoption (`finishStepOutputKey` is null), an adopted step tagged `<binding>:r2-adopted`, and a frame-rate factor of 1. A host that prices delivery (`predictDeliveryFps`) must pass each step's `finish_artifacts`.
+
+**Fix: dispatch discovery honours the studio's own module prefix.**
+
+A host that sets `TENANT_MODULE_PREFIX` (the provisioning plane does, per studio) now dispatches only to `installed_modules` rows whose `script_name` is under it. Any other row is skipped with a warning. This is the core side of the studio install check (vivijure-cf#1412), so a row written by any other path still never reaches another studio's script. Unset, as on self-host, every row is dispatched as before.
 
 ## [1.45.0] -- 2026-11-11
 
