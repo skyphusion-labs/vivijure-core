@@ -152,4 +152,4 @@ ACCESS). Only orchestration paths go through `Platform`.
 3. CI checks out published tarball or uses `npm ci` with lockfile pin; Docker uses multi-stage
    `npm ci` without sibling clone.
 
-Local sibling `file:` deps remain valid for Conrad's laptop + rancid dev layout.
+Local sibling `file:` deps remain valid for a sibling-clone dev layout.

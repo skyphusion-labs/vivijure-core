@@ -4,7 +4,7 @@ Documented dismissals for adversarial-audit (K2.7/K3) findings that are not acti
 
 ## Host-provided auth boundary
 
-`render-adopt.ts` and `renders-db.ts` orchestration helpers have no embedded authn/authz because **hosts** enforce it: vivijure-cf uses Cloudflare Access at the edge; vivijure-local uses bearer token + CSRF gate. Core is a library; calling it without host gates is a host misconfiguration, not a core defect.
+`render-adopt.ts` and `renders-db.ts` orchestration helpers have no embedded authn/authz because **hosts** enforce it: vivijure-cf uses its bearer token gate (Cloudflare Access is an optional mode it supports, not one the project uses); vivijure-local uses bearer token + CSRF gate. Core is a library; calling it without host gates is a host misconfiguration, not a core defect.
 
 ## Single-operator studio
 
