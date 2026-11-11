@@ -347,8 +347,8 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
 
   it("analyzeAudioBeats reports AUDIO_BEAT_SYNC_URL unset when the door is off", async () => {
     const r = await analyzeAudioBeats(
-      envWith({ PRESIGNER: { presignGet: async () => "https://r2.test/audio.wav" } }),
-      { audioKey: "audio.wav" },
+      envWith({ PRESIGNER: { presignGet: async () => "https://r2.test/audio/clip.wav" } }),
+      { audioKey: "audio/clip.wav" },
     );
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -360,7 +360,7 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
   it("analyzeAudioBeats marks a presign failure transient", async () => {
     const r = await analyzeAudioBeats(
       envWith({ PRESIGNER: { presignGet: async () => { throw new Error("blip"); } } }),
-      { audioKey: "audio.wav" },
+      { audioKey: "audio/clip.wav" },
     );
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -369,9 +369,23 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
     }
   });
 
+  it("analyzeAudioBeats does not presign a key outside served artifact space", async () => {
+    const presignGet = vi.fn(async () => "https://r2.test/nope");
+    for (const audioKey of ["quarantine/2026/hold/audio/a.mp3", "secrets/a.mp3", "audio.wav"]) {
+      presignGet.mockClear();
+      const r = await analyzeAudioBeats(envWith({ PRESIGNER: { presignGet } }), { audioKey });
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.transient).toBe(false);
+        expect(r.error).toBe("audio key is outside served artifact space");
+      }
+      expect(presignGet).not.toHaveBeenCalled();
+    }
+  });
+
   it("analyzeAudioBeats fetches AUDIO_BEAT_SYNC_URL /analyze when set", async () => {
     const fetch = vi.fn<(url: RequestInfo, init?: RequestInit) => Promise<Response>>(
-      async () => new Response(JSON.stringify({ mode: "beat", audio_key: "audio.wav" }), { status: 200 }),
+      async () => new Response(JSON.stringify({ mode: "beat", audio_key: "audio/clip.wav" }), { status: 200 }),
     );
     const prev = globalThis.fetch;
     globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
@@ -380,9 +394,9 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
         envWith({
           AUDIO_BEAT_SYNC_URL: "https://audio-beat-sync.test",
           MEDIA_FINISH_TOKEN: "beat-tok",
-          PRESIGNER: { presignGet: async () => "https://r2.test/audio.wav" },
+          PRESIGNER: { presignGet: async () => "https://r2.test/audio/clip.wav" },
         }),
-        { audioKey: "audio.wav" },
+        { audioKey: "audio/clip.wav" },
       );
       expect(r.ok).toBe(true);
       if (r.ok) expect(r.module).toBe("core-url");
@@ -402,14 +416,14 @@ describe("shouldMultiTrackMix / callImagePrep / analyzeAudioBeats use host URLs"
     envWith({
       AUDIO_BEAT_SYNC_URL: "https://audio-beat-sync.test",
       MEDIA_FINISH_TOKEN: "beat-tok",
-      PRESIGNER: { presignGet: async () => "https://r2.test/audio.wav" },
+      PRESIGNER: { presignGet: async () => "https://r2.test/audio/clip.wav" },
     });
 
   async function viaUrl(resp: () => Response | Promise<Response>) {
     const prev = globalThis.fetch;
     globalThis.fetch = (async () => resp()) as unknown as typeof globalThis.fetch;
     try {
-      return await analyzeAudioBeats(urlDoorEnv(), { audioKey: "audio.wav" });
+      return await analyzeAudioBeats(urlDoorEnv(), { audioKey: "audio/clip.wav" });
     } finally {
       globalThis.fetch = prev;
     }
