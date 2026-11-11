@@ -15,6 +15,33 @@ export function isSafeBundleKey(key: unknown): key is string {
   return isSafeRelKey(key) && key.startsWith(BUNDLE_KEY_PREFIX);
 }
 
+/** Prefixes the studio serve routes will read. Keep this list the same as
+ *  vivijure-cf `ARTIFACT_PREFIXES` and vivijure-local `ARTIFACT_PREFIXES`. */
+export const SERVED_ARTIFACT_PREFIXES = [
+  "audio/",
+  "bundles/",
+  "cast/",
+  "cast-clean/",
+  "cast-gen/",
+  "character-refs/",
+  "characters/",
+  "clips/",
+  "loras/",
+  "out/",
+  "renders/",
+  "uploads/",
+] as const;
+
+const QUARANTINE_PREFIX = "quarantine/";
+
+/** True when a key is in the served artifact space. A `quarantine/` key is not,
+ *  even when the rest of the name looks ordinary. */
+export function isServedArtifactKey(key: unknown): key is string {
+  if (!isSafeRelKey(key)) return false;
+  if (key.startsWith(QUARANTINE_PREFIX)) return false;
+  return SERVED_ARTIFACT_PREFIXES.some((pre) => key.startsWith(pre));
+}
+
 /** Project-scoped render prefix. Module-returned artifact keys must stay under this. */
 export function projectKeyPrefix(project: string): string {
   return `renders/${project}/`;
