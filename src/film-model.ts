@@ -5,7 +5,7 @@
 // every await; it re-exports this module, so importers and tests keep their one entry point.
 
 import { FINISH_TRANSPORT_HOLD_MAX_SECONDS, assembleCapacityBackoffSeconds, decodeAssembleWait } from "./video-finish-assemble.js";
-import type { ConfigSchema, DialogueLine, FinishOutput, HookSelection, MasterOutput, PlateCount, RegisteredModule, SpeechOutput, StepFailure } from "./modules/types.js";
+import type { ConfigSchema, DialogueLine, FinishArtifactsDecl, FinishOutput, HookSelection, MasterOutput, PlateCount, RegisteredModule, SpeechOutput, StepFailure } from "./modules/types.js";
 import { validateConfig } from "./modules/registry.js";
 import { summarizeJob, type ClipJob, type JobSummary } from "./clip-job-model.js";
 import { classifyTransientFailure } from "./render-orchestrator.js";
@@ -350,6 +350,10 @@ export interface FilmKeyframeRef {
   keyframe_key: string;
   /** The backend plate count guard report for this still, when it ran. Read by plateCheckView. */
   plate_count?: PlateCount;
+  /** The backend returned this still from its store instead of drawing it (core#532). Absent means
+   *  drawn. keyframeRef writes only `true`; a parked partial keeps the module's KeyframeShot shape.
+   *  Read by keyframeReuseView. */
+  reused?: boolean;
 }
 
 export interface FilmJob {
@@ -1939,8 +1943,20 @@ export function resolveDeliveryFps(job: { delivery_fps?: unknown; assemble_fps?:
 }
 
 /** The factor one finish step multiplies the frame rate by, read from the same config the step runs on.
- *  Same reading as the `interpolate:Nx` applied tag. A step that does not interpolate is 1. */
-export function finishStepRateFactor(binding: string, config: Record<string, unknown> | undefined): number {
+ *  A declared `finish_artifacts.rate_factor` decides it (vivijure-cf#879, MA-8). Without one, the legacy
+ *  binding-name rule, the same reading as the `interpolate:Nx` applied tag. A step that does not
+ *  interpolate is 1. */
+export function finishStepRateFactor(
+  binding: string,
+  config: Record<string, unknown> | undefined,
+  artifacts?: FinishArtifactsDecl,
+): number {
+  const rf = artifacts?.rate_factor;
+  if (rf) {
+    if (rf.off_when && config?.[rf.off_when.knob] === rf.off_when.equals) return 1;
+    const declared = Number(config?.[rf.knob] ?? rf.default);
+    return Number.isFinite(declared) && declared > 1 ? declared : 1;
+  }
   if (!/RIFE/i.test(binding) || config?.interpolate === false) return 1;
   const factor = Number(config?.interpolation_factor ?? 2);
   return Number.isFinite(factor) && factor > 1 ? factor : 1;
@@ -1951,13 +1967,13 @@ export function finishStepRateFactor(binding: string, config: Record<string, unk
  *  rate replaces this at assemble. */
 export function predictDeliveryFps(
   job: { delivery_fps?: unknown },
-  chains: ReadonlyArray<ReadonlyArray<{ binding: string; config?: Record<string, unknown> }>>,
+  chains: ReadonlyArray<ReadonlyArray<{ binding: string; config?: Record<string, unknown>; artifacts?: FinishArtifactsDecl }>>,
 ): number {
   const explicit = positiveInt(job?.delivery_fps);
   if (explicit) return explicit;
   let factor = 1;
   for (const chain of chains) {
-    factor = Math.max(factor, chain.reduce((f, step) => f * finishStepRateFactor(step.binding, step.config), 1));
+    factor = Math.max(factor, chain.reduce((f, step) => f * finishStepRateFactor(step.binding, step.config, step.artifacts), 1));
   }
   return DEFAULT_DELIVERY_FPS * factor;
 }

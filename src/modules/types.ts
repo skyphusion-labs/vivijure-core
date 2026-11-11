@@ -193,6 +193,22 @@ export type ConfigScope = "render" | "install";
 
 /** One configurable knob a module exposes. The UI renders the control from this; the core clamps
  *  the user's value against it before invoking. One declaration, one hop, same words down. */
+/**
+ * core#507: a value of this field that only fits some shots. When the field's effective value (the
+ * caller's, else the default) equals `when`, every shot the module renders must have `seconds` inside
+ * `shot_seconds` (inclusive). Stated in the shot's PLANNED seconds, because the core cannot know a
+ * module's own rounding: a module that snaps 7.5 s and up to an 8 s clip says `min: 7.5`. The core
+ * refuses a film that breaks a rule when it starts, before anything is spent, naming the field, the
+ * value and the first shot. OPTIONAL and additive in vivijure-module/2. A module still checks its own
+ * input at invoke time.
+ */
+export interface ConfigRequires {
+  when: string | number | boolean;
+  shot_seconds: { min?: number; max?: number };
+  /** Shown after the refusal, e.g. "Veo 3.1 makes 1080p only as an 8 second clip". */
+  message?: string;
+}
+
 export type ConfigField =
   | {
       type: "int" | "float";
@@ -202,12 +218,13 @@ export type ConfigField =
       label?: string;
       enum_labels?: Record<string, string>;
       scope?: ConfigScope;
+      requires?: ConfigRequires[];
     }
-  | { type: "bool"; default: boolean; label?: string; scope?: ConfigScope }
+  | { type: "bool"; default: boolean; label?: string; scope?: ConfigScope; requires?: ConfigRequires[] }
   // core#343: a PRESENT value outside values is refused by validateConfig (ConfigValueError); only an
   // ABSENT value takes default.
-  | { type: "enum"; values: string[]; default: string; label?: string; scope?: ConfigScope }
-  | { type: "string"; default: string; label?: string; scope?: ConfigScope };
+  | { type: "enum"; values: string[]; default: string; label?: string; scope?: ConfigScope; requires?: ConfigRequires[] }
+  | { type: "string"; default: string; label?: string; scope?: ConfigScope; requires?: ConfigRequires[] };
 
 export type ConfigSchema = Record<string, ConfigField>;
 
@@ -290,6 +307,14 @@ export interface FinishArtifactsDecl {
    *  (e.g. `"lipsync:{version|v15}"`, `"interpolate:{interpolation_factor|2}x"`). No rules / no
    *  match -> the core marks the adopted step `<binding>:r2-adopted` so the adoption is never silent. */
   applied?: Array<{ when?: { knob: string; equals: string | number | boolean }; tag: string }>;
+  /** vivijure-cf#879 (MA-8): how this step changes the clip's frame rate, read from its validated
+   *  config. The rate is multiplied by the value of `knob` (or `default` when the knob is absent);
+   *  `off_when` names a knob value that turns the multiplication off. A factor that is not a number
+   *  above 1 counts as 1. Example, finish-rife:
+   *  `{ "knob": "interpolation_factor", "default": 2, "off_when": { "knob": "interpolate", "equals": false } }`.
+   *  OPTIONAL and additive. A module that changes no rate omits it. Until every finish module declares
+   *  `finish_artifacts`, a manifest without `rate_factor` is still read by the legacy binding-name rule. */
+  rate_factor?: { knob: string; default: number; off_when?: { knob: string; equals: string | number | boolean } };
 }
 
 /** A module's self-description, served at GET /module.json. */

@@ -7,6 +7,7 @@
 // POST /api/render/film starts it; GET /api/render/film/:id advances it; the caller polls to `done`.
 // No Worker ever holds a multi-minute GPU/cloud render.
 
+import { invokeRegistered, invokeTargetFor } from "./modules/invoke-registered.js";
 import type { StepFailure } from "./modules/types.js";
 import type { Env } from "./platform/orchestrator-context.js";
 import type { FetcherLike } from "./platform/types.js";
@@ -29,7 +30,6 @@ import {
 } from "./video-finish-assemble.js";
 import {
   discoverModules,
-  invokeModule,
   pollModule,
   cancelModule,
   localGpuKeyframePreflightError,
@@ -37,6 +37,7 @@ import {
   servingForHook,
   validateConfig,
   configValueRefusal,
+  configRequiresRefusal,
   dispatchChain,
 } from "./modules/registry.js";
 import { coupleLocalGpuKeyframeChoice, normalizeBackendChoice, pickOneForHook, selectForChain } from "./modules/render-pipeline.js";
@@ -171,7 +172,6 @@ import type {
   MotionUsageDecl,
 } from "./modules/types.js";
 import { retimeSrt } from "./srt.js";
-import { loadInstallConfig } from "./operator-config.js";
 import {
   startClipJob,
   advanceClipJob,
@@ -259,12 +259,14 @@ export async function clipKeysFromFilmJob(
 function confineKeyframeOutput(project: string, kfOut: KeyframeOutput): KeyframeOutput {
   const keyframes = (kfOut.keyframes || []).map((k: KeyframeShot) => {
     // The plate count report is module-supplied: keep it only in the documented shape, never guess.
-    const { plate_count: rawPlate, ...rest } = k;
+    // The reuse mark likewise: only a JSON true (core#532).
+    const { plate_count: rawPlate, reused: rawReused, ...rest } = k;
     const plate_count = parsePlateCount(rawPlate);
     return {
       ...rest,
       keyframe_key: assertProjectKey(project, k.keyframe_key),
       ...(plate_count ? { plate_count } : {}),
+      ...(rawReused === true ? { reused: true } : {}),
     };
   });
   let trained_loras = kfOut.trained_loras;
@@ -377,9 +379,15 @@ async function voiceRefOnShot(
 
 /** The job doc's ref for one keyframe. The plate count report rides along when the guard ran, so the
  *  render row can say a still may show an extra person (plateCheckView). */
-function keyframeRef(k: { shot_id: string; keyframe_key: string; plate_count?: unknown }): FilmKeyframeRef {
+function keyframeRef(k: { shot_id: string; keyframe_key: string; plate_count?: unknown; reused?: unknown }): FilmKeyframeRef {
   const plate_count = parsePlateCount(k.plate_count);
-  return { shot_id: k.shot_id, keyframe_key: k.keyframe_key, ...(plate_count ? { plate_count } : {}) };
+  return {
+    shot_id: k.shot_id,
+    keyframe_key: k.keyframe_key,
+    ...(plate_count ? { plate_count } : {}),
+    // core#532: the backend's reuse mark, so the render row can say this still was not redrawn.
+    ...(k.reused === true ? { reused: true as const } : {}),
+  };
 }
 
 function persistKeyframeRefs(job: FilmJob, kfOut: KeyframeOutput): void {
@@ -952,7 +960,7 @@ async function submitPreClipDialogue(env: Env, job: FilmJob, preModules: Registe
     context: { project: job.project, job_id: job.film_id },
   };
   emitStructuredEvent({ ev: "dialogue.pre_clip", film_id: job.film_id, project: job.project, shots: lines.length });
-  const r = await invokeModule<DialogueInput, DialogueOutput>(fetcher, req);
+  const r = await invokeRegistered<DialogueInput, DialogueOutput>(env, dialogueModule, fetcher, req);
   if (!r.ok) {
     endJob(job, "failed");
     job.error = incompleteFilmError("dialogue", 0, lines.length, lines.map((l) => l.shot_id), r.error);
@@ -1133,7 +1141,7 @@ async function enterDialogueOrFinish(env: Env, job: FilmJob, preModules?: Regist
     config: job.dialogue_config?.[dialogueModule.name] ?? {}, // core#339: the caller's config, else none, as before
     context: { project: job.project, job_id: job.film_id },
   };
-  const r = await invokeModule<DialogueInput, DialogueOutput>(fetcher, req);
+  const r = await invokeRegistered<DialogueInput, DialogueOutput>(env, dialogueModule, fetcher, req);
   if (!r.ok) { failDialogue(job, lined, `submit failed: ${r.error}`); return; }
   if ((r as { pending?: boolean }).pending) { job.dialogue_poll = (r as { poll: string }).poll; job.phase = "dialogue"; return; }
   if ("output" in r) {
@@ -1258,6 +1266,7 @@ async function advanceSpeechPhase(env: Env, job: FilmJob, preModules?: Registere
     ss.hold_cycles = 0;
     applySpeechOutput(ss, out);
   };
+  const speechModules = preModules ?? await discoverModules(envRec);
   for (const ss of job.speech_shots || []) {
     if (ss.status !== "pending") continue;
     if (stepWaitHolding(ss.wait)) continue;
@@ -1272,7 +1281,7 @@ async function advanceSpeechPhase(env: Env, job: FilmJob, preModules?: Registere
     if (!ss.poll) {
       // cf#312: credentialless audio-upscale path when PRESIGNER is bound.
       await attachSpeechPresigns(env, req.input as SpeechInput);
-      const r = await invokeModule<SpeechInput, SpeechOutput>(fetcher, req);
+      const r = await invokeRegistered<SpeechInput, SpeechOutput>(env, invokeTargetFor(speechModules, ss.chain[ss.idx]), fetcher, req);
       if (!r.ok) { blipOrDegrade(ss, r.error, false); }
       else if ((r as { pending?: boolean }).pending) { ss.poll = (r as { poll: string }).poll; acceptHeldStep(ss, job); }
       else if ("output" in r) { const v = hookOutputViolation(ss.chain[ss.idx], "speech", r.output); if (v) { degrade(ss, v); } else { foldSpeech(ss, r.output as SpeechOutput); } }
@@ -1657,7 +1666,11 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       width: frame.width,
       height: frame.height,
       fps: predictDeliveryFps(job, (job.finish_shots ?? []).map((s) =>
-        s.chain.map((binding, i) => ({ binding, config: s.configs?.[i] as Record<string, unknown> | undefined })))),
+        s.chain.map((binding, i) => ({
+          binding,
+          config: s.configs?.[i] as Record<string, unknown> | undefined,
+          artifacts: finishModByBinding.get(binding)?.finish_artifacts,
+        })))),
       basis: budgetSeconds,
     });
     if (admission.admitted) return null;
@@ -1780,7 +1793,7 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       // object key to reach the credentialless satellite branch. Satellites select on KEY
       // PRESENCE, not on understanding video_url/output_url (core#226).
       await attachFinishPresigns(env, job, fs, req.input as FinishInput, modules);
-      const r = await invokeModule<FinishInput, FinishOutput>(fetcher, req);
+      const r = await invokeRegistered<FinishInput, FinishOutput>(env, finishModByBinding.get(fs.chain[fs.idx]) ?? { name: fs.chain[fs.idx] }, fetcher, req);
       if (!r.ok) { failOrRetry(fs, r.error, false); }
       else if ((r as { pending?: boolean }).pending) { fs.poll = (r as { poll: string }).poll; acceptHeldStep(fs, job); }
       else if ("output" in r) { const v = hookOutputViolation(fs.chain[fs.idx], "finish", r.output); if (v) { fs.status = "failed"; fs.error = v; } else { foldFinish(fs, r.output as FinishOutput); } }
@@ -2070,11 +2083,10 @@ async function fireNotify(
       const fetcher = resolveFetcher(envRec, m.binding);
       if (!fetcher) continue;
       try {
-        // Inject the operator-set install-config (e.g. notify-email's notify_email recipient) as the
-        // user config, then clamp through the contract; render-scope fields stay at their defaults.
-        const installConfig = await loadInstallConfig(env, m.name, m.config_schema);
-        await invokeModule<NotifyInput, NotifyOutput>(fetcher, {
-          hook: "notify", input, config: validateConfig(m.config_schema ?? {}, installConfig), context,
+        // Render-scope fields at their defaults; invokeRegistered puts the operator-set install config
+        // (e.g. notify-email's notify_email recipient) over them, as on every hook (cf#879).
+        await invokeRegistered<NotifyInput, NotifyOutput>(env, m, fetcher, {
+          hook: "notify", input, config: validateConfig(m.config_schema ?? {}, {}), context,
         });
       } catch { /* best-effort per notifier -- a delivery failure never fails the render */ }
     }
@@ -2801,7 +2813,7 @@ export async function runFilmFinish(
     }
     await opts?.persistDispatch?.(outKey, now); // crash-safe #600 marker: guards a sync-fallback encode
     const seed = await filmFinishSeed(env, input, curKey, outKey, captions, FILM_FINISH_ASYNC_PRESIGN_TTL_SECONDS);
-    const r = await invokeModule<FilmFinishInput, FilmFinishOutput>(fetcher, { hook: "film.finish", input: seed, config, context });
+    const r = await invokeRegistered<FilmFinishInput, FilmFinishOutput>(env, module, fetcher, { hook: "film.finish", input: seed, config, context });
     if (r.ok && (r as { pending?: boolean }).pending) {
       // Accepted async: persist the token (it supersedes the dispatch marker) and resume next tick.
       await opts!.persistPoll!(outKey, (r as { poll: string }).poll);
@@ -3241,6 +3253,7 @@ async function advanceMasterPhase(env: Env, job: FilmJob, preModules?: Registere
   while (!masterChainDone(m)) {
     const fetcher = resolveFetcher(envRec, m.chain[m.idx]);
     if (!fetcher) { degradeMasterStep(m, "module not bound"); continue; }
+    const masterTarget = invokeTargetFor(preModules ?? await discoverModules(envRec), m.chain[m.idx]);
     if (!m.poll) {
       // CREDENTIALLESS module: the core owns the R2 S3 creds and presigns the bed GET + the mastered PUT
       // (the module/container hold no R2 creds), exactly as the film.finish chain does. Each step masters
@@ -3264,7 +3277,7 @@ async function advanceMasterPhase(env: Env, job: FilmJob, preModules?: Registere
         config: cfg,
         context: { project: job.project, job_id: job.film_id },
       };
-      const r = await invokeModule<MasterInput, MasterOutput>(fetcher, req);
+      const r = await invokeRegistered<MasterInput, MasterOutput>(env, masterTarget, fetcher, req);
       if (!r.ok) {
         const d = classifyFinishRetry(r.error, m.attempts ?? 0, MASTER_STEP_MAX_ATTEMPTS);
         if (d.action === "retry") { m.attempts = d.attempts; return; } // transient: re-submit next tick
@@ -3579,7 +3592,7 @@ async function submitBudgetRefusal(env: Env, job: FilmJob, modules: RegisteredMo
   if (job.keyframes_only || job.clips_only) return null;
   const picked = selectForChain(servingForHook(modules, "finish"), "finish", job.finish_select).modules;
   const configs = resolveFinishConfigs(picked, job.finish_config);
-  const fps = predictDeliveryFps(job, [picked.map((m, i) => ({ binding: m.binding, config: configs[i] }))]);
+  const fps = predictDeliveryFps(job, [picked.map((m, i) => ({ binding: m.binding, config: configs[i], artifacts: m.finish_artifacts }))]);
   const bundleDurations = await readShotDurationsFromBundle(env, job.bundle_key).catch(() => ({}));
   const frame = finishTargetFrame(job, undefined);
   const scenes = job.scenes ?? [];
@@ -3618,6 +3631,9 @@ export function filmStartConfigRefusal(
     motion_backend?: string | null;
     motion_config?: Record<string, unknown>;
     motion_configs?: Record<string, Record<string, unknown>>;
+    /** core#507: with these, each shot is also checked against its door's `requires` rules. */
+    scenes?: ReadonlyArray<{ shot_id: string; seconds: number }>;
+    per_shot_motion?: Record<string, string>;
   },
 ): string | null {
   const named = (m: RegisteredModule, cfg: Record<string, unknown> | undefined): string | null => {
@@ -3638,6 +3654,16 @@ export function filmStartConfigRefusal(
     const m = serving.find((x) => x.name === name);
     const r = m ? named(m, cfg) : null;
     if (r) return r;
+  }
+  // core#507: each shot against the door it renders on, with that door's config. Enum values passed the
+  // checks above, so validateConfig cannot throw here.
+  for (const shot of start.scenes ?? []) {
+    const doorName = start.per_shot_motion?.[shot.shot_id];
+    const door = doorName ? serving.find((x) => x.name === doorName) : mb;
+    if (!door) continue;
+    const cfg = start.motion_configs?.[door.name] ?? (door === mb ? start.motion_config : undefined);
+    const r = configRequiresRefusal(door.config_schema, validateConfig(door.config_schema, cfg), shot);
+    if (r) return `${door.name} ${r}`;
   }
   return null;
 }
@@ -3764,9 +3790,14 @@ export async function startFilmFromKeyframes(
     return job;
   }
   // A still carried from the preview keeps its plate count report, so the animated film still says
-  // which stills may show an extra person. The host drops the report for a still it replaced.
-  const plateByShot = new Map((args.keyframes || []).map((k) => [k.shot_id, k.plate_count]));
-  job.keyframes = matched.map((m) => keyframeRef({ ...m, plate_count: plateByShot.get(m.shot_id) }));
+  // which stills may show an extra person. The host drops the report for a still it replaced. The reuse
+  // mark rides the same way (core#532): it says whether the backend drew the still when it was asked.
+  const refByShot = new Map((args.keyframes || []).map((k) => [k.shot_id, k]));
+  job.keyframes = matched.map((m) => keyframeRef({
+    ...m,
+    plate_count: refByShot.get(m.shot_id)?.plate_count,
+    reused: refByShot.get(m.shot_id)?.reused,
+  }));
   const modules = preModules ?? await discoverModules(env as unknown as Record<string, unknown>);
   // core#339: a dialogue choice that names no dialogue module is refused before anything is spent.
   const dialoguePick = pickDialogueModule(modules, job.dialogue_backend);
@@ -4015,7 +4046,7 @@ export async function startFilmJob(
         keyframeInput.pretrained_loras = { ...args.pretrained_loras };
       }
       invokeAttempted = true;
-      const r = await invokeModule<KeyframeInput, KeyframeOutput>(fetcher, {
+      const r = await invokeRegistered<KeyframeInput, KeyframeOutput>(env, kf, fetcher, {
         hook: "keyframe",
         input: keyframeInput,
         config,
@@ -4696,8 +4727,9 @@ async function startParallelKeyframes(
     modules?: RegisteredModule[];
   },
 ): Promise<void> {
+  const target = args.modules?.find((m) => m.name === args.moduleName) ?? { name: args.moduleName };
   const results = await Promise.all(args.chunks.map((shot_ids) =>
-    invokeModule<KeyframeInput, KeyframeOutput>(args.fetcher, {
+    invokeRegistered<KeyframeInput, KeyframeOutput>(env, target, args.fetcher, {
       hook: "keyframe",
       input: buildKeyframeInput(args.project, args.bundle_key, shot_ids, args.pretrained_loras),
       config: args.config,

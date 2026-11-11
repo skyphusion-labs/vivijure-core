@@ -138,6 +138,30 @@ export function configValueRefusal(
   }
 }
 
+/** core#507: the first `requires` rule (see ConfigRequires) this shot breaks under this VALIDATED config,
+ *  as a sentence, or null. `config` is what validateConfig returned, so an absent value is its default. */
+export function configRequiresRefusal(
+  schema: ConfigSchema | undefined,
+  config: Record<string, unknown>,
+  shot: { shot_id: string; seconds: number },
+): string | null {
+  for (const [key, field] of Object.entries(schema ?? {})) {
+    for (const rule of field.requires ?? []) {
+      if (config[key] !== rule.when) continue;
+      const { min, max } = rule.shot_seconds;
+      const s = Number(shot.seconds);
+      // A rule always has a min or a max (validateManifest), and NaN fails every comparison, so an
+      // unreadable length never passes.
+      const fits = (min === undefined || s >= min) && (max === undefined || s <= max);
+      if (fits) continue;
+      const range = min !== undefined && max !== undefined ? `${min} to ${max} s` : min !== undefined ? `at least ${min} s` : `at most ${max} s`;
+      return `${key} ${JSON.stringify(rule.when)} needs shots of ${range}, and shot ${shot.shot_id} is ${shot.seconds} s` +
+        (rule.message ? ` (${rule.message})` : "");
+    }
+  }
+  return null;
+}
+
 /** Clamp + coerce a user's config values against a module's declared schema. Unknown keys are
  *  dropped; missing keys fall back to the field default; numbers are clamped to [min, max].
  *

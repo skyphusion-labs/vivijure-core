@@ -4,16 +4,17 @@
 // the always-on audio-beat-sync container. Falls back to a direct fetch of AUDIO_BEAT_SYNC_URL
 // when the module is not installed (legacy path).
 
+import { invokeRegistered } from "./modules/invoke-registered.js";
 import type { Env } from "./platform/orchestrator-context.js";
 import { isMediaFinishAuthError, mediaDoorFetch, mediaFinishHeaders } from "./media-finish-auth.js";
 import {
   discoverModules,
-  invokeModule,
   resolveFetcher,
   validateConfig,
 } from "./modules/registry.js";
 import { scoreModulesOfKind } from "./modules/score-select.js";
 import type { RegisteredModule, ScoreInput } from "./modules/types.js";
+import { isServedArtifactKey } from "./key-safety.js";
 import { presignR2Get } from "./presign.js";
 import {
   type AudioAnalyzeRequest,
@@ -155,6 +156,10 @@ export async function analyzeAudioBeats(
 ): Promise<BeatAnalyzeResult> {
   const audioKey = req.audioKey?.trim();
   if (!audioKey) return { ok: false, error: "audioKey required", transient: false };
+  // The same space the serve routes use. A key outside it, including quarantine/, is not signed.
+  if (!isServedArtifactKey(audioKey)) {
+    return { ok: false, error: "audio key is outside served artifact space", transient: false };
+  }
 
   let audioUrl: string;
   try {
@@ -190,7 +195,7 @@ export async function analyzeAudioBeats(
       : { job_id: crypto.randomUUID(), project: "planner" };
     const filmKey = context ? `beat-analyze/${context.job_id}` : "beat-analyze/planner";
 
-    const r = await invokeModule<ScoreInput, BeatSyncModuleOutput>(fetcher, {
+    const r = await invokeRegistered<ScoreInput, BeatSyncModuleOutput>(env, mod, fetcher, {
       hook: "score",
       input: { film_key: filmKey, seconds: 0 },
       config,
