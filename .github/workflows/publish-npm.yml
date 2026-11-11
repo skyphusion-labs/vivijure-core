@@ -34,7 +34,7 @@ jobs:
       id-token: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           # core#119 changelog-version guard lists vivijure-core-v* tags
@@ -49,7 +49,7 @@ jobs:
           fi
 
       - name: Checkout vivijure (quality-tier-drift module manifests)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: skyphusion-labs/vivijure-cf
           path: vivijure
@@ -67,7 +67,7 @@ jobs:
             migrations
           sparse-checkout-cone-mode: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           registry-url: https://registry.npmjs.org
