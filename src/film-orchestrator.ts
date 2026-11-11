@@ -1665,7 +1665,11 @@ async function advanceFinishPhase(env: Env, job: FilmJob, preModules?: Registere
       width: frame.width,
       height: frame.height,
       fps: predictDeliveryFps(job, (job.finish_shots ?? []).map((s) =>
-        s.chain.map((binding, i) => ({ binding, config: s.configs?.[i] as Record<string, unknown> | undefined })))),
+        s.chain.map((binding, i) => ({
+          binding,
+          config: s.configs?.[i] as Record<string, unknown> | undefined,
+          artifacts: finishModByBinding.get(binding)?.finish_artifacts,
+        })))),
       basis: budgetSeconds,
     });
     if (admission.admitted) return null;
@@ -3587,7 +3591,7 @@ async function submitBudgetRefusal(env: Env, job: FilmJob, modules: RegisteredMo
   if (job.keyframes_only || job.clips_only) return null;
   const picked = selectForChain(servingForHook(modules, "finish"), "finish", job.finish_select).modules;
   const configs = resolveFinishConfigs(picked, job.finish_config);
-  const fps = predictDeliveryFps(job, [picked.map((m, i) => ({ binding: m.binding, config: configs[i] }))]);
+  const fps = predictDeliveryFps(job, [picked.map((m, i) => ({ binding: m.binding, config: configs[i], artifacts: m.finish_artifacts }))]);
   const bundleDurations = await readShotDurationsFromBundle(env, job.bundle_key).catch(() => ({}));
   const frame = finishTargetFrame(job, undefined);
   const scenes = job.scenes ?? [];
