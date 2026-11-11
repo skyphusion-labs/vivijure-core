@@ -4,7 +4,7 @@
 planner helpers, and the **Platform ICD** that lets one codebase run on Cloudflare Workers
 ([`vivijure-cf`](https://github.com/skyphusion-labs/vivijure-cf)) or on a home computer / any cloud
 server ([`vivijure-local`](https://github.com/skyphusion-labs/vivijure-local)). Product site:
-[vivijure.com](https://vivijure.com).
+[vivijure.dev](https://vivijure.dev).
 
 | Consumer | Role |
 |----------|------|
@@ -15,7 +15,7 @@ server ([`vivijure-local`](https://github.com/skyphusion-labs/vivijure-local)). 
 `vivijure-cf` has adopted the published package (no duplicate orchestration `src/` remains) and
 `vivijure-local` consumes it via semver.
 
-**Vivijure Studio:** https://vivijure.com · **Live demo:** https://demo.vivijure.com · **Skyphusion Labs:** https://skyphusion.org
+**Vivijure Studio:** https://vivijure.dev · **Live demo:** https://demo.vivijure.com · **Skyphusion Labs:** https://skyphusion.org
 
 ## Where it fits
 
