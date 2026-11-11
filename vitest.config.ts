@@ -42,6 +42,19 @@ export default defineConfig({
         find: "vivijure-modules/own-gpu",
         replacement: manifestEntry("own-gpu"),
       },
+      // vivijure-cf#879 step 3: the shipped finish modules, so the core can check what they declare.
+      {
+        find: "vivijure-modules/finish-rife",
+        replacement: manifestEntry("finish-rife"),
+      },
+      {
+        find: "vivijure-modules/finish-upscale",
+        replacement: manifestEntry("finish-upscale"),
+      },
+      {
+        find: "vivijure-modules/finish-blender",
+        replacement: manifestEntry("finish-blender"),
+      },
     ],
   },
 });

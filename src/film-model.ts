@@ -1296,7 +1296,8 @@ export function finishStepOutputKey(project: string, fs: FinishShot, modules?: R
 export function finishStepIsShotNamed(fs: FinishShot, modules?: RegisteredModule[]): boolean {
   const binding = fs.chain[fs.idx] ?? "";
   const decl = moduleByBinding(modules, binding)?.finish_artifacts;
-  return decl ? decl.output_key.kind === "shot_named" : /RIFE/i.test(binding);
+  // cf#879 (MA-8): the declaration only. A module that declares no finish_artifacts is not shot-named.
+  return decl ? decl.output_key.kind === "shot_named" : false;
 }
 
 /**
@@ -1317,13 +1318,9 @@ function unscopedFinishStepOutputKey(project: string, fs: FinishShot, modules?: 
     if (decl.output_key.kind === "shot_named") return `renders/${project}/clips/${fs.shot_id}${decl.output_key.filename}`;
     return insertKeySuffix(fs.clip_key, decl.output_key.suffix);
   }
-  // Legacy fallback for module deploys predating finish_artifacts: the shipped modules' conventions,
-  // derived from the binding name. Returns null for a module whose convention we do not model, so an
-  // unmodeled step gets NO R2 shortcut and can never adopt a sibling step's artifact.
-  if (/RIFE/i.test(binding)) return `renders/${project}/clips/${fs.shot_id}_finished.mp4`;
-  const suffix = /LIPSYNC/i.test(binding) ? "_ls" : /UPSCALE/i.test(binding) ? "_up" : null;
-  if (!suffix) return null;
-  return insertKeySuffix(fs.clip_key, suffix);
+  // cf#879 (MA-8): no binding-name fallback. A module that declares no convention gets NO R2 shortcut,
+  // so it can never adopt a sibling step's artifact. Every shipped finish module declares one.
+  return null;
 }
 
 /** Insert an artifact suffix into an R2 key before its extension (`a/b.mp4` + `_ls` -> `a/b_ls.mp4`). */
@@ -1391,10 +1388,8 @@ export function finishStepAppliedTag(fs: FinishShot, modules?: RegisteredModule[
     }
     return `${binding}:r2-adopted`; // declared rules, none matched: never silent
   }
-  // Legacy fallback (module deploys predating finish_artifacts), binding-name derived.
-  if (/LIPSYNC/i.test(binding)) return `lipsync:${String(cfg.version ?? "v15")}`;
-  if (/UPSCALE/i.test(binding)) return `upscale:${Number(cfg.scale ?? 2)}x`;
-  if (/RIFE/i.test(binding)) return cfg.interpolate === false ? "noop:interpolate-off" : `interpolate:${Number(cfg.interpolation_factor ?? 2)}x`;
+  // cf#879 (MA-8): no binding-name fallback. An undeclared module's adopted step is marked so the
+  // adoption is never silent.
   return `${binding}:r2-adopted`;
 }
 
@@ -1943,9 +1938,8 @@ export function resolveDeliveryFps(job: { delivery_fps?: unknown; assemble_fps?:
 }
 
 /** The factor one finish step multiplies the frame rate by, read from the same config the step runs on.
- *  A declared `finish_artifacts.rate_factor` decides it (vivijure-cf#879, MA-8). Without one, the legacy
- *  binding-name rule, the same reading as the `interpolate:Nx` applied tag. A step that does not
- *  interpolate is 1. */
+ *  Only a declared `finish_artifacts.rate_factor` decides it (vivijure-cf#879, MA-8); without one the
+ *  step keeps the rate (1). The binding is no longer read. */
 export function finishStepRateFactor(
   binding: string,
   config: Record<string, unknown> | undefined,
@@ -1957,9 +1951,9 @@ export function finishStepRateFactor(
     const declared = Number(config?.[rf.knob] ?? rf.default);
     return Number.isFinite(declared) && declared > 1 ? declared : 1;
   }
-  if (!/RIFE/i.test(binding) || config?.interpolate === false) return 1;
-  const factor = Number(config?.interpolation_factor ?? 2);
-  return Number.isFinite(factor) && factor > 1 ? factor : 1;
+  // cf#879 (MA-8): no binding-name fallback. A module that declares no rate_factor keeps the rate.
+  void binding;
+  return 1;
 }
 
 /** The rate a film will ship at, worked out before its finish chain has run, so it can be priced first.

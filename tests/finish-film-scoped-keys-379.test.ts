@@ -32,8 +32,8 @@ describe("the key", () => {
     expect(finishStepIsShotNamed(shot({ chain: ["MODULE_U"] }), [UP])).toBe(false);
   });
 
-  it("a legacy RIFE binding with no declaration is shot-named too", () => {
-    expect(finishStepOutputKey("p", shot({ chain: ["MODULE_RIFE"] }), [], "film-a")).toBe("renders/p/clips/film-a/s1_finished.mp4");
+  it("cf#879: a RIFE-named binding with no declaration is no longer read off its name, and gets no key", () => {
+    expect(finishStepOutputKey("p", shot({ chain: ["MODULE_RIFE"] }), [], "film-a")).toBeNull();
   });
 
   it("no scope still gives the shared key, which adoption reads as the fallback", () => {

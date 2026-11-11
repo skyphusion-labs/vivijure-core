@@ -312,8 +312,8 @@ export interface FinishArtifactsDecl {
    *  `off_when` names a knob value that turns the multiplication off. A factor that is not a number
    *  above 1 counts as 1. Example, finish-rife:
    *  `{ "knob": "interpolation_factor", "default": 2, "off_when": { "knob": "interpolate", "equals": false } }`.
-   *  OPTIONAL and additive. A module that changes no rate omits it. Until every finish module declares
-   *  `finish_artifacts`, a manifest without `rate_factor` is still read by the legacy binding-name rule. */
+   *  OPTIONAL and additive. A module that changes no rate omits it, and is read as factor 1: since
+   *  vivijure-cf#879 step 3 the core reads no convention off a binding name. */
   rate_factor?: { knob: string; default: number; off_when?: { knob: string; equals: string | number | boolean } };
 }
 

@@ -32,8 +32,8 @@ describe("the key", () => {
     expect(finishStepOutputKey("p", after, [UP], "film-a")).toBe("renders/p/clips/film-a/s1_finished_up.mp4");
   });
 
-  it("a legacy UPSCALE binding with no declaration is scoped too", () => {
-    expect(finishStepOutputKey("p", shot({ chain: ["MODULE_UPSCALE"] }), [], "film-a")).toBe("renders/p/clips/film-a/s1_own-gpu_up.mp4");
+  it("cf#879: an UPSCALE-named binding with no declaration is no longer read off its name, and gets no key", () => {
+    expect(finishStepOutputKey("p", shot({ chain: ["MODULE_UPSCALE"] }), [], "film-a")).toBeNull();
   });
 
   it("no scope still gives the key beside the input, which adoption reads as the fallback", () => {

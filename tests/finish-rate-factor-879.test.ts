@@ -31,15 +31,13 @@ describe("finishStepRateFactor reads a declared rate_factor", () => {
   });
 });
 
-describe("legacy reading stays until every module declares", () => {
-  it("no declaration: /RIFE/ binding as before", () => {
-    expect(finishStepRateFactor("MODULE_FINISH_RIFE", {})).toBe(2);
-    expect(finishStepRateFactor("MODULE_FINISH_RIFE", { interpolate: false })).toBe(1);
-    expect(finishStepRateFactor("MODULE_SMOOTHER", {})).toBe(1);
+describe("cf#879 step 3: no binding-name reading", () => {
+  it("no declaration: factor 1, whatever the binding is called", () => {
+    expect(finishStepRateFactor("MODULE_FINISH_RIFE", {})).toBe(1);
+    expect(finishStepRateFactor("MODULE_FINISH_RIFE", { interpolation_factor: 4 })).toBe(1);
   });
-  it("a declaration without rate_factor also keeps the legacy reading (cf finish-rife today)", () => {
-    expect(finishStepRateFactor("MODULE_FINISH_RIFE", {}, NO_RATE)).toBe(2);
-    expect(finishStepRateFactor("MODULE_FINISH_UPSCALE", {}, NO_RATE)).toBe(1);
+  it("a declaration without rate_factor is factor 1 too", () => {
+    expect(finishStepRateFactor("MODULE_FINISH_RIFE", { interpolation_factor: 4 }, NO_RATE)).toBe(1);
   });
 });
 
