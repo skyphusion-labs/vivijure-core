@@ -5,6 +5,10 @@ Notable changes per `@skyphusion-labs/vivijure-core` release. Tag + npm publish 
 
 ## [1.45.0] -- 2026-11-11
 
+**Feat: a config value can say which shots it fits (`requires` in `config_schema`), and a film that breaks it is refused at start (#507).**
+
+Additive in `vivijure-module/2`, so no api bump. A field may declare `requires: [{ when, shot_seconds: { min?, max? }, message? }]`: when its effective value (the caller's, else the default) equals `when`, every shot the module renders must have planned `seconds` in that range, inclusive. The range is in planned seconds because the core cannot know a module's own rounding: cf-veo, which snaps 7.5 s and up to an 8 s clip and makes 1080p only at 8 s, would declare `{ when: "1080p", shot_seconds: { min: 7.5 } }`. `filmStartConfigRefusal` checks each shot against the door it renders on (`per_shot_motion`, else the film's) with that door's config, and fails the film by name before anything is spent, instead of the door refusing at clip time after the keyframes were bought. `validateManifest` refuses a malformed rule. Exported: `configRequiresRefusal` (`modules/registry`).
+
 **Feat: the backend keyframe reuse mark reaches the render row, so a still that was not redrawn is no longer silent (#532).**
 
 When a shot is asked for again with the same parameters, the GPU backend returns the stored still and marks its keyframe entry `reused: true`. The core dropped the mark at the job doc, so a panel regen with unchanged settings returned the old still and read as a new take (vivijure-cf#1385). `FilmKeyframeRef` and `KeyframeRef` now carry an optional `reused`, kept only as a JSON `true` (additive, no module epoch change; `KeyframeShot.reused` was already in the contract). The render payload gains `keyframe_reuse: {stills, reused: [shot_id]}`, absent when no still was reused, and a keyframes-only payload keeps `reused` on each keyframe entry. A film animated from a preview keeps the mark for each carried still. Absent cannot tell a door that never reports the mark from one that drew every still.
