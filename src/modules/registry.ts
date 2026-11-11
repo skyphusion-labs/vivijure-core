@@ -413,7 +413,18 @@ export async function discoverDispatchModules(env: Record<string, unknown>): Pro
     return [];
   }
   const out: RegisteredModule[] = [];
+  // A namespace can hold several studios' modules. A host that names its own script prefix
+  // (TENANT_MODULE_PREFIX, set by the plane that provisions it) dispatches only to scripts under it,
+  // so a row written before its install route checked the prefix still never reaches another studio's
+  // script. Unset (self-host, one studio per namespace): every row, as before.
+  const ownPrefix = typeof (env as Record<string, unknown>).TENANT_MODULE_PREFIX === "string"
+    ? String((env as Record<string, unknown>).TENANT_MODULE_PREFIX).trim()
+    : "";
   for (const row of rows) {
+    if (ownPrefix && !String(row.script_name).startsWith(ownPrefix)) {
+      console.warn(`dispatch module ${row.name}: script outside this studio's module prefix; skipping`);
+      continue;
+    }
     let raw: unknown;
     try {
       raw = JSON.parse(row.manifest_json);
