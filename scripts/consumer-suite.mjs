@@ -26,7 +26,7 @@
 // measured: dist/index.js is a re-export barrel, byte-identical between 1.41.3 on npm and main.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -95,7 +95,18 @@ export function runConsumerSuite({ core, consumer }) {
   s.baseline = checks("baseline (its own pin)", consumer);
   if (!s.baseline) return decide(s);
 
+  // core#526: the pack directory is removed on EVERY path out, including each early return below.
+  // On a runner it is discarded anyway; on a laptop $TMPDIR is in the member's home and is not
+  // cleared at boot, so without this every run left one more tarball behind.
   const dest = mkdtempSync(join(tmpdir(), "core-consumer-pack-"));
+  try {
+    return packAndProve(s, core, consumer, name, dest);
+  } finally {
+    rmSync(dest, { recursive: true, force: true });
+  }
+}
+
+function packAndProve(s, core, consumer, name, dest) {
   console.log(`::group::pack this core build: npm pack --json`);
   const packed = spawnSync("npm", ["pack", "--json", "--pack-destination", dest], { cwd: core, encoding: "utf8", env: process.env, stdio: ["ignore", "pipe", "inherit"] });
   console.log("::endgroup::");
