@@ -9,10 +9,10 @@
 // no re-download). For concurrency-safe progress a Durable Object is the upgrade; this MVP assumes
 // the caller polls sequentially.
 
+import { invokeRegistered } from "./modules/invoke-registered.js";
 import type { Env } from "./platform/orchestrator-context.js";
 import {
   discoverModules,
-  invokeModule,
   pollModule,
   cancelModule,
   resolveFetcher,
@@ -542,7 +542,9 @@ async function submitShot(
   // tenants, so it declares `needs_tenant_r2` and gets the tenant credential attached here.
   // withTenantR2 is what enforces the declaration -- a module that does not ask for it (every
   // cloud motion backend) gets the envelope back unchanged, with the key ABSENT rather than null.
-  const r = await invokeModule<MotionBackendInput, MotionBackendOutput>(
+  const r = await invokeRegistered<MotionBackendInput, MotionBackendOutput>(
+    env,
+    mb,
     fetcher,
     withTenantR2(
       {

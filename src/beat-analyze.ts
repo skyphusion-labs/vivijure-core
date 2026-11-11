@@ -4,11 +4,11 @@
 // the always-on audio-beat-sync container. Falls back to a direct fetch of AUDIO_BEAT_SYNC_URL
 // when the module is not installed (legacy path).
 
+import { invokeRegistered } from "./modules/invoke-registered.js";
 import type { Env } from "./platform/orchestrator-context.js";
 import { isMediaFinishAuthError, mediaDoorFetch, mediaFinishHeaders } from "./media-finish-auth.js";
 import {
   discoverModules,
-  invokeModule,
   resolveFetcher,
   validateConfig,
 } from "./modules/registry.js";
@@ -190,7 +190,7 @@ export async function analyzeAudioBeats(
       : { job_id: crypto.randomUUID(), project: "planner" };
     const filmKey = context ? `beat-analyze/${context.job_id}` : "beat-analyze/planner";
 
-    const r = await invokeModule<ScoreInput, BeatSyncModuleOutput>(fetcher, {
+    const r = await invokeRegistered<ScoreInput, BeatSyncModuleOutput>(env, mod, fetcher, {
       hook: "score",
       input: { film_key: filmKey, seconds: 0 },
       config,
