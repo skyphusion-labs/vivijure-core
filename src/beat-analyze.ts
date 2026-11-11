@@ -14,6 +14,7 @@ import {
 } from "./modules/registry.js";
 import { scoreModulesOfKind } from "./modules/score-select.js";
 import type { RegisteredModule, ScoreInput } from "./modules/types.js";
+import { isServedArtifactKey } from "./key-safety.js";
 import { presignR2Get } from "./presign.js";
 import {
   type AudioAnalyzeRequest,
@@ -155,6 +156,10 @@ export async function analyzeAudioBeats(
 ): Promise<BeatAnalyzeResult> {
   const audioKey = req.audioKey?.trim();
   if (!audioKey) return { ok: false, error: "audioKey required", transient: false };
+  // The same space the serve routes use. A key outside it, including quarantine/, is not signed.
+  if (!isServedArtifactKey(audioKey)) {
+    return { ok: false, error: "audio key is outside served artifact space", transient: false };
+  }
 
   let audioUrl: string;
   try {
