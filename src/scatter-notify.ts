@@ -1,8 +1,8 @@
 // Best-effort notify on a scatter render's terminal state (mirrors film-orchestrator fireNotify).
 
 import type { Env } from "./platform/orchestrator-context.js";
-import { discoverModules, invokeModule, resolveFetcher, servingForHook, validateConfig } from "./modules/registry.js";
-import { loadInstallConfig } from "./operator-config.js";
+import { discoverModules, resolveFetcher, servingForHook, validateConfig } from "./modules/registry.js";
+import { invokeRegistered } from "./modules/invoke-registered.js";
 import type { NotifyInput, NotifyOutput, RegisteredModule } from "./modules/types.js";
 import { presignR2Get, FILM_DOWNLOAD_TTL_SECONDS } from "./presign.js";
 import type { ScatterJob } from "./scatter-orchestrator-types.js";
@@ -36,13 +36,12 @@ export async function fireNotifyForScatter(
       const fetcher = resolveFetcher(envRec, m.binding);
       if (!fetcher) continue;
       try {
-        // Inject the operator-set install-config (e.g. notify-email's notify_email recipient) as the
-        // user config, then clamp through the contract; render-scope fields stay at their defaults.
-        const installConfig = await loadInstallConfig(env, m.name, m.config_schema);
-        await invokeModule<NotifyInput, NotifyOutput>(fetcher, {
+        // Render-scope fields at their defaults; invokeRegistered puts the operator-set install config
+        // (e.g. notify-email's notify_email recipient) over them, as on every hook (cf#879).
+        await invokeRegistered<NotifyInput, NotifyOutput>(env, m, fetcher, {
           hook: "notify",
           input,
-          config: validateConfig(m.config_schema ?? {}, installConfig),
+          config: validateConfig(m.config_schema ?? {}, {}),
           context,
         });
       } catch { /* best-effort */ }
