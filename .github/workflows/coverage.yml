@@ -47,6 +47,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # core tests include a guard comparing package.json to vivijure-core-v* tags; a
+          # shallow clone has none and the guard refuses (same as ci.yml)
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Checkout vivijure-cf (module manifests the suite reads)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
