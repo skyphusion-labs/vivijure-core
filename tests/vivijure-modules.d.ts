@@ -23,3 +23,18 @@ declare module "vivijure-modules/own-gpu" {
   import type { ModuleManifest } from "../src/modules/types.js";
   export const MANIFEST: ModuleManifest;
 }
+
+declare module "vivijure-modules/finish-rife" {
+  import type { ModuleManifest } from "../src/modules/types.js";
+  export const MANIFEST: ModuleManifest;
+}
+
+declare module "vivijure-modules/finish-upscale" {
+  import type { ModuleManifest } from "../src/modules/types.js";
+  export const MANIFEST: ModuleManifest;
+}
+
+declare module "vivijure-modules/finish-blender" {
+  import type { ModuleManifest } from "../src/modules/types.js";
+  export const MANIFEST: ModuleManifest;
+}

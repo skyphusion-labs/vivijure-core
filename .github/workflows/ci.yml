@@ -49,6 +49,9 @@ jobs:
           sparse-checkout: |
             modules/keyframe
             modules/own-gpu
+            modules/finish-rife
+            modules/finish-upscale
+            modules/finish-blender
             modules/_shared
             migrations
           sparse-checkout-cone-mode: false

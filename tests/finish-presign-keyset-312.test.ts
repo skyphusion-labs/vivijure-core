@@ -15,17 +15,19 @@
 import { describe, expect, it } from "vitest";
 import { attachFinishPresigns, attachSpeechPresigns } from "../src/film-orchestrator.js";
 import type { FilmJob, FinishShot } from "../src/film-model.js";
-import type { FinishInput, SpeechInput } from "../src/modules/types.js";
+import type { FinishInput, RegisteredModule, SpeechInput } from "../src/modules/types.js";
+import { UPSCALE_ARTIFACTS } from "./helpers/shipped-finish-artifacts.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 
 const PROJECT = "neon";
 const CLIP = "renders/neon/clips/shot_01.mp4";
 const AUDIO = "renders/neon/dialogue/shot_01.wav";
-// Legacy UPSCALE convention (finishStepOutputKey: no finish_artifacts decl -> `_up` before the ext),
-// in the film's own folder since core#385, so two films on one shared input do not share an output.
+// finish-upscale's declared convention (`_up` before the ext, cf#879: no longer read off the binding
+// name), in the film's own folder since core#385, so two films on one shared input do not share an output.
 const OUT = "renders/neon/clips/f1/shot_01_up.mp4";
 
 const JOB = { film_id: "f1", project: PROJECT } as unknown as FilmJob;
+const MODS = [{ name: "finish-upscale", binding: "MODULE_FINISH_UPSCALE", hooks: ["finish"], finish_artifacts: UPSCALE_ARTIFACTS }] as unknown as RegisteredModule[];
 
 function shot(): FinishShot {
   return {
@@ -68,7 +70,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
   it("presigns the hash sidecar at `<output_key>.hash`, the key the #583 adoption gate reads", async () => {
     const { env, gets, puts } = stubEnv();
     const input = lipsyncInput();
-    await attachFinishPresigns(env, JOB, shot(), input, []);
+    await attachFinishPresigns(env, JOB, shot(), input, MODS);
 
     // CONTROL, co-located with the claim and read first: the stub is reached at all, so a key-set
     // assertion below is a statement about the transport rather than about an inert recorder.
@@ -91,7 +93,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
   it("keeps clip_key after a complete presign so own-iron RIFE can run", async () => {
     const { env } = stubEnv();
     const input = lipsyncInput();
-    await attachFinishPresigns(env, JOB, shot(), input, []);
+    await attachFinishPresigns(env, JOB, shot(), input, MODS);
 
     expect(input.video_url).toBe(`https://get.invalid/${CLIP}`);
     expect(input.output_url).toBe(`https://put.invalid/${OUT}`);
@@ -108,7 +110,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     // correctly with Promise.all; this pins the same posture here.
     const { env, gets, puts } = stubEnv((k) => k === AUDIO);
     const input = lipsyncInput();
-    await attachFinishPresigns(env, JOB, shot(), input, []);
+    await attachFinishPresigns(env, JOB, shot(), input, MODS);
 
     // CONTROL first: the refusal path was actually exercised. True under both the sequential and the
     // Promise.all shapes, so it discriminates a reached refusal from a test that never got there.
@@ -145,7 +147,7 @@ describe("attachFinishPresigns emitted key set (cf#312)", () => {
     // identically under an implementation that presigns everything unconditionally.
     const { env, gets, puts } = stubEnv();
     const input: FinishInput = { shot_id: "shot_01", clip_key: CLIP };
-    await attachFinishPresigns(env, JOB, shot(), input, []);
+    await attachFinishPresigns(env, JOB, shot(), input, MODS);
 
     expect(gets).toEqual([CLIP]);
     expect(puts).toEqual([OUT]);

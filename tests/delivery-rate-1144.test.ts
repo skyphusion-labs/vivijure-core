@@ -4,6 +4,7 @@ import { clipJobDocKey, predictDeliveryFps, resolveDeliveryFps, summarizeFinish 
 import { parseMoov } from "../src/clip-validate.js";
 import type { Env } from "../src/platform/orchestrator-context.js";
 import type { RegisteredModule } from "../src/modules/types.js";
+import { RIFE_ARTIFACTS, UPSCALE_ARTIFACTS } from "./helpers/shipped-finish-artifacts.js";
 
 // vivijure-cf#1144, measured on film-f70f2700: shot_01_finished.mp4 is 48 fps with 281 frames, and the
 // final film was 24 fps with nothing to say so. A film now ships at the rate its finish chain produced.
@@ -163,14 +164,14 @@ describe("an explicit delivery_fps", () => {
   });
 
   it("wins the prediction too", () => {
-    const chain = [[{ binding: "MODULE_FINISH_RIFE", config: { interpolation_factor: 4 } }]];
+    const chain = [[{ binding: "MODULE_FINISH_RIFE", config: { interpolation_factor: 4 }, artifacts: RIFE_ARTIFACTS }]];
     expect(predictDeliveryFps({}, chain)).toBe(96);
     expect(predictDeliveryFps({ delivery_fps: 30 }, chain)).toBe(30);
   });
 });
 
 describe("predicting the rate", () => {
-  const rife = (config: Record<string, unknown>) => [[{ binding: "MODULE_FINISH_RIFE", config }]];
+  const rife = (config: Record<string, unknown>) => [[{ binding: "MODULE_FINISH_RIFE", config, artifacts: RIFE_ARTIFACTS }]];
   it.each([
     [{}, 48],
     [{ interpolation_factor: 2 }, 48],
@@ -181,7 +182,7 @@ describe("predicting the rate", () => {
     expect(predictDeliveryFps({}, rife(config))).toBe(want);
   });
   it("a step that does not interpolate adds nothing, and the busiest shot decides", () => {
-    expect(predictDeliveryFps({}, [[{ binding: "MODULE_FINISH_UPSCALE", config: { interpolation_factor: 4 } }]])).toBe(24);
+    expect(predictDeliveryFps({}, [[{ binding: "MODULE_FINISH_UPSCALE", config: { interpolation_factor: 4 }, artifacts: UPSCALE_ARTIFACTS }]])).toBe(24);
     expect(predictDeliveryFps({}, [...rife({ interpolation_factor: 2 }), []])).toBe(48);
     expect(predictDeliveryFps({}, [])).toBe(24);
   });
@@ -290,6 +291,7 @@ describe("the budget, before the film costs anything", () => {
     name: "finish-rife", version: "0.1.0", api: "vivijure-module/2", binding: "MODULE_FINISH_RIFE", hooks: ["finish"],
     config_schema: { interpolate: { type: "bool", default: true }, interpolation_factor: { type: "int", default: 2, min: 1, max: 8 } },
     ui: { section: "finish", order: 10 },
+    finish_artifacts: RIFE_ARTIFACTS,
   } as unknown as RegisteredModule;
 
   const harness = () => {
@@ -369,7 +371,8 @@ describe("the budget, before the film costs anything", () => {
 });
 
 describe("the finish step gate", () => {
-  const U = { name: "finish-upscale", version: "1", api: "vivijure-module/2", hooks: ["finish"], ui: { section: "finish", order: 20 }, binding: "MODULE_U", finish_scales_frame: true } as unknown as RegisteredModule;
+  const U = { name: "finish-upscale", version: "1", api: "vivijure-module/2", hooks: ["finish"], ui: { section: "finish", order: 20 }, binding: "MODULE_U", finish_scales_frame: true, finish_artifacts: UPSCALE_ARTIFACTS } as unknown as RegisteredModule;
+  const R = { name: "finish-rife", version: "1", api: "vivijure-module/2", hooks: ["finish"], ui: { section: "finish", order: 10 }, binding: "MODULE_FINISH_RIFE", finish_artifacts: RIFE_ARTIFACTS } as unknown as RegisteredModule;
   const run = async (chain: string[], configs: Record<string, unknown>[]) => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -380,7 +383,7 @@ describe("the finish step gate", () => {
       finish_shots: [{ shot_id: "s1", clip_key: KEY, chain, configs, idx: chain.length - 1, status: "pending", applied: [] }] as never,
     });
     const e = env(new Uint8Array(0), { [CLIP_DOC]: clipDoc(1500), [filmJobDocKey("film-1")]: j }, { DB: undefined, MODULE_U: door });
-    await advanceFilmJob(e, "film-1", [U]);
+    await advanceFilmJob(e, "film-1", [U, R]);
     return invoked;
   };
   // A 2x upscale of 1344x768 at 1500s is 4.2 GB at 24 fps and 8.4 GB at 48, against a 6.85 GB ceiling.

@@ -21,6 +21,9 @@ import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { MANIFEST as KEYFRAME_MANIFEST } from "vivijure-modules/keyframe";
 import { MANIFEST as OWN_GPU_MANIFEST } from "vivijure-modules/own-gpu";
+import { MANIFEST as FINISH_RIFE_MANIFEST } from "vivijure-modules/finish-rife";
+import { MANIFEST as FINISH_UPSCALE_MANIFEST } from "vivijure-modules/finish-upscale";
+import { MANIFEST as FINISH_BLENDER_MANIFEST } from "vivijure-modules/finish-blender";
 import { validateManifest } from "../src/modules/manifest-validate.js";
 import {
   checkManifest,
@@ -37,6 +40,9 @@ const VITEST_PATH = resolve(root, "vitest.config.ts");
 const REAL_MANIFESTS: Record<string, ModuleManifest> = {
   keyframe: KEYFRAME_MANIFEST,
   "own-gpu": OWN_GPU_MANIFEST,
+  "finish-rife": FINISH_RIFE_MANIFEST,
+  "finish-upscale": FINISH_UPSCALE_MANIFEST,
+  "finish-blender": FINISH_BLENDER_MANIFEST,
 };
 
 /** Module names declared as `declare module "vivijure-modules/<name>"` in the hand-written .d.ts. */
