@@ -4,6 +4,7 @@
 // master-chain state helpers, and the stall math. The orchestrator (film-orchestrator.ts) owns
 // every await; it re-exports this module, so importers and tests keep their one entry point.
 
+import type { DoorFitRecord } from "./door-fit.js";
 import { FINISH_TRANSPORT_HOLD_MAX_SECONDS, assembleCapacityBackoffSeconds, decodeAssembleWait } from "./video-finish-assemble.js";
 import type { ConfigSchema, DialogueLine, FinishArtifactsDecl, FinishOutput, HookSelection, MasterOutput, PlateCount, RegisteredModule, SpeechOutput, StepFailure } from "./modules/types.js";
 import { validateConfig } from "./modules/registry.js";
@@ -417,6 +418,13 @@ export interface FilmJob {
   /** vivijure-core#442: per-door motion config (keyed by module name), passed to startClipJob as
    *  module_configs wherever this film starts its clips. Absent when none was given. */
   motion_configs?: Record<string, Record<string, unknown>>;
+  /** vivijure-cf#930: the doors, in the caller's order, that a lined shot may move to for its own clip when
+   *  the film door's clip floor would leave a silent-mouthing tail. Each one's config is in motion_configs.
+   *  The caller sends it only when the film door was not an explicit choice. Absent = no shot is moved. */
+  door_fit_offer?: string[];
+  /** vivijure-cf#930: the shots moved to another door for their own clip, and the lined shots still left with
+   *  a tail. Set once, before the first clip. Absent when no lined shot had a tail. */
+  door_fit?: DoorFitRecord;
   // cf#393: RESOLVED keyframe module name at submit (e.g. "keyframe", "cloud-keyframe"). Distinct from
   // keyframe_binding (service-binding id). Absent on legacy job docs and on from-keyframes jobs that
   // never ran a keyframe module. Mirrored onto the renders row so "which keyframe backend?" is answerable.

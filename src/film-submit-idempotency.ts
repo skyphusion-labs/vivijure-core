@@ -149,6 +149,8 @@ export function naturalKeyForStartFilmJob(args: {
   delivery_width?: number;
   delivery_height?: number;
   delivery_fps?: number;
+  door_fit?: string[];
+  motion_configs?: Record<string, Record<string, unknown>>;
 }): FilmSubmitIdentity {
   return {
     entry: "startFilmJob",
@@ -183,6 +185,7 @@ export function naturalKeyForStartFilmJob(args: {
       // core#431: render-affecting. A part pinned to one frame or rate is not the same film as one pinned
       // to another, or as one left to the clips; without these the second submit inherits the first.
       ...deliveryPin(args),
+      ...doorFitPin(args),
     },
   };
 }
@@ -211,6 +214,7 @@ export function naturalKeyForStartFromKeyframes(args: {
   delivery_width?: number;
   delivery_height?: number;
   delivery_fps?: number;
+  door_fit?: string[];
 }): FilmSubmitIdentity {
   return {
     entry: "startFilmFromKeyframes",
@@ -241,8 +245,18 @@ export function naturalKeyForStartFromKeyframes(args: {
       dialogue_lines: args.dialogue_lines ?? null,
       // core#431: render-affecting, as on startFilmJob.
       ...deliveryPin(args),
+      ...doorFitPin({ door_fit: args.door_fit }),
     },
   };
+}
+
+/** vivijure-cf#930: the door-fit offer in the fingerprint, and on startFilmJob the per-door configs that came
+ *  with it. Spread only when set, so a submit without one keeps the key it had before this field existed. */
+function doorFitPin(args: { door_fit?: string[]; motion_configs?: Record<string, Record<string, unknown>> }): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (args.door_fit?.length) out.door_fit = args.door_fit;
+  if (args.motion_configs && Object.keys(args.motion_configs).length) out.motion_configs = args.motion_configs;
+  return out;
 }
 
 /** core#431: the delivery pin in the fingerprint. Spread only when set, so a submit that pins nothing keeps
