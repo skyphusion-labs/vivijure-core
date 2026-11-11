@@ -62,7 +62,10 @@ describe("core#484: the changelog suites clean up their fixture directories", ()
     const reportPath = join(isolated, "report.json");
     execFileSync(
       process.execPath,
-      [vitest, "run", "--reporter=json", `--outputFile=${reportPath}`, ...SUITES],
+      // local#546: one file at a time. This child runs while the parent suite is running these same
+      // git-driven files, so a second pool of parallel workers here starved the parent's git fixtures
+      // (CI measured the parent's misfile test at 15.8 s beside this file's 15.1 s).
+      [vitest, "run", "--no-file-parallelism", "--reporter=json", `--outputFile=${reportPath}`, ...SUITES],
       { cwd: repoRoot, env: childEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     );
     const report = JSON.parse(readFileSync(reportPath, "utf8")) as VitestJson;
