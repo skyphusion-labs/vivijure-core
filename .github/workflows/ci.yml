@@ -23,7 +23,7 @@ jobs:
     steps:
       # fetch-tags: core#119 changelog-version guard needs vivijure-core-v* tags visible
       # (git tag -l) so Unreleased-on-a-spent-version fails closed, not as a vacuous green.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-tags: true
           # core#202: tests/changelog-released-entries.test.ts asks an ANCESTRY question
@@ -38,7 +38,7 @@ jobs:
           # REFUSES rather than passing when the clone is shallow.
           fetch-depth: 0
       - name: Checkout vivijure (module manifest drift guard)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: skyphusion-labs/vivijure-cf
           path: vivijure
@@ -55,7 +55,7 @@ jobs:
             modules/_shared
             migrations
           sparse-checkout-cone-mode: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -86,15 +86,15 @@ jobs:
       # no root resolves, so a checkout that silently stops working cannot read as a clean repo.
       # vivijure-cf is already checked out above (into ./vivijure) for the manifest drift guard.
       - name: Checkout consumers (stale-reference detector)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: skyphusion-labs/vivijure-backend
           path: consumers/vivijure-backend
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: skyphusion-labs/vivijure-upscale
           path: consumers/vivijure-upscale
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: skyphusion-labs/vivijure-wan-train
           path: consumers/vivijure-wan-train
@@ -103,7 +103,7 @@ jobs:
       # and pointing the detector at it made five live files read as deleted. A root that is present
       # but incomplete is indistinguishable from a complete one, so the fix is to not reuse a
       # narrowed checkout rather than to try to detect narrowness.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: skyphusion-labs/vivijure-cf
           path: consumers/vivijure-cf
@@ -131,14 +131,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: core
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: skyphusion-labs/vivijure-cf
           path: cf
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm

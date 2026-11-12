@@ -3,12 +3,14 @@
 Shared orchestration library for [`vivijure-cf`](https://github.com/skyphusion-labs/vivijure-cf) and
 [`vivijure-local`](https://github.com/skyphusion-labs/vivijure-local). A release is:
 
-1. A version bump in `package.json` **and `package-lock.json`** on `main` (BOTH the top-level
-   `version` and `packages[""].version` in the lock, which is two occurrences of the old string)
-2. An annotated git tag `vivijure-core-v<semver>` **pushed to origin**
+1. A release PR that bumps `package.json` **and `package-lock.json`** (BOTH the top-level
+   `version` and `packages[""].version` in the lock, which is two occurrences of the old string),
+   merged through the normal gate. No direct push to `main`, release cuts included.
+2. An annotated git tag `vivijure-core-v<semver>` on that PR's **merge commit**, created by an org
+   admin and **pushed to origin**
 3. A **GitHub Release** on that tag (`gh release create vivijure-core-v<semver> ...`)
-4. npm publish via `.github/workflows/publish-npm.yml` (tag push or workflow_dispatch; requires
-   repo secret `NPM_TOKEN`)
+4. npm publish via `.github/workflows/publish-npm.yml` (tag push or workflow_dispatch). It uses npm
+   trusted publishing (the Actions OIDC token); it does not read `NPM_TOKEN`
 
 Tag prefix `vivijure-core-v` must match `package.json` version (workflow verifies on tag push).
 
@@ -73,9 +75,10 @@ BEFORE that step, run `node scripts/changelog-release-cut-check.mjs` (core#212):
 ## Cutting a release
 
 ```bash
-# 1. Bump package.json version on main (via PR)
-# 2. Tag + push
-git tag vivijure-core-v1.2.2
+# 1. Release PR: bump package.json + package-lock.json, merged through the gate
+# 2. An org admin tags the PR's merge commit and pushes the tag
+sha="$(gh pr view <release-pr> --json mergeCommit -q .mergeCommit.oid)"
+git tag vivijure-core-v1.2.2 "$sha"
 git push origin vivijure-core-v1.2.2
 
 # 3. GitHub Release (npm CI does NOT create this -- do it explicitly)

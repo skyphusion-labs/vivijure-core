@@ -64,11 +64,14 @@ Publish target: npm `@skyphusion-labs/vivijure-core` via `.github/workflows/publ
 
 1. **Release PR on `main`:** bump `package.json` `version`, update `RELEASES.md` ledger row (seed
    tag + notes; leave source commit / published empty until after publish), land the PR.
-2. **Tag** (must match `package.json` exactly; workflow refuses a mismatch):
+2. **Tag the release PR's merge commit** (must match `package.json` exactly; the workflow refuses
+   a mismatch). Only an org admin (the lead or Conrad) can create a release tag; crew open the
+   release PR and ask the lead to tag:
 
 ```bash
-git fetch origin main && git checkout main && git pull --ff-only
-git tag vivijure-core-vX.Y.Z
+git fetch origin main --tags
+sha="$(gh pr view <release-pr> --json mergeCommit -q .mergeCommit.oid)"
+git tag vivijure-core-vX.Y.Z "$sha"
 git push origin vivijure-core-vX.Y.Z
 ```
 
