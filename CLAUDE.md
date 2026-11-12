@@ -103,7 +103,7 @@ use `skyphusion-<member>` identity, never Conrad's. Conrad devs only on his lapt
 
 ## Release convention (bump-at-release)
 
-One convention for every skyphusion-labs repo (Conrad, ruled 2026-11-10, fleet-chezmoi#1766). A version moves ONLY in a release PR: bump the version, then assemble the changelog. Feature and fix PRs do not bump. Releases go through a PR (fleet-chezmoi#1622) and the tag goes on that PR's merge commit. This repo used to be open-once; `RELEASES.md` records the change and a known gap in the changelog guards.
+One convention for every skyphusion-labs repo (Conrad, ruled 2026-11-10, fleet-chezmoi#1766). A version moves ONLY in a release PR: bump the version, then assemble the changelog. Feature and fix PRs do not bump. Releases go through a PR (fleet-chezmoi#1622) and the tag goes on that PR's merge commit. This repo used to be open-once; `RELEASES.md` records the change; the changelog guards match it (core#550).
 
 - Version of record here: package.json (and package-lock.json).
 - Tag shape: `vivijure-core-v*`.

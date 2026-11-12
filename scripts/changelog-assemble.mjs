@@ -8,27 +8,30 @@
 // fragment file per PR removes the shared anchor: two PRs adding two different files never touch
 // the same file, so the conflict class disappears rather than being made cheaper.
 //
-// WHY THIS SCRIPT DOES NOT MAKE THE UNRELEASED HEADING PERMANENT, unlike the vivijure-cf port.
-// RELEASES.md documents a deliberate steady state (core#146, the v1.10.0 note): after a release,
-// main sits on a tagged version with no open Unreleased heading, and
-// tests/changelog-version.test.ts REFUSES a bare Unreleased heading sitting on an already-tagged
-// package.json version. Leaving Unreleased permanently open, as vivijure-cf now does, would make
-// that guard fire immediately after every release cut, before the next feature PR bumps
-// package.json -- a regression this port does not introduce. So this script RENAMES the open
-// heading into the released one, matching the existing hand-edit behaviour, rather than inserting
-// a new section below an untouched Unreleased anchor.
+// TWO SHAPES OF A CYCLE (core#550, bump-at-release, fleet-chezmoi#1766).
+// The estate cuts releases bump-at-release: a version moves only in the release PR. So after a
+// release, main sits on a tagged version with a RELEASED top heading and no open Unreleased heading,
+// and feature PRs add changelog.d/ fragments without bumping anything. The release PR then bumps
+// package.json and package-lock.json and runs this script, which has two cases:
+//   1. The top heading is Unreleased-shaped (a direct-edit cycle, or the older open-once shape):
+//      RENAME it into the released section, legacy body first, then the fragments. Nothing about
+//      this path changed.
+//   2. The top heading is a RELEASED one (the bump-at-release steady state): INSERT a new released
+//      section above it, built from the fragments. There is no Unreleased heading to promote and
+//      none is needed, because a fragment carries no heading reference (core#212).
+// It refuses, writing nothing, when there is nothing to release: no Unreleased heading AND no
+// fragments.
 //
-// core#212 is unaffected by that choice: the misfiling defect is caused by direct edits racing a
-// moving heading DURING a cycle, not by how the release step closes the heading afterward.
-// Fragments remove the race regardless of the release-time renaming mechanics, because a fragment
-// file has no heading to be misfiled under in the first place.
+// This script still does not leave a permanent empty Unreleased anchor (unlike the vivijure-cf
+// port): after a release the top heading is the released one.
 //
 // <version> IS AN EXPLICIT ARGUMENT, matching vivijure-cf and vivijure-control-plane, never
 // inferred from the topmost heading.
 //
-// Refuses loudly, and writes nothing, when the top heading is not Unreleased-shaped (nothing open
-// to promote) or when <version> already appears as a heading anywhere in CHANGELOG.md -- so
-// re-running this for an already-promoted version cannot duplicate the heading.
+// Refuses loudly, and writes nothing, when there is nothing to release (the top heading is not
+// Unreleased-shaped and changelog.d holds no fragment) or when <version> already appears as a
+// heading anywhere in CHANGELOG.md -- so re-running this for an already-promoted version cannot
+// duplicate the heading.
 
 import { readFileSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -108,12 +111,21 @@ export function assemble(text, fragmentNames, fragmentBodies, versionArg, date) 
 
   const bounds = openSectionBounds(lines);
   if (bounds === null) {
-    return {
-      ok: false,
-      message:
-        "refusing: CHANGELOG.md does not open with an Unreleased-shaped heading. Nothing to " +
-        "promote. Open a cycle first (see RELEASES.md).",
-    };
+    // Bump-at-release steady state (core#550): a released top heading and fragments waiting.
+    if (fragmentBodies.length === 0) {
+      return {
+        ok: false,
+        message:
+          "refusing: CHANGELOG.md does not open with an Unreleased-shaped heading and " +
+          "changelog.d holds no fragment. Nothing to promote (see RELEASES.md).",
+      };
+    }
+    const first = lines.findIndex((l) => l.startsWith("## "));
+    const at = first === -1 ? lines.length : first;
+    const bareV = version.replace(/^v/, "");
+    const inserted = ["## [" + bareV + "] -- " + date, ""]
+      .concat(fragmentBodies.join("\n\n").trim().split("\n"), [""]);
+    return { ok: true, text: lines.slice(0, at).concat(inserted, lines.slice(at)).join("\n") };
   }
   const start = bounds[0];
   const end = bounds[1];

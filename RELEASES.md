@@ -14,7 +14,7 @@ Shared orchestration library for [`vivijure-cf`](https://github.com/skyphusion-l
 
 Tag prefix `vivijure-core-v` must match `package.json` version (workflow verifies on tag push).
 
-Step 1 also closes the changelog cycle: as of core#202, running `node scripts/changelog-assemble.mjs <version> <date>` folds every `changelog.d/` fragment (plus whatever is still open under the Unreleased-shaped heading) into the released section, in place of hand-editing that heading. See CONTRIBUTING.md.
+Step 1 also closes the changelog cycle: as of core#202, running `node scripts/changelog-assemble.mjs <version> <date>` folds every `changelog.d/` fragment (plus whatever is still open under an Unreleased-shaped heading) into the released section, in place of hand-editing that heading. Since core#550 (bump-at-release) it also works on a tree whose top heading is already a RELEASED one, which is the normal state between releases: it inserts the new section from the fragments. See CONTRIBUTING.md.
 
 BEFORE that step, run `node scripts/changelog-release-cut-check.mjs` (core#212): it refuses if any open PR still touches `CHANGELOG.md` directly, since closing the heading now would strand that PRs entry under it once merged. Wait for those PRs to land, or ask their authors to switch to a `changelog.d/` fragment first, which is immune to this by construction.
 
@@ -102,12 +102,13 @@ npm view @skyphusion-labs/vivijure-core@1.2.2 version
 > and an org admin tags the release PR's merge commit. The check before a release PR: if a tag already
 > exists for the version in `package.json`, the cycle is closed and the release PR bumps.
 >
-> **KNOWN GAP between this text and the guards (filed as a follow-up, not fixed here).**
-> `tests/changelog-version.test.ts` (core#236) refuses a `changelog.d/` fragment that sits on a
-> `package.json` version that is already tagged, and `scripts/changelog-entry-required.mjs` makes a
-> `src/` PR add an entry. Both were written for open-once, so until they are reworked a feature PR on
-> post-release `main` may still be pushed to bump. Do not read that refusal as the convention; it is the
-> guard that has not caught up with the ruling.
+> **The guards match this text (core#550).** Between releases `main` has a released top heading, a
+> tagged `package.json` version, and `changelog.d/` fragments waiting; that is the normal state and
+> no guard refuses it (the core#117 and core#236 refusals were written for open-once and are retired).
+> `tests/changelog-version.test.ts` now refuses exactly one state: an Unreleased heading on a
+> `package.json` version that has NO tag, which means a feature PR bumped ahead of the release PR.
+> `scripts/changelog-entry-required.mjs` is unchanged: a `src/` PR still needs an entry, and the
+> fragment is where it goes. `scripts/changelog-assemble.mjs` cuts the release from the fragments.
 
 ## Closing the row (step 5, and the one that gets skipped)
 
