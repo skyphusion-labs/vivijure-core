@@ -100,3 +100,11 @@ Verify the **npm artifact**, not only the pipeline.
 Crew members work as their own Unix + gh identity (`sudo -u <member> bash -lc '...'`). Crew commits
 use `skyphusion-<member>` identity, never Conrad's. Conrad devs only on his laptop
 (`Conrad Rockenhaus <conrad@skyphusion.org>`).
+
+## Release convention (bump-at-release)
+
+One convention for every skyphusion-labs repo (Conrad, ruled 2026-11-10, fleet-chezmoi#1766). A version moves ONLY in a release PR: bump the version, then assemble the changelog. Feature and fix PRs do not bump. Releases go through a PR (fleet-chezmoi#1622) and the tag goes on that PR's merge commit. This repo used to be open-once; `RELEASES.md` records the change and a known gap in the changelog guards.
+
+- Version of record here: package.json (and package-lock.json).
+- Tag shape: `vivijure-core-v*`.
+- Check before a release PR: does a tag already exist for the version currently in the manifest? Yes means the cycle is closed, so the release PR bumps. No means a bump already landed outside a release PR; stop and read why before bumping again.
