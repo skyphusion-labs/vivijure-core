@@ -23,6 +23,8 @@ export default defineConfig({
     // Drops the per-isolate module-discovery cache before every test (cf#515 defect 2): caching the
     // service scan by default makes suite isolation a requirement, not a nicety.
     setupFiles: ["./tests/setup-registry-cache.ts"],
+    // core#554: the whole suite runs in a fresh TMPDIR and fails if it leaves anything behind.
+    globalSetup: ["./tests/helpers/suite-tmpdir.ts"],
   },
   resolve: {
     // Sparse-checkout of vivijure-cf modules has no node_modules. Older entrypoints
