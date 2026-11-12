@@ -6,6 +6,9 @@
 // permanent anchor would make that fire on every single release cut, before the next feature PR
 // bumps package.json. See the top-of-file comment in scripts/changelog-assemble.mjs for the full
 // reasoning.
+//
+// core#550 (bump-at-release): the script now also cuts a release from fragments when the top heading
+// is a RELEASED one, which is the steady state of a repo whose version moves only in a release PR.
 
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync, readdirSync, existsSync, readFileSync } from "node:fs";
@@ -86,6 +89,45 @@ describe("changelog-assemble (core#202)", () => {
     expect(result.message).toContain("does not open with an Unreleased-shaped heading");
   });
 
+  // core#550 (bump-at-release, fleet-chezmoi#1766): after a release main has a RELEASED top heading
+  // and no Unreleased one; fragments wait. The release PR must be able to cut from them.
+  it("PROOF (bump-at-release): a released top heading plus fragments gets a new section ABOVE it", () => {
+    const base = "# Changelog\n\nAll notable changes.\n\n## [1.0.0] -- 2026-01-01\n\n### old release\n";
+    const result = assemble(
+      base,
+      ["100-a.md", "200-b.md"],
+      ["### feat(x): a (core#100)\n\nbody a.", "### fix(y): b (core#200)\n\nbody b."],
+      "v1.1.0",
+      "2026-11-12",
+    );
+    const expected =
+      "# Changelog\n\nAll notable changes.\n\n## [1.1.0] -- 2026-11-12\n\n" +
+      "### feat(x): a (core#100)\n\nbody a.\n\n### fix(y): b (core#200)\n\nbody b.\n\n" +
+      "## [1.0.0] -- 2026-01-01\n\n### old release\n";
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe(expected);
+  });
+
+  it("PROOF (bump-at-release): a file with no ## heading at all gets the section at the end", () => {
+    const result = assemble("# Changelog\n", ["1-a.md"], ["### a"], "v0.1.0", "2026-11-12");
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain("## [0.1.0] -- 2026-11-12\n\n### a");
+  });
+
+  it("REFUSES (bump-at-release): a released top heading and NO fragment is nothing to release", () => {
+    const base = "# Changelog\n\n## [1.0.0] -- 2026-01-01\n\n### old\n";
+    const result = assemble(base, [], [], "v1.1.0", "2026-11-12");
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("Nothing to promote");
+  });
+
+  it("REFUSES (bump-at-release): the version already has a heading, even with fragments waiting", () => {
+    const base = "# Changelog\n\n## [1.1.0] -- 2026-11-01\n\n### already\n";
+    const result = assemble(base, ["1-a.md"], ["### a"], "v1.1.0", "2026-11-12");
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("already appears");
+  });
+
   it("REFUSES when the version heading already exists, bracketed form", () => {
     const base = "# Changelog\n\n## Unreleased\n\n## [1.1.0] -- 2026-08-01\n\n### already there\n";
     const result = assemble(base, ["100-a.md"], ["### new"], "v1.1.0", "2026-08-14");
@@ -139,6 +181,27 @@ describe("changelog-assemble (core#202)", () => {
 
     expect(() =>
       execFileSync("node", [scriptPath, "v1.1.0", "2026-08-14"], { cwd: root, encoding: "utf8" }),
+    ).toThrow();
+  });
+
+  it("end to end (bump-at-release): main() cuts a release from fragments on a released tree and deletes them", () => {
+    const root = assembleTmp.make();
+    writeFileSync(join(root, "CHANGELOG.md"), "# Changelog\n\n## [1.0.0] -- 2026-01-01\n\n### old\n");
+    const dir = join(root, "changelog.d");
+    mkdirSync(dir);
+    writeFileSync(join(dir, ".gitkeep"), "");
+    writeFileSync(join(dir, "7-feature.md"), "### feat: waiting since the last release\n\nbody.");
+
+    const scriptPath = new URL("../scripts/changelog-assemble.mjs", import.meta.url).pathname;
+    execFileSync("node", [scriptPath, "v1.1.0", "2026-11-12"], { cwd: root, encoding: "utf8" });
+
+    const written = readFileSync(join(root, "CHANGELOG.md"), "utf8");
+    expect(written.indexOf("## [1.1.0] -- 2026-11-12")).toBeLessThan(written.indexOf("## [1.0.0]"));
+    expect(written).toContain("waiting since the last release");
+    expect(readdirSync(dir).sort()).toEqual([".gitkeep"]);
+    // Running it again for the same version cannot duplicate the heading.
+    expect(() =>
+      execFileSync("node", [scriptPath, "v1.1.0", "2026-11-12"], { cwd: root, encoding: "utf8" }),
     ).toThrow();
   });
 });

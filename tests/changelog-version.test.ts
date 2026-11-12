@@ -9,9 +9,11 @@
 // 1. Top changelog heading claims the same version as package.json. Accepts released forms
 //    (## vX.Y.Z, ## [X.Y.Z] -- date) and unreleased forms (## Unreleased / vX.Y.Z, bare
 //    ## Unreleased with package.json as the implied claim).
-// 2. When the top heading is Unreleased, the package.json version must NOT already be a git tag
-//    vivijure-core-vX.Y.Z. That is the exact core#117 shape. Post-release main (## v1.7.3 +
-//    package.json 1.7.3 + tag present) stays green; only Unreleased-on-a-spent-version fails.
+// 2. (core#550, bump-at-release) When the top heading is Unreleased, the package.json version MUST
+//    already be a git tag vivijure-core-vX.Y.Z: a version moves only in a release PR, so an
+//    Unreleased heading on an UNTAGGED version means a feature PR bumped ahead. The old rule (the
+//    core#117 shape, Unreleased on a tagged version, was RED) is the opposite and is retired: that
+//    shape is the normal state now. See the block comment below.
 //
 // package-lock.json is a third copy (cf#273 / core#119 adjacent): top-level version and
 // packages[""].version must match package.json.
@@ -181,129 +183,53 @@ describe("package.json version matches the top CHANGELOG claim (core#119)", () =
   });
 });
 
-describe("Unreleased work cannot sit on an already-tagged version (core#119 / core#117 shape)", () => {
-  it("when the top heading is Unreleased, package.json version must not already be tagged", () => {
-    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
-      version: string;
-    };
-    const changelog = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8");
-    const claim = topChangelogClaim(changelog);
-    expect(claim).not.toBeNull();
-    if (!claim!.unreleased) {
-      // Post-release main: ## vX.Y.Z matching package.json; tag may exist. Nothing to assert.
-      return;
-    }
-    const tags = listCoreReleaseTags();
-    expect(
-      tags.length,
-      "no vivijure-core-v* tags visible; CI must fetch-tags and local clones need git fetch --tags " +
-        "or this guard is a vacuous green",
-    ).toBeGreaterThan(0);
-    expect(
-      versionAlreadyTagged(pkg.version, tags),
-      `package.json is ${pkg.version} and CHANGELOG is still Unreleased, but ${TAG_PREFIX}${pkg.version} ` +
-        `already exists. Bump package.json (and claim that version under Unreleased) before landing ` +
-        `more work -- this is the core#117 failure mode.`,
-    ).toBe(false);
-  });
-
-  it("CONTROL: core#117 reconstructed -- Unreleased + package.json at already-tagged 1.4.0 is RED", () => {
-    // Exact defect: entry under Unreleased, package.json still 1.4.0, tag vivijure-core-v1.4.0 present.
-    const pkgVersion = "1.4.0";
-    const claim = topChangelogClaim("# Changelog\n\n## [Unreleased]\n\n### feat(x)\n");
-    expect(claim?.unreleased).toBe(true);
-    const tags = ["vivijure-core-v1.3.0", "vivijure-core-v1.4.0", "vivijure-core-v1.5.0"];
-    expect(versionAlreadyTagged(pkgVersion, tags)).toBe(true);
-    // Combined predicate the real test uses: unreleased AND tagged => refuse.
-    expect(claim!.unreleased && versionAlreadyTagged(pkgVersion, tags)).toBe(true);
-  });
-
-  it("CONTROL: Unreleased / v1.8.0 with no 1.8.0 tag is green", () => {
-    const pkgVersion = "1.8.0";
-    const claim = topChangelogClaim("# Changelog\n\n## Unreleased / v1.8.0\n\nnotes\n");
-    const tags = ["vivijure-core-v1.7.2", "vivijure-core-v1.7.3"];
-    expect(claim?.unreleased).toBe(true);
-    expect(claimedVersion(claim!, pkgVersion)).toBe(pkgVersion);
-    expect(versionAlreadyTagged(pkgVersion, tags)).toBe(false);
-  });
-
-  it("CONTROL: released heading with matching version may coexist with its tag", () => {
-    const pkgVersion = "1.7.3";
-    const claim = topChangelogClaim("# Changelog\n\n## v1.7.3\n\nPATCH notes\n");
-    const tags = ["vivijure-core-v1.7.3"];
-    expect(claim?.unreleased).toBe(false);
-    expect(claimedVersion(claim!, pkgVersion)).toBe(pkgVersion);
-    // Tag present is fine when not Unreleased -- this is post-release main.
-    expect(claim!.unreleased && versionAlreadyTagged(pkgVersion, tags)).toBe(false);
-  });
-
-  it("CONTROL: versionAlreadyTagged is exact, not a prefix match on a longer tag", () => {
-    expect(versionAlreadyTagged("1.7.0", ["vivijure-core-v1.7.0", "vivijure-core-v1.7.01"])).toBe(
-      true,
-    );
-    expect(versionAlreadyTagged("1.7", ["vivijure-core-v1.7.0"])).toBe(false);
-    expect(versionAlreadyTagged("1.7.0", ["vivijure-core-v1.7.01"])).toBe(false);
-  });
-});
-
 // -------------------------------------------------------------------------------------------------
-// core#236: A FRAGMENT ON A SPENT VERSION IS UNRELEASABLE WORK.
+// core#550: BUMP-AT-RELEASE. These guards were written for OPEN-ONCE and are rewritten for the
+// estate convention (Conrad, ruled 2026-11-10, fleet-chezmoi#1766): a version moves ONLY in a
+// release PR, so work accumulates on a version that is already tagged and nobody bumps ahead.
 //
-// WHAT BROKE. core#146 gave this file a guard meant to stop work accumulating on an already-released
-// version. It reads the TOP CHANGELOG HEADING, because at the time every PR carrying a change also
-// edited CHANGELOG.md, so the heading was where the version became visible. core#224 then introduced
-// `changelog.d/` fragments precisely so a PR would NOT have to touch CHANGELOG.md -- and that removed
-// the only place this guard could see anything.
+// WHAT THEY USED TO REFUSE, AND IS NOW NORMAL.
+//   core#119/#146: `## Unreleased` sitting on a package.json version that is already tagged.
+//   core#236:      changelog.d fragments sitting on a tagged version under a released heading.
+// Under open-once the first feature PR of a cycle had to bump, so both shapes meant "somebody forgot
+// to open the cycle". Under bump-at-release both are the steady state: nothing opens a cycle, the
+// release PR does.
 //
-// The result is a guard that did not fail. It simply stopped having something to look at, and stayed
-// green. A fragment-only PR leaves a tree that is byte-for-byte post-release-main shaped: top heading
-// and package.json agree on the spent version, the tag exists, nothing is Unreleased. The existing
-// assertions above accept that, correctly, because it is also what genuinely idle main looks like.
+// WHAT THEY REFUSE NOW. Exactly one state, the mirror image of the old one: a package.json version
+// that is NOT tagged while the top heading is Unreleased. That is a version that moved outside a
+// release PR (the open-once habit): the bump landed in a feature PR, so the release PR no longer
+// owns the version and the next cut can mislabel what is in it. A released top heading on an
+// untagged version is the RELEASE PR itself, in flight (after assemble, before the tag), and stays
+// green.
 //
-// MEASURED ON THE v1.16.0 CUT. Both PRs of that cycle (#233, #235) used fragments, neither bumped,
-// both merged green, and `changelog-assemble.mjs` then refused at cut time with "does not open with
-// an Unreleased-shaped heading. Nothing to promote." The refusal is loud and recoverable in one step,
-// so this was never a correctness hole -- but it lands on WHOEVER CUTS NEXT rather than on whoever
-// caused it, and a defect that migrates away from its author is the worst place for one to sit.
+//   open-cycle              top heading Unreleased-shaped, package.json TAGGED. Normal: entries
+//                           accumulate (direct edit or fragment). Used to be refused (core#117).
+//   bumped-outside-release  top heading Unreleased-shaped, package.json NOT tagged. REFUSED.
+//   release-in-flight       top heading released, package.json NOT tagged. The release PR. Green.
+//   post-release-clean      top heading released, tagged, changelog.d empty. Ordinary main. Green.
+//   fragments-pending       top heading released, tagged, fragments waiting. Normal. Used to be
+//                           refused (core#236); the release PR cuts them with changelog-assemble.
 //
-// WHAT THE NEW PREDICATE ADDS, and the boundary matters more than the rule. It refuses exactly ONE
-// state and three neighbouring states must stay green, including one that is not obvious:
-//
-//   open-cycle                  top heading is Unreleased-shaped. Fragments are the normal way to
-//                               contribute to an open cycle. (Unreleased sitting on a SPENT version
-//                               is already refused by the core#117 block above; not re-litigated.)
-//   unreleased-version          top heading is a RELEASED form whose version has NO tag yet. This is
-//                               the release PR itself, in flight, after assemble and before the tag.
-//                               NOT hypothetical: PR #237 was in exactly this state. A guard that
-//                               reddened here would block every release PR it was written to serve.
-//   post-release-clean          released heading, version tagged, changelog.d EMPTY. Ordinary main.
-//                               Reddening here would block every merge after a release.
-//   fragments-on-spent-version  released heading, version tagged, AND fragments waiting. REFUSED.
-//                               There is no version for that work to be released under.
-//
-// WHY IT IS NOT VACUOUS. The refusal depends on a tag being VISIBLE, so a clone without tags would
-// conclude "not tagged" and pass, silently, on the exact tree this exists to catch. The tag list is
-// therefore asserted non-empty, but only on the branch where a conclusion is actually being drawn --
-// when fragments exist. CI already sets fetch-tags (.github/workflows/ci.yml).
+// WHY IT IS NOT VACUOUS. The refusal depends on a tag being VISIBLE. A clone without tags sees every
+// version as untagged, so on an Unreleased heading it reads "bumped-outside-release": a false RED,
+// which fails closed and is loud, never a silent green. The tag list is still asserted non-empty
+// where a conclusion is drawn, so the message names the real cause (CI sets fetch-tags).
 // -------------------------------------------------------------------------------------------------
 
-/**
- * The cycle state a tree is in, as far as releasability of pending work is concerned.
- * Exactly one of these is a defect; see the block comment above for why the other three are not.
- */
+/** The cycle state a tree is in. Exactly one of these is a defect. */
 export type CycleState =
   | "open-cycle"
-  | "unreleased-version"
+  | "bumped-outside-release"
+  | "release-in-flight"
   | "post-release-clean"
-  | "fragments-on-spent-version";
+  | "fragments-pending";
 
 /**
  * Fragment files awaiting a release cut.
  *
  * DOTFILES ARE EXCLUDED. `changelog.d/.gitkeep` is scaffolding that keeps the directory in git; it is
- * not pending work, and counting it would put every tree permanently in the refused state. A missing
- * directory reads as no fragments rather than throwing: this guard must not be the thing that breaks
- * a checkout, and the assemble script is what owns the directory's existence.
+ * not pending work. A missing directory reads as no fragments rather than throwing: this guard must
+ * not be the thing that breaks a checkout.
  */
 export function listChangelogFragments(dir: string): string[] {
   try {
@@ -321,44 +247,56 @@ export function cycleState(args: {
   fragments: readonly string[];
 }): CycleState {
   const { claim, pkgVersion, tags, fragments } = args;
-  if (claim?.unreleased) return "open-cycle";
-  if (!versionAlreadyTagged(pkgVersion, tags)) return "unreleased-version";
-  return fragments.length > 0 ? "fragments-on-spent-version" : "post-release-clean";
+  const tagged = versionAlreadyTagged(pkgVersion, tags);
+  if (claim?.unreleased) return tagged ? "open-cycle" : "bumped-outside-release";
+  if (!tagged) return "release-in-flight";
+  return fragments.length > 0 ? "fragments-pending" : "post-release-clean";
 }
 
-describe("a changelog.d fragment cannot sit on an already-tagged version (core#236)", () => {
-  it("this tree is not accumulating unreleasable work", () => {
+describe("a version moves only in a release PR (bump-at-release, core#550)", () => {
+  it("this tree has not bumped outside a release PR", () => {
     const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
       version: string;
     };
     const claim = topChangelogClaim(readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8"));
+    expect(claim).not.toBeNull();
     const fragments = listChangelogFragments(join(repoRoot, "changelog.d"));
     const tags = listCoreReleaseTags();
-
-    if (fragments.length > 0) {
-      // Only assert the tag list where a conclusion depends on it. A tagless clone would classify
-      // every version as untagged and pass this suite while the defect sat in the tree.
+    if (claim!.unreleased) {
+      // Only where a conclusion depends on the tag list: a tagless clone would read every version as
+      // untagged and refuse a healthy tree for the wrong reason.
       expect(
         tags.length,
         "no vivijure-core-v* tags visible; CI must fetch-tags and local clones need git fetch --tags " +
-          "or this guard cannot tell a spent version from an open one",
+          "or this guard cannot tell a released version from an unreleased one",
       ).toBeGreaterThan(0);
     }
-
     const state = cycleState({ claim, pkgVersion: pkg.version, tags, fragments });
     expect(
       state,
-      `changelog.d holds ${fragments.length} fragment(s) (${fragments.join(", ")}) but package.json ` +
-        `is ${pkg.version}, which is already tagged ${TAG_PREFIX}${pkg.version}, and CHANGELOG.md ` +
-        `opens with a released heading. That work has no version to be released under, and ` +
-        `scripts/changelog-assemble.mjs will refuse at cut time with "nothing to promote". Open the ` +
-        `cycle: bump package.json (and package-lock.json) and add a "## Unreleased / v<next>" ` +
-        `heading. See RELEASES.md and core#236.`,
-    ).not.toBe("fragments-on-spent-version");
+      `CHANGELOG.md opens with an Unreleased heading but package.json is ${pkg.version}, which has no ` +
+        `${TAG_PREFIX}${pkg.version} tag: the version moved outside a release PR. Versions move only ` +
+        `in the release PR (bump package.json and package-lock.json, then run ` +
+        `scripts/changelog-assemble.mjs). Feature PRs add a changelog.d/ fragment and do not bump. ` +
+        `See RELEASES.md and core#550.`,
+    ).not.toBe("bumped-outside-release");
   });
 
-  it("CONTROL: the defect, planted -- released heading + tagged version + a fragment is REFUSED", () => {
-    // The reconstructed v1.16.0 cut state, one PR earlier: #235's fragment merged, no bump.
+  it("CONTROL: the OLD open-once defect shapes now PASS -- Unreleased on an already-tagged version (core#117)", () => {
+    // Exactly the shape that used to be RED: entry under Unreleased, package.json 1.4.0, tag present.
+    const claim = topChangelogClaim("# Changelog\n\n## [Unreleased]\n\n### feat(x)\n");
+    expect(claim?.unreleased).toBe(true);
+    expect(
+      cycleState({
+        claim,
+        pkgVersion: "1.4.0",
+        tags: ["vivijure-core-v1.3.0", "vivijure-core-v1.4.0", "vivijure-core-v1.5.0"],
+        fragments: [],
+      }),
+    ).toBe("open-cycle");
+  });
+
+  it("CONTROL: the OLD open-once defect shapes now PASS -- fragments on a tagged version under a released heading (core#236)", () => {
     expect(
       cycleState({
         claim: topChangelogClaim("# Changelog\n\n## [1.15.0] -- 2026-08-15\n\nnotes\n"),
@@ -366,7 +304,43 @@ describe("a changelog.d fragment cannot sit on an already-tagged version (core#2
         tags: ["vivijure-core-v1.14.0", "vivijure-core-v1.15.0"],
         fragments: ["pr-cf475-cast-train-job-log.md"],
       }),
-    ).toBe("fragments-on-spent-version");
+    ).toBe("fragments-pending");
+  });
+
+  it("CONTROL: the bump-at-release rule FAILS when broken -- a feature PR that bumps ahead is RED", () => {
+    // The open-once habit, planted: bare Unreleased, package.json moved to 1.5.0, no such tag.
+    expect(
+      cycleState({
+        claim: topChangelogClaim("# Changelog\n\n## Unreleased\n\n### feat(x)\n"),
+        pkgVersion: "1.5.0",
+        tags: ["vivijure-core-v1.4.0"],
+        fragments: [],
+      }),
+    ).toBe("bumped-outside-release");
+  });
+
+  it("CONTROL: the old explicit claim `## Unreleased / v1.8.0` on an untagged 1.8.0 is RED too", () => {
+    expect(
+      cycleState({
+        claim: topChangelogClaim("# Changelog\n\n## Unreleased / v1.8.0\n\nnotes\n"),
+        pkgVersion: "1.8.0",
+        tags: ["vivijure-core-v1.7.2", "vivijure-core-v1.7.3"],
+        fragments: [],
+      }),
+    ).toBe("bumped-outside-release");
+  });
+
+  it("CONTROL: the release PR itself -- released heading, version NOT yet tagged -- is green", () => {
+    // CHANGELOG closed to ## [1.16.0], package.json 1.16.0, tag not cut. A late fragment alongside it
+    // is still releasable under 1.16.0.
+    expect(
+      cycleState({
+        claim: topChangelogClaim("# Changelog\n\n## [1.16.0] -- 2026-08-15\n\nnotes\n"),
+        pkgVersion: "1.16.0",
+        tags: ["vivijure-core-v1.15.0"],
+        fragments: ["some-late-fragment.md"],
+      }),
+    ).toBe("release-in-flight");
   });
 
   it("CONTROL: post-release main with an EMPTY changelog.d is green (else every merge blocks)", () => {
@@ -380,62 +354,41 @@ describe("a changelog.d fragment cannot sit on an already-tagged version (core#2
     ).toBe("post-release-clean");
   });
 
-  it("CONTROL: fragments under an OPEN cycle heading are the normal case, not a defect", () => {
+  it("CONTROL: a heading that claims the version while its tag exists is the ordinary released state", () => {
+    const claim = topChangelogClaim("# Changelog\n\n## v1.7.3\n\nPATCH notes\n");
+    expect(claim?.unreleased).toBe(false);
+    expect(claimedVersion(claim!, "1.7.3")).toBe("1.7.3");
     expect(
-      cycleState({
-        claim: topChangelogClaim("# Changelog\n\n## Unreleased / v1.16.0\n\n"),
-        pkgVersion: "1.16.0",
-        tags: ["vivijure-core-v1.15.0"],
-        fragments: ["232-scan-cache-key-comment.md", "pr-cf475-cast-train-job-log.md"],
-      }),
-    ).toBe("open-cycle");
+      cycleState({ claim, pkgVersion: "1.7.3", tags: ["vivijure-core-v1.7.3"], fragments: [] }),
+    ).toBe("post-release-clean");
   });
 
-  it("CONTROL: the release PR itself -- released heading, version NOT yet tagged -- is green", () => {
-    // PR #237 was exactly this: CHANGELOG closed to ## [1.16.0], package.json 1.16.0, tag not cut.
-    // A fragment landing alongside it is still releasable under 1.16.0.
-    expect(
-      cycleState({
-        claim: topChangelogClaim("# Changelog\n\n## [1.16.0] -- 2026-08-15\n\nnotes\n"),
-        pkgVersion: "1.16.0",
-        tags: ["vivijure-core-v1.15.0"],
-        fragments: ["some-late-fragment.md"],
-      }),
-    ).toBe("unreleased-version");
+  it("CONTROL: with NO tags visible the classifier cannot tell released from unreleased -- the tag assertion names that", () => {
+    // A healthy post-release tree with an Unreleased heading reads RED when no tag is visible. That
+    // is a loud false red, not a silent green, and the non-empty tag assertion above explains it.
+    const healthy = {
+      claim: topChangelogClaim("# Changelog\n\n## Unreleased\n\nnotes\n"),
+      pkgVersion: "1.16.0",
+      fragments: [] as string[],
+    };
+    expect(cycleState({ ...healthy, tags: ["vivijure-core-v1.16.0"] })).toBe("open-cycle");
+    expect(cycleState({ ...healthy, tags: [] })).toBe("bumped-outside-release");
+    expect(listCoreReleaseTags("/nonexistent-repo-path")).toEqual([]);
   });
 
-  it("CONTROL: .gitkeep is scaffolding, not pending work", () => {
-    // Reading the REAL directory, which holds exactly .gitkeep on a clean post-release tree. If this
-    // counted, every tree would sit permanently in the refused state and the guard would be noise.
+  it("CONTROL: .gitkeep is scaffolding, not pending work; a missing directory is no fragments", () => {
     const real = listChangelogFragments(join(repoRoot, "changelog.d"));
     expect(real).not.toContain(".gitkeep");
-    // Positive control on the filter: it is not simply returning an empty list for everything.
     expect(listChangelogFragments(join(repoRoot, "tests")).length).toBeGreaterThan(0);
-  });
-
-  it("CONTROL: a missing changelog.d reads as no fragments rather than throwing", () => {
     expect(listChangelogFragments(join(repoRoot, "changelog.d-does-not-exist"))).toEqual([]);
   });
 
-  it("CONTROL: with NO tags visible the classifier CANNOT see the defect -- which is what the tag assertion is for", () => {
-    // The exact tree of PLANT 1, classified against an empty tag list: it comes back
-    // "unreleased-version", i.e. GREEN. The classifier is not wrong -- with no tags there is no
-    // evidence the version is spent -- but it means a tagless clone would pass this suite while the
-    // defect sat in the tree, which is the vacuous green core#119 already had to fix once for the
-    // Unreleased branch. The `expect(tags.length).toBeGreaterThan(0)` above is the only thing
-    // standing between those two outcomes, so this control names what it is protecting.
-    const defectShape = {
-      claim: topChangelogClaim("# Changelog\n\n## [1.16.0] -- 2026-08-15\n\nnotes\n"),
-      pkgVersion: "1.16.0",
-      fragments: ["999-planted.md"],
-    };
-    expect(cycleState({ ...defectShape, tags: ["vivijure-core-v1.16.0"] }))
-      .toBe("fragments-on-spent-version");
-    expect(cycleState({ ...defectShape, tags: [] }))
-      .toBe("unreleased-version");
-    // And the real helper genuinely can return empty, so this is not a hypothetical shape:
-    // a clone without `git fetch --tags` is exactly it.
-    expect(listCoreReleaseTags("/nonexistent-repo-path")).toEqual([]);
+  it("CONTROL: versionAlreadyTagged is exact, not a prefix match on a longer tag", () => {
+    expect(versionAlreadyTagged("1.7.0", ["vivijure-core-v1.7.0", "vivijure-core-v1.7.01"])).toBe(
+      true,
+    );
+    expect(versionAlreadyTagged("1.7", ["vivijure-core-v1.7.0"])).toBe(false);
+    expect(versionAlreadyTagged("1.7.0", ["vivijure-core-v1.7.01"])).toBe(false);
   });
 });
 

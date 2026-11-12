@@ -103,8 +103,8 @@ export function verdict(files, labels) {
     message:
       "This PR touches src/ but neither CHANGELOG.md nor a changelog.d/ fragment changed. " +
       "Preferred: add a fragment file under changelog.d/ (see CONTRIBUTING.md) named " +
-      "<issue>-<slug>.md, containing the ### block that would have gone under the open " +
-      "changelog heading. CHANGELOG.md itself is still accepted during the migration window. " +
+      "<issue>-<slug>.md, containing the ### block for the next release (changelog-assemble.mjs " +
+      "folds it into the release section). CHANGELOG.md itself is still accepted during the migration window. " +
       "Or apply the no-changelog label if this is a deliberate skip.",
   };
 }
